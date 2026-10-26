@@ -9,7 +9,8 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { isPackaged: false },
+  app: { isPackaged: false, getPath: () => '/tmp/agentsdock-test' },
+  dialog: { showOpenDialog: vi.fn() },
   BrowserWindow: class BrowserWindow {
     static fromWebContents() { return { isDestroyed: () => false } }
   },
@@ -75,6 +76,22 @@ describe('Team Hub IPC registration', () => {
     expect(cancelSideQuestion).toHaveBeenCalledExactlyOnceWith(scope, 'chat-a', input.request_id)
     expect(() => harness.handlers.get('side-questions:ask')?.({ sender: { id: 2, getURL: () => 'https://shared.example.test/chat' },
       senderFrame: { url: 'https://shared.example.test/chat', parent: null } }, scope, 'chat-a', input)).toThrow('untrusted renderer')
+  })
+
+  it('reads the local paper shelf only from a trusted renderer', async () => {
+    const list = vi.fn().mockResolvedValue({ root: '/papers', files: [] })
+    const read = vi.fn().mockResolvedValue({ path: 'a.pdf', name: 'a.pdf', data: new Uint8Array() })
+    registerIpc({} as AppService, {} as AppUpdateManager, undefined, {
+      papers: { root: vi.fn(), chooseRoot: vi.fn(), list, read }
+    })
+    await harness.handlers.get('papers:list')?.(trustedEvent)
+    await harness.handlers.get('papers:read')?.(trustedEvent, 'nested/a.pdf')
+    expect(list).toHaveBeenCalledOnce()
+    expect(read).toHaveBeenCalledExactlyOnceWith('nested/a.pdf')
+    expect(() => harness.handlers.get('papers:list')?.({
+      sender: { id: 2, getURL: () => 'https://untrusted.test/' },
+      senderFrame: { url: 'https://untrusted.test/', parent: null }
+    })).toThrow('untrusted renderer')
   })
 
   it('routes member rename through exact scoped IPC and blocks untrusted frames', async () => {
@@ -167,6 +184,17 @@ describe('Team Hub IPC registration', () => {
       'chat-a',
       'assets/diagram.png'
     )
+  })
+
+  it('routes workspace and attached preview bytes through trusted IPC', async () => {
+    const workspacePreviewBytes = vi.fn().mockResolvedValue(new Uint8Array([1]))
+    const filePreviewBytes = vi.fn().mockResolvedValue(new Uint8Array([2]))
+    registerIpc({ workspacePreviewBytes, filePreviewBytes } as unknown as AppService, {} as AppUpdateManager)
+
+    await expect(harness.handlers.get('workspace:preview-bytes')?.(trustedEvent, 'chat-a', 'docs/design.pdf')).resolves.toEqual(new Uint8Array([1]))
+    await expect(harness.handlers.get('files:preview-bytes')?.(trustedEvent, 'chat-a', 'file-a')).resolves.toEqual(new Uint8Array([2]))
+    expect(workspacePreviewBytes).toHaveBeenCalledWith('chat-a', 'docs/design.pdf')
+    expect(filePreviewBytes).toHaveBeenCalledWith('chat-a', 'file-a')
   })
 
   it('blocks an untrusted Team Hub caller before selecting or writing secret files', () => {

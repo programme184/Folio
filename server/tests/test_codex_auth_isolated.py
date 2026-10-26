@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import base64
 from contextlib import asynccontextmanager
 import json
+import os
 from pathlib import Path
+import stat
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
@@ -31,6 +35,24 @@ assert {node.name for node in nodes} == NAMES
 OPERATION_CODE = compile(ast.Module(body=nodes, type_ignores=[]), str(SOURCE), "exec")
 NATIVE = {"X-AgentsDock-Token": "synthetic-native-token"}
 SECRET = "sk-synthetic-auth-test-only-not-a-real-key"
+ACCOUNT = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+REFRESH = "rt.synthetic-refresh-token-not-a-real-credential"
+
+
+def synthetic_jwt(account=ACCOUNT):
+    payload = json.dumps({"sub": "auth0|synthetic", "auth_time": 1700000000,
+        "https://api.openai.com/auth": {"chatgpt_account_id": account}}, separators=(",", ":")).encode()
+    body = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    header = base64.urlsafe_b64encode(b'{"alg":"none","typ":"JWT"}').decode().rstrip("=")
+    return f"{header}.{body}.e30"
+
+
+def synthetic_auth(**overrides):
+    document = {"auth_mode": "chatgpt", "OPENAI_API_KEY": None, "tokens": {
+        "id_token": synthetic_jwt(), "access_token": synthetic_jwt(),
+        "refresh_token": REFRESH, "account_id": ACCOUNT}, "last_refresh": "2026-01-02T03:04:05.000000Z"}
+    document.update(overrides)
+    return document
 
 
 class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
@@ -61,10 +83,17 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         self.ns["codex_app_server_managers"] = lambda: (self.manager,)
         self.ns["refresh_codex_app_server_login"] = AsyncMock()
         exec(OPERATION_CODE, self.ns)
+        self.home = tempfile.TemporaryDirectory(prefix="codex-auth-import-")
+        self.addCleanup(self.home.cleanup)
+        self.codex_home = Path(self.home.name) / ".codex"
+        self.refresh_login = AsyncMock()
         self.app = FastAPI()
         self.app.middleware("http")(self.ns["require_agent_token"])
         self.auth_router = codex_auth.create_router(authorize=self.ns["require_native_admin_control"],
-            operation=self.ns["codex_auth_operation"], available=lambda: self.ns["CODEX_TRANSPORT"] != "exec")
+            operation=self.ns["codex_auth_operation"], available=lambda: self.ns["CODEX_TRANSPORT"] != "exec",
+            import_auth=lambda document: codex_auth.install_chatgpt_auth(
+                {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}, self.home.name, document),
+            refresh_login=self.refresh_login)
         self.app.include_router(self.auth_router)
         self.client = TestClient(self.app)
         self.addCleanup(self.client.close)
@@ -85,6 +114,7 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.ns["CODEX_GOALS_RECONFIGURING"])
         self.ns["close_codex_app_server_manager"].assert_not_called()
         self.assertFalse(codex_auth.capability(available=True)["api_key_login"])
+        self.assertTrue(codex_auth.capability(available=True)["auth_import"])
 
     def test_status_projects_api_key_chatgpt_signed_out_and_future_mode(self):
         cases = [(None, "none", None), ({"type": "apiKey", "apiKey": SECRET, "email": SECRET}, "apiKey", None),
@@ -142,6 +172,91 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         self.ns["AGENT_TOKEN"] = ""
         self.assertEqual(self.login().status_code, 503)
 
+    def test_loopback_without_operator_token_can_replace_file_login(self):
+        self.ns["AGENT_TOKEN"] = ""
+        # Production request_authorized is open when the server has no token.
+        # This fixture otherwise uses the stricter native-header check.
+        exact = self.ns["request_authorized"]
+        self.ns["request_authorized"] = lambda request: True if not self.ns["AGENT_TOKEN"] else exact(request)
+        local = TestClient(self.app, client=("127.0.0.1", 9))
+        self.addCleanup(local.close)
+        response = local.post("/api/admin/codex/auth/import", json=synthetic_auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"imported": True})
+        self.assertNotIn(REFRESH, response.text)
+        self.assertNotIn(ACCOUNT, response.text)
+        path = self.codex_home / "auth.json"
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.refresh_login.assert_awaited_once()
+        remote = TestClient(self.app, client=("192.0.2.10", 9))
+        self.addCleanup(remote.close)
+        denied = remote.post("/api/admin/codex/auth/import", json=synthetic_auth())
+        self.assertEqual(denied.status_code, 503, denied.text)
+        self.assertNotIn(REFRESH, denied.text)
+        browser = local.post("/api/admin/codex/auth/import",
+            headers={"Origin": "http://127.0.0.1:7850"}, json=synthetic_auth())
+        self.assertEqual(browser.status_code, 403, browser.text)
+        other = local.post("/api/admin/codex/auth/api-key", json={"api_key": SECRET})
+        self.assertEqual(other.status_code, 503, other.text)
+        self.assertNotIn(SECRET, other.text)
+        self.manager.request.return_value = {"account": {"type": "chatgpt", "email": "test@example.invalid",
+            "planType": "pro"}, "requiresOpenaiAuth": True}
+        status = local.get("/api/admin/codex/auth")
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertEqual(status.json()["auth_mode"], "chatgpt")
+        self.assertEqual(status.json()["email"], "test@example.invalid")
+        self.ns["AGENT_TOKEN"] = "synthetic-native-token"
+        still_closed = local.post("/api/admin/codex/auth/import", json=synthetic_auth())
+        self.assertEqual(still_closed.status_code, 401, still_closed.text)
+
+    def test_loopback_side_chat_is_open_without_an_operator_token(self):
+        self.ns["AGENT_TOKEN"] = ""
+
+        def request(path, method, client, headers=None):
+            return Request({"type": "http", "method": method, "path": path, "scheme": "http",
+                "server": ("127.0.0.1", 7850), "client": client, "headers": headers or [],
+                "query_string": b""})
+
+        guard = self.ns["require_native_admin_control"]
+        for path, method in (
+            ("/api/sessions/chat-a/side-questions", "POST"),
+            ("/api/sessions/chat-a/side-questions/request-a", "DELETE"),
+            ("/api/sessions/chat-a/side-chat", "GET"),
+            ("/api/sessions/chat-a/side-chat", "POST"),
+            ("/api/sessions/chat-a/side-chat/requests/request-a", "DELETE"),
+            ("/api/sessions/chat-a/side-chat/side-a", "DELETE"),
+            ("/api/sessions/chat-a/side-chats/side-a", "DELETE"),
+        ):
+            guard(request(path, method, ("127.0.0.1", 9)))
+        guard(request("/api/sessions/chat-a/side-chat", "GET", ("::1", 9)))
+        with self.assertRaises(HTTPException) as remote:
+            guard(request("/api/sessions/chat-a/side-questions", "POST", ("192.0.2.10", 9)))
+        self.assertEqual(remote.exception.status_code, 503)
+        with self.assertRaises(HTTPException) as browser:
+            guard(request("/api/sessions/chat-a/side-questions", "POST", ("127.0.0.1", 9),
+                [(b"origin", b"http://127.0.0.1:7850")]))
+        self.assertEqual(browser.exception.status_code, 403)
+        with self.assertRaises(HTTPException) as other:
+            guard(request("/api/admin/codex/goals", "GET", ("127.0.0.1", 9)))
+        self.assertEqual(other.exception.status_code, 503)
+        self.ns["AGENT_TOKEN"] = "synthetic-native-token"
+        with self.assertRaises(HTTPException) as locked:
+            guard(request("/api/sessions/chat-a/side-questions", "POST", ("127.0.0.1", 9)))
+        self.assertEqual(locked.exception.status_code, 401)
+
+    def test_saved_file_keeps_chatgpt_status_when_account_read_fails(self):
+        self.codex_home.mkdir()
+        codex_auth.install_chatgpt_auth(
+            {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}, self.home.name, synthetic_auth())
+        self.manager.request.side_effect = TimeoutError("synthetic-account-read-failed")
+        with patch.dict(os.environ, {"CODEX_HOME": str(self.codex_home), "HOME": self.home.name}, clear=False):
+            response = self.client.get("/api/admin/codex/auth", headers=NATIVE)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"available": True, "auth_mode": "chatgpt", "email": None,
+            "plan_type": None, "requires_openai_auth": True})
+        self.assertNotIn(REFRESH, response.text)
+        self.assertNotIn(ACCOUNT, response.text)
+
     async def test_framing_and_duplicate_tokens_rejected_without_body_read(self):
         native = (b"x-agentsdock-token", b"synthetic-native-token")
         json_type = (b"content-type", b"application/json")
@@ -158,6 +273,9 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
             next_handler.assert_not_called()
 
     def test_status_failures_are_sanitized_without_retry(self):
+        isolated = patch.dict(os.environ, {"CODEX_HOME": str(self.codex_home), "HOME": self.home.name}, clear=False)
+        isolated.start()
+        self.addCleanup(isolated.stop)
         for failure in (RuntimeError(SECRET), asyncio.TimeoutError(SECRET)):
             self.manager.request.reset_mock(side_effect=True)
             self.manager.request.side_effect = failure
@@ -245,6 +363,87 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         self.assertFalse(self.ns["CODEX_GOALS_RECONFIGURING"])
+
+    def test_chatgpt_file_import_writes_private_auth_and_requests_handoff(self):
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"imported": True})
+        self.assertNotIn(REFRESH, response.text)
+        self.assertNotIn(ACCOUNT, response.text)
+        path = self.codex_home / "auth.json"
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved["auth_mode"], "chatgpt")
+        self.assertIsNone(saved["OPENAI_API_KEY"])
+        self.assertEqual(saved["tokens"]["account_id"], ACCOUNT)
+        self.assertEqual(saved["tokens"]["refresh_token"], REFRESH)
+        env = {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}
+        self.assertIsNotNone(codex_auth.native_login_revision(env, cwd=self.home.name))
+        self.refresh_login.assert_awaited_once()
+        self.ns["codex_app_server_manager"].assert_not_awaited()
+
+    def test_import_rejects_api_keys_symlinks_and_secrets_never_echo(self):
+        rejected = synthetic_auth(OPENAI_API_KEY=SECRET)
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=rejected)
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertNotIn(SECRET, response.text)
+        self.assertNotIn(REFRESH, response.text)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        self.refresh_login.assert_not_awaited()
+        self.codex_home.mkdir()
+        link = self.codex_home / "auth.json"
+        link.symlink_to(self.codex_home / "elsewhere")
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertTrue(link.is_symlink())
+        self.assertNotIn(REFRESH, response.text)
+        self.refresh_login.assert_not_awaited()
+
+    def test_import_leaves_environment_and_non_file_stores_unchanged(self):
+        original = codex_auth.install_chatgpt_auth
+        calls = []
+        def guarded(env, cwd, value):
+            calls.append(env)
+            return original(env, cwd, value)
+        app = FastAPI()
+        app.middleware("http")(self.ns["require_agent_token"])
+        app.include_router(codex_auth.create_router(authorize=self.ns["require_native_admin_control"],
+            operation=self.ns["codex_auth_operation"], available=lambda: True,
+            import_auth=lambda document: guarded(
+                {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home), "OPENAI_API_KEY": SECRET},
+                self.home.name, document),
+            refresh_login=self.refresh_login))
+        client = TestClient(app)
+        self.addCleanup(client.close)
+        response = client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertNotIn(SECRET, response.text)
+        self.assertNotIn(REFRESH, response.text)
+        self.assertEqual(len(calls), 1)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        config = self.codex_home
+        config.mkdir()
+        (config / "config.toml").write_text('cli_auth_credentials_store = "keyring"\n')
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        self.refresh_login.assert_not_awaited()
+
+    def test_busy_codex_work_blocks_import_before_writing(self):
+        self.ns["STORE"].sessions["chat"] = {"backend": "codex", "codex_goal": {"status": "active"}}
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertNotIn(REFRESH, response.text)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        self.refresh_login.assert_not_awaited()
+        self.ns["codex_app_server_manager"].assert_not_awaited()
+
+    def test_exec_transport_rejects_import_before_writing(self):
+        self.ns["CODEX_TRANSPORT"] = "exec"
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        self.refresh_login.assert_not_awaited()
 
 
 class CodexAuthTransportTests(unittest.IsolatedAsyncioTestCase):

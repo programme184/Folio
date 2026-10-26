@@ -10,7 +10,7 @@ import { mailHintPending, type MailArrivalCursor, type MailboxCoverage, type Mai
 import { bulletinHintPending, type BulletinHintRefresh } from '@shared/team-bulletin-hints'
 import { applyOpenCodeSessionEvent, openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { t } from '@shared/i18n'
-import { chatBackendChoice, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
+import { chatBackendChoice, cursorBackendAvailable, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
@@ -2090,14 +2090,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       const current = get()
       const lastOpened = current.sessions.find(session => session.id === lastOpenedSessionId && !session.archived) ?? null
       const seed = lastOpened ?? newestAvailableSession(current.sessions)
-      let defaults = parseNewChatDefaults(stored)
-        ?? (seed ? sessionNewChatDefaults(seed, current.health?.default_cwd?.trim() || '') : null)
+      const storedDefaults = parseNewChatDefaults(stored)
+      const defaultCwd = current.health?.default_cwd?.trim() || ''
+      let defaults = storedDefaults
+        ?? (seed ? sessionNewChatDefaults(seed, defaultCwd) : null)
+      // Cursor is the default runtime until the user saves a different one.
+      if (!storedDefaults && selectableChatBackendChoices(current.health, current.runtimeCatalog).includes('cursor')
+        && cursorBackendAvailable(current.health, current.runtimeCatalog)) {
+        defaults = {
+          version: 1,
+          folder: defaults?.folder || 'General',
+          cwd: defaults?.cwd || defaultCwd,
+          backend: 'cursor',
+          model: null,
+          effort: null
+        }
+      }
       if (!defaults) {
         set({ creatingChat: false })
         current.setModal('newChat', true)
         return
       }
-      const defaultCwd = current.health?.default_cwd?.trim() || ''
       const lastOpenedFolder = lastOpened ? lastOpened.folder?.trim() || 'General' : null
       const lastOpenedCwd = lastOpened ? lastOpened.cwd?.trim() || defaultCwd : null
       defaults = {

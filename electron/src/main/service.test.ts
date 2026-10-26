@@ -1090,6 +1090,39 @@ describe('Codex account status profile isolation', () => {
     await expect(service.codexAuth(caller)).rejects.toThrow('superseded')
     expect(client.codexAuth).not.toHaveBeenCalled()
   })
+  it('imports a pasted Codex login and rereads that account', async () => {
+    const { service, client } = harness()
+    const authFile = '{"auth_mode":"chatgpt","tokens":{"refresh_token":"synthetic-refresh-token-value"}}'
+    const imported = { ...account, auth_mode: 'chatgpt' as const, email: 'person@example.com', plan_type: 'pro' }
+    const refreshRuntime = vi.fn().mockResolvedValue(undefined)
+    const importCodexAuth = vi.fn().mockResolvedValue({ imported: true })
+    Object.assign(client, { importCodexAuth, codexAuth: vi.fn().mockResolvedValue(imported) })
+    Object.assign(service, { refreshRuntime })
+    await expect(service.importCodexAuth(caller, authFile)).resolves.toEqual(imported)
+    expect(importCodexAuth).toHaveBeenCalledExactlyOnceWith(authFile)
+    expect(refreshRuntime).toHaveBeenCalledOnce()
+    expect(client.codexAuth).toHaveBeenCalledOnce()
+    expect(JSON.stringify(refreshRuntime.mock.calls)).not.toContain('synthetic-refresh-token-value')
+  })
+
+  it('keeps a saved login when the follow-up account read fails', async () => {
+    const { service, client } = harness()
+    const importCodexAuth = vi.fn().mockResolvedValue({ imported: true })
+    Object.assign(client, { importCodexAuth, codexAuth: vi.fn().mockRejectedValue(new Error('CODEX_AUTH_FAILED')) })
+    Object.assign(service, { refreshRuntime: vi.fn().mockResolvedValue(undefined) })
+    await expect(service.importCodexAuth(caller, '{"auth_mode":"chatgpt"}')).rejects.toThrow('CODEX_AUTH_SAVED')
+    expect(importCodexAuth).toHaveBeenCalledOnce()
+  })
+
+  it('does not contact another server after the profile changes during import', async () => {
+    const { service, client } = harness()
+    const importCodexAuth = vi.fn()
+    Object.assign(service, { activeProfileId: 'profile-b', profileGeneration: 2 })
+    Object.assign(client, { importCodexAuth })
+    await expect(service.importCodexAuth(caller, '{"auth_mode":"chatgpt"}')).rejects.toThrow('superseded')
+    expect(importCodexAuth).not.toHaveBeenCalled()
+  })
+
   it('rejects a late account result after switching servers', async () => {
     const { service, client } = harness()
     const response = deferred<typeof account>(), called = deferred<void>()
@@ -6753,6 +6786,32 @@ describe('workspace file scope safety', () => {
     expect(readFileSync(destination)).toEqual(Buffer.from(bytes))
   })
 
+  it('returns workspace preview bytes for the paper reader without using the renderer fetch API', async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46])
+    const a = fakeClient({
+      workspacePreviewRequest: async () => new Response(bytes, { status: 200 })
+    })
+    const { service } = createProfileService({
+      'http://a.test:7850': [a],
+      'http://b.test:7850': [fakeClient()]
+    })
+
+    await expect(service.workspacePreviewBytes('chat', 'docs/design.pdf')).resolves.toEqual(bytes)
+    expect(a.workspacePreviewRequest).toHaveBeenCalledWith('chat', 'docs/design.pdf')
+  })
+
+  it('refuses a workspace preview larger than the paper reader limit', async () => {
+    const a = fakeClient({
+      workspacePreviewRequest: async () => new Response(new Uint8Array([1]), {
+        status: 200,
+        headers: { 'content-length': String(40 * 1024 * 1024 + 1) }
+      })
+    })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.workspacePreviewBytes('chat', 'docs/huge.pdf')).rejects.toThrow('preview_too_large')
+  })
+
   it('falls back to the binary-safe preview route when an older server lacks workspace downloads', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'agentsdock-workspace-download-fallback-'))
     cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
@@ -8394,6 +8453,52 @@ describe('server profile lifecycle', () => {
     await expect(service.removeServer('b')).rejects.toThrow('Teamspace cache cleanup failed')
     expect(removeTeamHubProfile).toHaveBeenCalledWith('b')
     expect(settings.getProfile('b')).not.toBeNull()
+  })
+
+  it('adopts a signed-out system Codex login once when the desktop connects', async () => {
+    const signedInCatalog: RuntimeCatalog = { ...runtimeCatalog, generated_at: '2026-07-30T22:00:00Z' }
+    const client = fakeClient({
+      runtimeCatalog: async refresh => refresh ? signedInCatalog : runtimeCatalog
+    })
+    const codexAuth = vi.fn().mockResolvedValue({
+      available: true, auth_mode: 'none', email: null, plan_type: null, requires_openai_auth: true
+    })
+    Object.assign(client, { codexAuth })
+    const { service } = createProfileService({
+      'http://a.test:7850': [client]
+    }, cache => {
+      cache.putPreference('profile:a', 'runtimeCatalog:v1', runtimeCatalog)
+    })
+    const payload = await service.bootstrap()
+
+    await service.refreshServer('a', payload.profileGeneration)
+    await vi.waitFor(() => expect(client.runtimeCatalog).toHaveBeenCalledWith(true))
+    expect(codexAuth).toHaveBeenCalledOnce()
+
+    await service.refreshServer('a', payload.profileGeneration)
+    await settleBackgroundWork()
+    expect(codexAuth).toHaveBeenCalledOnce()
+    expect(client.runtimeCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves an existing Codex account in place when the desktop connects', async () => {
+    const client = fakeClient()
+    const codexAuth = vi.fn().mockResolvedValue({
+      available: true, auth_mode: 'chatgpt', email: 'person@example.com', plan_type: 'pro', requires_openai_auth: true
+    })
+    Object.assign(client, { codexAuth })
+    const { service } = createProfileService({
+      'http://a.test:7850': [client]
+    }, cache => {
+      cache.putPreference('profile:a', 'runtimeCatalog:v1', runtimeCatalog)
+    })
+    const payload = await service.bootstrap()
+
+    await service.refreshServer('a', payload.profileGeneration)
+    await vi.waitFor(() => expect(codexAuth).toHaveBeenCalledOnce())
+    await settleBackgroundWork()
+
+    expect(client.runtimeCatalog).not.toHaveBeenCalled()
   })
 
   it('keeps a cached runtime catalog fresh across profile activation', async () => {

@@ -424,12 +424,16 @@ export interface AgentsDockAPI {
   providerAccounts?: {
     read(scope: CodexServerSettingsScope, backend: import('./provider-connections').CLIAccountBackend): Promise<import('./provider-connections').CLIAccountMetadata>
   }
+  cursor?: {
+    importAuth(scope: CodexServerSettingsScope, authFile: string): Promise<{ imported: true }>
+  }
   customModels?: {
     read(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, sessionId?: string): Promise<import('./custom-models').CustomModels>
     save(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, input: import('./custom-models').CustomModelInput): Promise<import('./custom-models').CustomModels>
   }
   codex: {
     auth(scope: CodexServerSettingsScope): Promise<CodexAuthStatus>
+    importAuth(scope: CodexServerSettingsScope, authFile: string): Promise<CodexAuthStatus>
     provider(scope: CodexServerSettingsScope): Promise<CodexProviderConfiguration>
     providerModels(scope: CodexServerSettingsScope, sessionId?: string): Promise<CodexProviderModels>
     testProvider(scope: CodexServerSettingsScope, input: CodexProviderInput): Promise<CodexProviderTestResult>
@@ -548,6 +552,14 @@ export interface AgentsDockAPI {
     reveal(sessionId: string, file: AgentFile): Promise<void>
     beginDrag(sessionId: string, file: AgentFile): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, fileId: string): string
+    previewBytes(sessionId: string, fileId: string): Promise<Uint8Array>
+  }
+  papers?: {
+    root(): Promise<{ root: string }>
+    chooseRoot(): Promise<{ root: string; changed: boolean }>
+    list(): Promise<{ root: string; files: Array<{ path: string; name: string; bytes: number }>; error?: string }>
+    read(path: string): Promise<{ path: string; name: string; data: Uint8Array }>
+    translate(text: string): Promise<string>
   }
   workspace: {
     info(sessionId: string): Promise<WorkspaceInfo>
@@ -559,6 +571,7 @@ export interface AgentsDockAPI {
     overwriteAbsolute(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     previewAvailable(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<boolean>
     mediaURL(profileId: string, profileGeneration: number, sessionId: string, path: string): string
+    previewBytes(sessionId: string, path: string): Promise<Uint8Array>
     download(sessionId: string, path: string): Promise<string | null>
     create(sessionId: string, path: string, kind: 'file' | 'directory'): Promise<WorkspaceCreateResult>
     write(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile>
@@ -634,6 +647,8 @@ export interface AgentsDockAPI {
     readyForNotifications(): Promise<boolean>
     readyForSecurePeerInvite(): Promise<boolean>
     closeWindow(): Promise<void>
+    minimizeWindow(): Promise<void>
+    toggleMaximizeWindow(): Promise<boolean>
     completeCloseFlush(requestId: string, saved?: boolean): Promise<boolean>
     retryStorage(): Promise<void>
   }

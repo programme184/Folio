@@ -916,6 +916,18 @@ describe('SessionDialog runtime selection', () => {
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ backend: 'codex', codex_provider: 'custom', model: 'provider/unlisted', effort: null })))
   })
 
+  it('selects Cursor when that runtime is ready', () => {
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: { create: vi.fn() } } as unknown as AgentsDockAPI })
+    useAppStore.setState({ sessions: [],
+      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor is ready.', action: null, version: 2, permission_modes: ['default', 'full_access', 'plan'] } } },
+      runtimeCatalog: { backends: { ...runtimeCatalog.backends, cursor: { native_credentials_present: true, available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] } } },
+      modals: { settings: false, newChat: true, resume: false, folder: false, digest: false, job: false, search: false, review: false, importChats: false }
+    })
+    render(<SessionDialog mode="newChat" />)
+    expect(screen.getByRole('button', { name: 'Cursor' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Codex' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('hides an unconfigured custom option without creating a normal Codex chat', async () => {
     const create = vi.fn()
     const navigate = vi.spyOn(window, 'dispatchEvent')

@@ -1,12 +1,14 @@
 # Native Codex authentication status
 
 The desktop Codex settings can read the selected server's native Codex account.
-AgentsServer does not change the login shared by ordinary Codex chats and the
-server host's Codex CLI. Both routes require the
+**Paste auth.json** replaces that user's file-backed ChatGPT login and asks
+Codex to load it. Other credential stores stay unchanged. These routes require the
 exact native operator token header and reject browser origin, cookies, fetch
-metadata and preflight requests. Provider helpers and shared-chat guests cannot
-use these controls. The `codex_auth_v1` health capability advertises status
-support with `api_key_login: false`.
+metadata and preflight requests. When the server has no operator token, the
+desktop on the same machine (`127.0.0.1` or `::1`) can read the account and
+paste that file login. Remote clients still cannot. Provider helpers and
+shared-chat guests cannot use these controls. The `codex_auth_v1` health
+capability advertises status support with `api_key_login: false`.
 
 - `GET /api/admin/codex/auth` calls native `account/read` with
   `refreshToken: false` and returns only `available`, `auth_mode`, `email`,

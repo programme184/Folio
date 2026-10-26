@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { CodexAuthStatus, CodexProviderConfiguration, CodexProviderTestResult } from '@shared/types'
+import type { CodexAuthStatus, CodexProviderConfiguration, CodexProviderTestResult, RuntimeCatalog } from '@shared/types'
 import { setLocale } from '@shared/i18n'
 import { CodexAuthSettings } from './CodexAuthSettings'
 import { useAppStore } from '../store/app-store'
@@ -82,6 +82,94 @@ describe('Codex · Native account settings', () => {
     expect(api.write).not.toHaveBeenCalled()
     expect(api.testProvider).not.toHaveBeenCalled()
     expect(api.setProvider).not.toHaveBeenCalled()
+  })
+
+  it('opens an auth file while the account check is still running', async () => {
+    bridge(vi.fn(() => new Promise(() => undefined)))
+    render(<CodexAuthSettings {...props} />)
+    expect(await screen.findByText('Checking Codex account…')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open auth.json' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Paste auth.json' })).toBeEnabled()
+    const secret = '{"auth_mode":"chatgpt","tokens":{"refresh_token":"synthetic-refresh-token-value"}}'
+    fireEvent.change(screen.getByLabelText('Open auth.json'), { target: { files: [new File([secret], 'auth.json', { type: 'application/json' })] } })
+    expect(await screen.findByRole('textbox')).toHaveValue(secret)
+  })
+
+  it('pastes a ChatGPT auth file once, then removes it from the form', async () => {
+    const secret = '{"auth_mode":"chatgpt","tokens":{"refresh_token":"synthetic-refresh-token-value"}}'
+    const importAuth = vi.fn().mockResolvedValue(snapshot('chatgpt'))
+    bridge()
+    window.agentsDock.codex.importAuth = importAuth
+    render(<CodexAuthSettings {...props} />)
+    await screen.findByText('Not signed in')
+    fireEvent.click(screen.getByRole('button', { name: 'Paste auth.json' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: secret } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await screen.findByText('ChatGPT · person@example.com · pro')
+    expect(importAuth).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 }, secret)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('synthetic-refresh-token-value')
+  })
+
+  it('explains a rejected auth file without repeating it', async () => {
+    const secret = 'synthetic-refresh-token-value'
+    const importAuth = vi.fn().mockRejectedValue(new Error(`provider echoed ${secret}`))
+    bridge()
+    window.agentsDock.codex.importAuth = importAuth
+    render(<CodexAuthSettings {...props} />)
+    await screen.findByText('Not signed in')
+    fireEvent.click(screen.getByRole('button', { name: 'Paste auth.json' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: `{"refresh_token":"${secret}"}` } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    await screen.findByText('Could not save the Codex login. Recheck before trying again.')
+    expect(document.body.textContent).not.toContain(secret)
+    expect(screen.getByRole('textbox')).toHaveValue('')
+  })
+
+  it('shows a saved login when Electron wraps the handler error', async () => {
+    const read = vi.fn().mockRejectedValue(new Error("Error invoking remote method 'codex:auth:get': Error: CODEX_AUTH_CONNECTION"))
+    const importAuth = vi.fn().mockRejectedValue(new Error("Error invoking remote method 'codex:auth:import': Error: CODEX_AUTH_SAVED"))
+    bridge(read)
+    window.agentsDock.codex.importAuth = importAuth
+    render(<CodexAuthSettings {...props} />)
+    await screen.findByText('Could not reach the server. Check the connection and recheck the Codex account before trying again.')
+    fireEvent.click(screen.getByRole('button', { name: 'Paste auth.json' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"auth_mode":"chatgpt"}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }))
+    const saved = await screen.findByText('The login was saved. Recheck if the account does not appear yet.')
+    expect(saved).not.toHaveClass('codex-auth-settings-error')
+    expect(screen.queryByText('Could not save the Codex login. Recheck before trying again.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Could not reach the server. Check the connection and recheck the Codex account before trying again.')).not.toBeInTheDocument()
+  })
+
+  it('rereads the account once after the runtime catalog reports a system Codex login', async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce(snapshot('none'))
+      .mockResolvedValueOnce(snapshot('chatgpt'))
+    bridge(read)
+    useAppStore.setState({ runtimeCatalog: null })
+    render(<CodexAuthSettings {...props} />)
+    await screen.findByText('Not signed in')
+    expect(read).toHaveBeenCalledOnce()
+    const catalog: RuntimeCatalog = {
+      backends: {
+        codex: {
+          models: [],
+          efforts: [],
+          diagnostic: {
+            backend: 'codex', status: 'ready', available: true, installed: true, authenticated: true,
+            version: null, message: 'Codex is installed and authenticated.', action: null
+          }
+        }
+      }
+    }
+    act(() => { useAppStore.setState({ runtimeCatalog: catalog }) })
+    await screen.findByText('ChatGPT · person@example.com · pro')
+    expect(read).toHaveBeenCalledTimes(2)
+    act(() => { useAppStore.setState({ runtimeCatalog: catalog }) })
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(2)
+    useAppStore.setState({ runtimeCatalog: null })
   })
 
   it('ignores a stale status response after switching servers', async () => {

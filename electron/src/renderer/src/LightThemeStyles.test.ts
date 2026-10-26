@@ -8,39 +8,39 @@ const properties = Object.fromEntries(
   [...light.matchAll(/(--[\w-]+):\s*([^;]+);/g)].map(([, name, value]) => [name, value.trim()])
 )
 
-describe('cool light backgrounds with original message and action colors', () => {
-  it('uses a white canvas and cool zinc surfaces instead of yellow-gray neutrals', () => {
+describe('Gruvbox Light eye-care backgrounds', () => {
+  it('uses a warm cream canvas and olive ink', () => {
     expect(properties).toMatchObject({
-      '--bg': '#ffffff',
-      '--surface': '#ffffff',
-      '--surface-2': '#f4f4f5',
-      '--surface-3': '#e4e4e7',
-      '--border': '#e4e4e7',
-      '--text': '#1a1a1e'
+      '--bg': '#fbf1c7',
+      '--surface': '#fbf1c7',
+      '--surface-2': '#f2e5bc',
+      '--surface-3': '#ebdbb2',
+      '--border': '#d5c4a1',
+      '--text': '#3c3836'
     })
   })
 
-  it('preserves the original blue accent and semantic status colors', () => {
+  it('uses olive and warm semantic colors', () => {
     expect(properties).toMatchObject({
-      '--accent': '#0878e8',
-      '--accent-hover': '#168bff',
-      '--green': '#18854f',
-      '--danger': '#c73531',
-      '--danger-strong': '#c8413d',
-      '--danger-highlight': '#c93c38',
-      '--danger-text': '#b52d29'
+      '--accent': '#79740e',
+      '--accent-hover': '#98971a',
+      '--green': '#79740e',
+      '--danger': '#9d0006',
+      '--danger-strong': '#9d0006',
+      '--danger-highlight': '#cc241d',
+      '--danger-text': '#9d0006'
     })
-    expect(styles).toContain(':root[data-theme="light"] .composer-editor > textarea::selection { background: #8ab4d866; }')
-    expect(styles).toContain(':root[data-theme="light"] .dialog-form .job-reference-editor > textarea::selection { background: #8ab4d866; }')
+    expect(styles).toContain(':root[data-theme="light"] .composer-editor > textarea::selection { background: #bdae9388; }')
+    expect(styles).toContain(':root[data-theme="light"] .dialog-form .job-reference-editor > textarea::selection { background: #bdae9388; }')
   })
 
   it('keeps sent messages green instead of overriding them with neutral surfaces', () => {
-    expect(properties).toMatchObject({ '--green-surface': '#e8f5ec', '--green-border': '#a6d7b6' })
+    expect(properties).toMatchObject({ '--green-surface': '#ebdbb2', '--green-border': '#bdae93' })
     const bubble = styles.match(/^\.message-row\.user \.message-surface \{([^}]*)\}/m)?.[1] ?? ''
     expect(bubble).toContain('background: var(--green-surface);')
     expect(bubble).toContain('border: 1px solid var(--green-border);')
     expect(styles).not.toMatch(/:root\[data-theme="light"\] \.message-row\.user \.message-surface \{[^}]*background:/)
-    expect(styles).toContain(':root[data-theme="light"] .cross-chat-queued-message.right .cross-chat-queued-bubble { background: #edf6f1; border-color: #bdd4c8; }')
+    expect(styles).toContain(':root[data-theme="light"] .cross-chat-queued-message.right .cross-chat-queued-bubble { background: #e7e0b8; border-color: #c6b88a; }')
     expect(contrast(properties['--text'], properties['--green-surface'])).toBeGreaterThanOrEqual(4.5)
   })
 
@@ -58,9 +58,9 @@ describe('cool light backgrounds with original message and action colors', () =>
   })
 
   it('keeps hover neutral and separate from action and message colors', () => {
-    expect(properties['--interaction-hover']).toBe('rgb(0 0 0 / 6%)')
-    expect(properties['--interaction-pressed']).toBe('rgb(0 0 0 / 12%)')
-    expect(styles).toMatch(/:root\[data-theme="light"\] \.session-row:hover \{ background: #fafafa; \}/)
+    expect(properties['--interaction-hover']).toBe('rgb(60 56 54 / 7%)')
+    expect(properties['--interaction-pressed']).toBe('rgb(60 56 54 / 12%)')
+    expect(styles).toMatch(/:root\[data-theme="light"\] \.session-row:hover \{ background: #f2e5bc; \}/)
     expect(styles).toMatch(/:root\[data-theme="light"\] \.session-row\.selected \{[^}]*background: var\(--surface-3\);/)
   })
 
@@ -69,7 +69,7 @@ describe('cool light backgrounds with original message and action colors', () =>
     const chipHover = ':root[data-theme="light"] :is(.runtime-chip, .backend-chip, .codex-permission-chip):not(:disabled):is(:hover, [data-state="open"]) { color: var(--text); background: var(--interaction-hover); }'
     const folderBase = ':root[data-theme="light"] .working-directory-picker-location > button { color: var(--accent); background: var(--surface-2); }'
     const folderHover = ':root[data-theme="light"] .working-directory-picker-location > button:hover:not(:disabled) { color: var(--accent); background: var(--surface-3); }'
-    const switchBase = ':root[data-theme="light"] .settings-switch { background: #d4d4d8; }'
+    const switchBase = ':root[data-theme="light"] .settings-switch { background: #d5c4a1; }'
     const switchChecked = ':root[data-theme="light"] .settings-switch[data-state="checked"] { background: var(--accent); }'
 
     for (const [base, state] of [[chipBase, chipHover], [folderBase, folderHover], [switchBase, switchChecked]]) {

@@ -1,5 +1,85 @@
 import type { CodexAuthStatus } from './types'
 
+export const CODEX_AUTH_IMPORT_MAX_CHARS = 32 * 1024
+
+export interface CodexChatGPTAuthImport {
+  auth_mode: 'chatgpt'
+  OPENAI_API_KEY: null
+  tokens: {
+    id_token: string
+    access_token: string
+    refresh_token: string
+    account_id: string
+  }
+  last_refresh?: string
+}
+
+const ACCOUNT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const REFRESH_TOKEN = /^[A-Za-z0-9._~-]{20,2048}$/
+const LAST_REFRESH = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|\+00:00)$/
+
+function invalid(): never {
+  throw new Error('CODEX_AUTH_INVALID')
+}
+
+function jwtPayload(token: unknown): Record<string, unknown> {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 8192) invalid()
+  const parts = token.split('.')
+  if (parts.length !== 3 || parts.some(part => !part || !/^[A-Za-z0-9_-]+$/.test(part))) invalid()
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as unknown
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) invalid()
+    return payload as Record<string, unknown>
+  } catch (error) {
+    if (error instanceof Error && error.message === 'CODEX_AUTH_INVALID') throw error
+    invalid()
+  }
+}
+
+function claimedAccount(payload: Record<string, unknown>): string | null {
+  const details = payload['https://api.openai.com/auth']
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null
+  const account = (details as Record<string, unknown>).chatgpt_account_id
+  if (account == null) return null
+  if (typeof account !== 'string' || !ACCOUNT_ID.test(account.toLowerCase())) invalid()
+  return account.toLowerCase()
+}
+
+export function codexAuthImportDocument(value: unknown): CodexChatGPTAuthImport {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text || text.length > CODEX_AUTH_IMPORT_MAX_CHARS) invalid()
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { invalid() }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) invalid()
+  const item = parsed as Record<string, unknown>
+  if (item.auth_mode != null && item.auth_mode !== 'chatgpt') invalid()
+  if ('OPENAI_API_KEY' in item && item.OPENAI_API_KEY != null) invalid()
+  const tokens = item.tokens
+  if (!tokens || typeof tokens !== 'object' || Array.isArray(tokens)) invalid()
+  const tokenRecord = tokens as Record<string, unknown>
+  if (typeof tokenRecord.account_id !== 'string' || !ACCOUNT_ID.test(tokenRecord.account_id.toLowerCase())) invalid()
+  if (typeof tokenRecord.refresh_token !== 'string' || !REFRESH_TOKEN.test(tokenRecord.refresh_token)) invalid()
+  const account = tokenRecord.account_id.toLowerCase()
+  for (const field of ['id_token', 'access_token'] as const) {
+    const claimed = claimedAccount(jwtPayload(tokenRecord[field]))
+    if (claimed && claimed !== account) invalid()
+  }
+  const lastRefresh = typeof item.last_refresh === 'string' && LAST_REFRESH.test(item.last_refresh)
+    ? item.last_refresh.endsWith('+00:00') ? `${item.last_refresh.slice(0, -6)}Z` : item.last_refresh
+    : undefined
+  return {
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      id_token: tokenRecord.id_token as string,
+      access_token: tokenRecord.access_token as string,
+      refresh_token: tokenRecord.refresh_token,
+      account_id: account
+    },
+    ...(lastRefresh ? { last_refresh: lastRefresh } : {})
+  }
+}
+
 export function validateCodexApiKey(value: unknown): string {
   if (typeof value !== 'string') throw new Error('CODEX_AUTH_INVALID_KEY')
   const key = value.trim()

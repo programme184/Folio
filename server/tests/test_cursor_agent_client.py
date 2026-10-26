@@ -487,6 +487,32 @@ class NormalizeCursorStreamEventTests(unittest.TestCase):
                     "session_id": session_id,
                 }))
 
+    def test_tool_call_id_keeps_correlation_when_cli_embeds_a_newline(self) -> None:
+        call_id = "toolu_01\nabc_def"
+        payload = {
+            "type": "tool_call",
+            "subtype": "started",
+            "call_id": call_id,
+            "session_id": SESSION_ID,
+            "tool_call": {
+                "shellToolCall": {"args": {"command": "printf hi", "toolCallId": call_id}},
+                "hookAdditionalContexts": [],
+                "toolCallId": call_id,
+            },
+        }
+        started = normalize_cursor_stream_event(json.dumps(payload))
+        completed = normalize_cursor_stream_event(json.dumps({
+            **payload,
+            "subtype": "completed",
+            "tool_call": {
+                "shellToolCall": {"args": {"command": "printf hi"}, "result": {"success": {"stdout": "hi"}}},
+                "toolCallId": call_id,
+            },
+        }))
+        self.assertEqual(started["call_id"], "toolu_01abc_def")
+        self.assertEqual(completed["call_id"], started["call_id"])
+        self.assertEqual(started["tool"], "shell")
+
     def test_tool_events_require_bounded_nonempty_string_call_id(self) -> None:
         for call_id in (None, "", " leading", "x" * 241, 123):
             payload = {

@@ -1,5 +1,164 @@
 # Public development log
 
+## 2026-10-26 — Name the desktop Folio
+
+- The sidebar and settings call this desktop Folio.
+
+## 2026-10-26 — Translate a paper paragraph without the chat
+
+- Translate on a paper paragraph uses Bing, the free engine used by
+  bilingual reading extensions, and shows the Chinese beside the passage.
+  It does not send the passage to the agent.
+
+## 2026-10-26 — Tint the paper page green
+
+- In the eye-care theme, the PDF page uses a soft green sheet. White
+  paper takes that green, and text darker than the sheet keeps its color.
+
+## 2026-10-26 — Keep a paper hover inside one column
+
+- Pointing at a paragraph in a two-column page highlights that column
+  only. A narrow gutter no longer joins the facing column into the
+  same passage.
+
+## 2026-10-26 — Use a warm eye-care theme
+
+- The light theme is now Gruvbox Light: a cream page, warm brown ink, and
+  olive green accents. Chat, the paper margin, the editor, and the terminal
+  follow the same palette. Dark mode is unchanged.
+
+## 2026-10-26 — Drop the system title bar
+
+- The window no longer shows a separate AgentsDock title bar. The task
+  switcher uses the current chat name, and minimize, maximize, and close
+  sit at the top right.
+
+## 2026-10-26 — Explain a paper paragraph by pointing at it
+
+- Resting the pointer on a paragraph highlights that paragraph and shows
+  Explain, Translate, Copy, and Ask. A drag selection is no longer required.
+
+## 2026-10-26 — Compact the chat header and follow up on an answer
+
+- The chat title sits on one line, and the system menu bar stays hidden
+  until Alt. Answer text uses a looser reading size, with clearer headings
+  and list spacing. Selecting an answer offers Follow up, which quotes at
+  most two lines in the composer.
+
+## 2026-10-26 — Show a paper citation as a two-line block
+
+- A selected passage appears in chat as a short block: a left bar, at most
+  two lines of the selection, and the question under it. The full passage
+  stays with the model. Chat text is two pixels larger.
+
+## 2026-10-26 — Show a paper formula as a citation
+
+- Selecting a formula keeps its superscripts and subscripts on one reading
+  line. Explain shows that line in a citation card, and the answer typesets
+  the formula instead of describing a broken PDF extract.
+
+## 2026-10-26 — Let a local desktop ask a side question without an operator token
+
+- Explain, Translate, and Ask were refused on a server with no operator token,
+  even from the desktop on that machine. Those side-chat requests now pass
+  from this machine. Browser requests, remote clients, and the other
+  administrative controls stay closed.
+- If Codex cannot finish its account check, a saved ChatGPT auth.json still
+  shows as a ChatGPT login. The card does not show the email or plan from
+  that file. The live account check was not able to finish from this machine:
+  `api.openai.com` and `chatgpt.com` did not connect. The saved file was left
+  in place.
+
+## 2026-10-26 — Open a PDF beside the chat
+
+- Opening a workspace PDF keeps the chat on the left and the paper on the
+  right. The file tree and the browser PDF viewer no longer replace that
+  view. Drag the divider to change the ratio. Chat lines stay inside the
+  chat column.
+
+## 2026-10-26 — Read a paper beside the chat
+
+- Opening a local PDF and reading a paper now share one view. The chat stays
+  on the left and the file stays on the right. Drag the divider to change the
+  ratio. The file search sits above the document.
+
+## 2026-10-26 — Let a local desktop paste Codex login without an operator token
+
+- A server with no operator token still accepts the desktop's Codex account
+  read and auth.json paste from the same machine. Browser requests, remote
+  clients, and the other administrative controls stay closed.
+- If the file is saved and the account cannot be reread, the app says the
+  login was saved.
+- Codex can open an auth.json file while the account check is still running.
+  Cursor CLI Login can open or paste its own auth.json.
+- A saved Codex file is reported as saved when the follow-up account read
+  cannot finish. The account card can still be unavailable.
+- The account route was checked locally with an empty document, which was
+  rejected and did not replace the login. A real ChatGPT paste was not run.
+
+## 2026-10-26 — Keep a Cursor tool call when its id contains a newline
+
+- Cursor CLI 2026.10.22 puts a newline inside a tool-call id. AgentsServer
+  drops that control character and keeps the same id for the start and finish
+  events, so the turn no longer stops at the first tool call.
+- Explain and Translate on a Cursor chat send the selected passage into that
+  chat. Codex and Claude still answer in the separate side question.
+- A focused stream parser test passed, including a captured tool-call stream
+  from Cursor CLI 2026.10.22. After restarting the local server and desktop
+  app, Explain on a selected passage in a Cursor chat sent that passage into
+  the chat and the turn finished with an answer.
+
+## 2026-10-26 — Paste a Codex login and default new chats to Cursor
+
+- Settings → My Agents → Codex → CLI Login accepts a pasted ChatGPT `auth.json`.
+  AgentsServer stores that file login for the server user and asks Codex to use
+  it. API keys still belong on Custom endpoint. A new chat uses Cursor when
+  that runtime is ready and no chat default has been saved.
+- Focused account, dialog, and settings tests passed. A live ChatGPT import
+  and a real Cursor chat were not run.
+
+## 2026-10-26 — Use the desktop Cursor login for the CLI
+
+- When the server user has no Cursor CLI `auth.json`, AgentsServer copies that
+  user's desktop Cursor access and refresh tokens into the CLI file. An
+  existing CLI login is left in place. The copy does not refresh tokens or
+  change the desktop database. A saved Cursor API key still overrides that
+  login for its own chats.
+- Focused login, title-profile, and runtime-probe tests passed. The local CLI
+  auth file was created from the desktop login and checked for owner-only
+  permissions and those two fields. `agent status` was not run because the
+  Cursor CLI is not installed for this user.
+
+## 2026-10-26 — Select a passage in a local PDF
+
+- The desktop app can open a local folder of PDFs beside the current chat.
+  Each page keeps its original layout and a selectable text layer. A drag
+  shows Explain, Translate, Copy, and Ask on that passage.
+- Copy uses the normalized passage. Explain and Translate send only that
+  passage, with the neighboring paragraphs, through a separate side question
+  on the current Codex or Claude chat. They do not write into the main
+  timeline. Ask places the passage in the side-chat draft. Without such a
+  chat, Copy still works and the other actions say a chat is required.
+- Column breaks stay apart, a hyphen at a line break is joined, and a page
+  number stays out of the body. Focused passage, shelf, selection, locale,
+  and IPC tests passed, as did the Electron typecheck and production compile.
+  An isolated native Electron window opened a local PDF, dragged a title
+  line, and copied the normalized text. Explain stayed unavailable because
+  that window had no Codex or Claude chat.
+
+## 2026-09-30 — Pick up a system Codex login when the desktop connects
+
+- When a desktop connection finds the Codex account signed out, it asks
+  AgentsServer once for the same login handoff as Recheck CLIs. Codex then
+  reads the server user's file, keyring, or auto login. An existing ChatGPT
+  or API-key session is not restarted, and the desktop does not copy
+  credentials.
+- The account card rereads after that handoff reports a signed-in CLI.
+- Focused desktop connection and account-card tests cover the signed-out
+  handoff, a signed-in connection that does not probe, and one attempt per
+  connection. A live desktop session against a real Codex login was not run
+  in this change.
+
 ## 2026-09-29 — Preserve Claude history activity access
 
 - Keep the activity disclosure when a compact Claude history page uses the

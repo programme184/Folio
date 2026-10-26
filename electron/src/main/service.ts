@@ -448,6 +448,8 @@ export class AppService {
   /** Set when the server instance changed, so the next refresh re-probes the
    * CLIs instead of trusting the server's own cached diagnostics. */
   private runtimeInstanceProbePending = false
+  /** One system-login adoption per connection. A later sign-in still uses Recheck CLIs. */
+  private codexLoginAdoptionGeneration: number | null = null
   private refreshInFlight = new Map<number, Promise<void>>()
   private readStateMutations = new Map<string, Promise<void>>()
   private lastSyncState = ''
@@ -2288,6 +2290,39 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
     const result = await scope.client.codexAuth()
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async importCodexAuth(expected: CodexServerSettingsScope, authFile: unknown): Promise<CodexAuthStatus> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (typeof scope.client.importCodexAuth !== 'function') throw new Error('CODEX_AUTH_UPDATE')
+    await scope.client.importCodexAuth(authFile)
+    this.assertCurrentScope(scope)
+    try { await this.refreshRuntime(true, true, scope, true) } catch { /* The account read below is the card. */ }
+    this.assertCurrentScope(scope)
+    try {
+      const result = await scope.client.codexAuth()
+      this.assertCurrentScope(scope)
+      return result
+    } catch {
+      // The file login is already stored. A failed account reread must not
+      // look like the paste was rejected.
+      this.assertCurrentScope(scope)
+      throw new Error('CODEX_AUTH_SAVED')
+    }
+  }
+
+  async importCursorAuth(expected: CodexServerSettingsScope, authFile: unknown): Promise<{ imported: true }> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (typeof scope.client.importCursorAuth !== 'function') throw new Error('CURSOR_AUTH_UPDATE')
+    const result = await scope.client.importCursorAuth(authFile)
+    this.assertCurrentScope(scope)
+    try { await this.refreshRuntime(true, true, scope, true) } catch { /* The saved login is the result. */ }
     this.assertCurrentScope(scope)
     return result
   }
@@ -4959,6 +4994,33 @@ export class AppService {
     return response
   }
 
+  async workspacePreviewBytes(sessionId: string, path: string): Promise<Uint8Array> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const response = await scope.client.workspacePreviewRequest(sessionId, path)
+    return this.finishPreviewBytes(scope, response)
+  }
+
+  async filePreviewBytes(sessionId: string, fileId: string): Promise<Uint8Array> {
+    requireSessionFile(sessionId, { id: fileId, filename: fileId })
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    const response = await scope.client.fileRequest(sessionId, fileId)
+    return this.finishPreviewBytes(scope, response)
+  }
+
+  private async finishPreviewBytes(scope: ConnectionScope, response: Response): Promise<Uint8Array> {
+    try {
+      this.assertCurrentScope(scope)
+      return await readLimitedPreview(response)
+    } catch (error) {
+      await response.body?.cancel().catch(() => undefined)
+      throw error
+    }
+  }
+
   async notify(payload: ProfileNotificationPayload): Promise<void> {
     const scope = this.captureScope()
     if (payload.profileId !== scope.profileId) return
@@ -5222,6 +5284,7 @@ export class AppService {
           if (subscription.connected) this.emitSync(activeScope, sessionId, 'live')
         }
         void this.refreshRuntime(false, false, activeScope)
+        this.adoptSystemCodexLogin(activeScope)
       } catch (error) {
         if (!this.isCurrentScope(scope)) return
         this.portTunnels.disposeAll()
@@ -5358,6 +5421,38 @@ export class AppService {
       if (announce) throw error
       if (this.isCurrentScope(scope)) appLog('jobs', 'background refresh failed', { profileId: scope.profileId, error: errorText(error) })
     }
+  }
+
+  /**
+   * A signed-out Codex account read is not proof the server user is signed out.
+   * Ask the server once, through the same handoff as Recheck CLIs, to start a
+   * fresh Codex process that reads the file, keyring, or auto login itself.
+   * An existing ChatGPT or API-key session is left in place. Credentials are
+   * not copied into the desktop.
+   */
+  private adoptSystemCodexLogin(scope: ConnectionScope): void {
+    if (this.codexLoginAdoptionGeneration === scope.generation) return
+    if (typeof scope.client.codexAuth !== 'function') return
+    this.codexLoginAdoptionGeneration = scope.generation
+    void Promise.resolve()
+      .then(() => scope.client.codexAuth())
+      .then(async account => {
+        if (!this.isCurrentScope(scope)) return
+        if (account.available !== true || account.auth_mode !== 'none' || account.requires_openai_auth === false) return
+        await this.refreshRuntime(true, true, scope)
+        appLog('runtime', 'requested Codex login handoff for a signed-out desktop connection', {
+          profileId: scope.profileId,
+          generation: scope.generation
+        })
+      })
+      .catch(error => {
+        if (!this.isCurrentScope(scope)) return
+        appLog('runtime', 'system Codex login was not adopted', {
+          profileId: scope.profileId,
+          generation: scope.generation,
+          error: errorText(error)
+        })
+      })
   }
 
   private refreshRuntime(force = false, forceProbe = false, scope = this.captureScope(), announce = false): Promise<void> {
@@ -7669,6 +7764,48 @@ function unsupportedCodexGoalsConfiguration(): CodexGoalsConfiguration {
     configurable: false,
     message: 'Update AgentsServer to manage persistent Codex goals.'
   }
+}
+
+const PREVIEW_BYTE_LIMIT = 40 * 1024 * 1024
+
+async function readLimitedPreview(response: Response, limit = PREVIEW_BYTE_LIMIT): Promise<Uint8Array> {
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error('preview_unavailable')
+  }
+  const declared = Number(response.headers.get('content-length'))
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error('preview_too_large')
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer())
+    if (bytes.byteLength > limit) throw new Error('preview_too_large')
+    return bytes
+  }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > limit) throw new Error('preview_too_large')
+      chunks.push(value)
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined)
+    throw error
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return bytes
 }
 
 function requireSessionFile(sessionId: string, file: AgentFile): void {

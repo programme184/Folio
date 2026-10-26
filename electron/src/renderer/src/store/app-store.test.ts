@@ -980,6 +980,41 @@ describe('instant new chat defaults', () => {
     expect(useAppStore.getState().creatingChat).toBe(false)
   })
 
+  it('starts a Cursor chat when no runtime default is saved and Cursor is ready', async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: 'created', title: 'New chat', folder: 'Research', cwd: '/work/research', backend: 'cursor'
+    })
+    const setScoped = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(null), setScoped },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Codex chat', folder: 'Research', cwd: '/work/research', backend: 'codex' }],
+      selectedSessionId: 'selected', folderOrder: ['Research'], creatingChat: false, modals: closedModals,
+      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor is ready.', action: null, version: 2, permission_modes: ['default', 'full_access', 'plan'] } } },
+      runtimeCatalog: { backends: { cursor: { native_credentials_present: true, available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined)
+    })
+
+    await useAppStore.getState().requestNewChat()
+
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      folder: 'Research', cwd: '/work/research', backend: 'cursor', model: null, effort: null, cursor_permission_mode: 'default'
+    }))
+    expect(setScoped).toHaveBeenCalledWith(
+      expect.objectContaining({ profileId: profile.id, serverIdentity: profile.serverIdentity }),
+      'newChatDefaults:v1',
+      expect.objectContaining({ backend: 'cursor', model: null, effort: null })
+    )
+  })
+
   it('creates once from the last-opened chat location and saved runtime defaults', async () => {
     const stored = { version: 1, folder: 'Saved', cwd: '/work/saved', backend: 'claude', model: 'claude-sonnet', effort: 'high' }
     const created = deferred<Session>()

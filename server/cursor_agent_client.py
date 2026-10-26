@@ -90,20 +90,23 @@ def canonical_cursor_session_id(value: Any) -> str | None:
 
 
 def canonical_cursor_call_id(value: Any) -> str:
-    """Validate the opaque correlation key used by Cursor tool events."""
+    """Validate the opaque correlation key used by Cursor tool events.
+
+    Cursor CLI 2026.10.22 puts a newline inside ``callId``. Drop ASCII
+    controls so the started and completed events still share one key.
+    """
 
     if not isinstance(value, str):
         raise CursorEventParseError("tool_call call_id must be a string")
-    if (
-        not value
-        or value != value.strip()
-        or len(value) > CURSOR_CALL_ID_MAX_CHARS
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
+    clean = "".join(
+        character for character in value
+        if ord(character) >= 32 and ord(character) != 127
+    )
+    if not clean or clean != clean.strip() or len(clean) > CURSOR_CALL_ID_MAX_CHARS:
         raise CursorEventParseError(
             "tool_call call_id must be a bounded nonempty identifier"
         )
-    return value
+    return clean
 
 
 def _cursor_tool_call_id(

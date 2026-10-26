@@ -24,6 +24,7 @@ import { ChatInboxGroup } from './ChatInboxGroup'
 import { CrossChatPeerLink } from './CrossChatPeerLink'
 import { chatMailboxAvailable } from '@shared/chat-inbox'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
+import { paperCitation, paperQuotePreview } from '@shared/paper-passages'
 
 export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean }) {
   useLocale()
@@ -64,6 +65,7 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
   const collaborator = role === 'user' && isSharedChatCollaborator(primary)
     && events.every(part => isSharedChatCollaborator(part) && part.shared_chat_id === primary.shared_chat_id)
   const text = messageItemText(item)
+  const citation = role === 'user' ? paperCitation(text) : null
   const pendingBusy = item.pending && item.pendingPhase !== 'submitted'
   const [copied, setCopied] = useState(false)
   const pinId = `message:${primary.id}`
@@ -83,7 +85,7 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
   const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
   return (
     <div
-      className={`message-row ${role}${item.pending ? ' pending' : ''}`}
+      className={`message-row ${role}${item.pending ? ' pending' : ''}${citation ? ' paper-cite-row' : ''}`}
       data-event-id={primary.id}
       data-event-count={item.events.length}
       aria-busy={pendingBusy || undefined}
@@ -97,7 +99,12 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
           {!item.pending && <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinMessage') : t('timeline.ui.pinMessage')} onClick={() => runTimelineAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>}
           <button type="button" title={t('timeline.ui.copyFullMessage')} onClick={() => runTimelineAction(copy())}>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
         </header>
-        <div className="message-parts">
+        {citation
+          ? <div className="paper-cite">
+            <p className="paper-cite-quote">{paperQuotePreview(citation.quote)}</p>
+            <p className="paper-cite-action">{t(citation.action === 'translate' ? 'papers.translateBriefly' : 'papers.explainBriefly')}</p>
+          </div>
+          : <div className="message-parts">
           {events.map(part => <MarkdownContent
             key={part.id}
             text={messageText(part)}
@@ -107,7 +114,7 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
             inlineTeamReferences={role === 'user' ? part.team_references ?? [] : []}
             onChatReferenceClick={selectTimelineChatReference}
           />)}
-        </div>
+        </div>}
         {chatReferences.length > 0 && <div className="sent-chat-references" aria-label={t('timeline.ui.referencedChats')}>
           {chatReferences.map(reference => {
             const remote = reference.target_kind === 'secure_peer'

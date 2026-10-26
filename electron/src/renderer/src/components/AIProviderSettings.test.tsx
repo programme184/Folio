@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { setLocale } from '@shared/i18n'
@@ -48,13 +48,14 @@ it('opens existing provider controls on their own page without probing or changi
   expect(screen.getByText('Current server: Studio server')).toBeVisible()
   expect(document.querySelectorAll('.provider-group')).toHaveLength(4)
   expect(document.querySelectorAll('.provider-group[open]')).toHaveLength(0)
-  fireEvent.click(screen.getByText('Codex', { selector: 'summary strong' }))
+  const codex = screen.getByText('Codex', { selector: 'summary strong' }).closest('details')!
+  fireEvent.click(codex.querySelector('summary')!)
   await screen.findByText('ChatGPT · fixture@example.test · pro')
   expect(api.codex.auth).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 })
   expect(api.runtime.catalog).not.toHaveBeenCalled()
   expect(api.codex.provider).toHaveBeenCalledOnce()
 
-  fireEvent.click(screen.getAllByRole('button', { name: 'Configure API' })[0])
+  fireEvent.click(within(codex).getByRole('button', { name: 'Configure API' }))
   const input = await screen.findByLabelText('API key for this endpoint')
   await waitFor(() => expect(input).toBeEnabled())
   fireEvent.change(input, { target: { value: 'synthetic-unsaved-key' } })
@@ -68,6 +69,21 @@ it('opens existing provider controls on their own page without probing or changi
   expect(api.codex.testProvider).not.toHaveBeenCalled()
   expect(api.codex.resetProvider).not.toHaveBeenCalled()
   expect(api.runtime.catalog).not.toHaveBeenCalled()
+})
+
+it('edits the Cursor CLI login from an opened auth file', async () => {
+  bridge()
+  const importAuth = vi.fn().mockResolvedValue({ imported: true })
+  window.agentsDock.cursor = { importAuth }
+  render(<AppSettingsDialog />)
+  fireEvent.click(screen.getByRole('button', { name: 'My Agents' }))
+  const cursor = screen.getByText('Cursor', { selector: 'summary strong' }).closest('details')!
+  fireEvent.click(cursor.querySelector('summary')!)
+  const secret = '{"accessToken":"synthetic-cursor-token","refreshToken":"synthetic-cursor-refresh"}'
+  fireEvent.change(within(cursor).getByLabelText('Open auth.json'), { target: { files: [new File([secret], 'auth.json', { type: 'application/json' })] } })
+  fireEvent.click(await within(cursor).findByRole('button', { name: 'Save CLI login' }))
+  await waitFor(() => expect(importAuth).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 }, secret))
+  expect(cursor.textContent).not.toContain('synthetic-cursor-token')
 })
 
 it('keeps legacy Server navigation and moves account/runtime controls only', async () => {
@@ -104,8 +120,9 @@ it('supports the provider deep link and keeps disconnected controls read-only', 
   render(<AppSettingsDialog />)
   act(() => window.dispatchEvent(new CustomEvent('agentsdock:app-settings-section', { detail: 'providers' })))
   expect(screen.getByRole('button', { name: 'My Agents' })).toHaveAttribute('aria-current', 'page')
-  fireEvent.click(screen.getByText('Codex', { selector: 'summary strong' }))
-  expect(screen.getAllByRole('button', { name: 'Configure API' })[0]).toBeDisabled()
+  const codex = screen.getByText('Codex', { selector: 'summary strong' }).closest('details')!
+  fireEvent.click(codex.querySelector('summary')!)
+  expect(within(codex).getByRole('button', { name: 'Configure API' })).toBeDisabled()
   expect(api.codex.auth).not.toHaveBeenCalled()
   expect(api.runtime.catalog).not.toHaveBeenCalled()
 })

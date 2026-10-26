@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Copy, Folder, GitFork, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, SquareTerminal, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, BookOpen, Check, ChevronRight, Columns2, Copy, Folder, GitFork, LoaderCircle, Minus, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pin, RefreshCw, Square, SquareTerminal, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { backendLabel, shortId } from '../lib/format'
@@ -25,7 +25,9 @@ export function ChatHeader({
   onTerminalToggle,
   onOpenSplit,
   onSwapPanes,
-  onClosePane
+  onClosePane,
+  papersOpen = false,
+  onPapersToggle
 }: {
   session?: Session | null
   focused?: boolean
@@ -36,6 +38,8 @@ export function ChatHeader({
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
   onClosePane?: () => void
+  papersOpen?: boolean
+  onPapersToggle?: () => void
 }) {
   useLocale()
   const selectedSession = useAppStore(state => state.sessions.find(candidate => candidate.id === state.selectedSessionId) ?? null)
@@ -97,7 +101,10 @@ export function ChatHeader({
   const sidebarButton = !sidebarVisible && onSidebarToggle
     ? <ShortcutTooltip shortcut="toggleSidebar" label={t('ui.sidebar.showChatList')}><button className="icon-button" aria-label={t('ui.sidebar.showChatList')} onClick={onSidebarToggle}><PanelLeft size={16} /></button></ShortcutTooltip>
     : null
-  if (!session) return <header className="chat-header empty"><strong>AgentsDock</strong><div className="header-actions">{sidebarButton}</div></header>
+  const papersButton = onPapersToggle
+    ? <button type="button" className={`icon-button papers-toggle${papersOpen ? ' active' : ''}`} aria-pressed={papersOpen} aria-label={papersOpen ? t('papers.close') : t('papers.open')} title={papersOpen ? t('papers.close') : t('papers.open')} onClick={onPapersToggle}><BookOpen size={16} /></button>
+    : null
+  if (!session) return <header className="chat-header empty"><div className="header-actions">{papersButton}{sidebarButton}</div></header>
   const save = () => { const clean = title.trim(); if (clean && clean !== session.title) void useAppStore.getState().updateSession(session.id, { title: clean }) }
   const sessionIdValue = session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id || session.opencode_session_id
   const copySessionId = () => {
@@ -171,6 +178,7 @@ export function ChatHeader({
         {sidebarButton}
         <ScheduledJobsPopover session={session} />
         {onSwapPanes && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} aria-label={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} onClick={onSwapPanes}><ArrowLeftRight size={15} /></button>}
+        {papersButton}
         {focused && onTerminalToggle && <ShortcutTooltip shortcut="toggleTerminal" label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}><button
           className={`icon-button terminal-toggle${terminalOpen ? ' active' : ''}`}
           aria-label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}
@@ -214,4 +222,16 @@ function ChatSyncStatus({ sessionId }: { sessionId: string }) {
     <LoaderCircle className="spin" size={11} aria-hidden="true" />
     <b>{label}</b>
   </span>
+}
+
+export function WindowFrameControls() {
+  useLocale()
+  const [maximized, setMaximized] = useState(false)
+  if (document.documentElement.dataset.platform === 'darwin') return null
+  const run = (action: () => Promise<unknown>) => { void action().catch(() => undefined) }
+  return <div className="window-frame-controls">
+    <button type="button" aria-label={t('window.minimize')} onClick={() => run(() => window.agentsDock.native.minimizeWindow())}><Minus size={14} /></button>
+    <button type="button" aria-label={t(maximized ? 'window.restore' : 'window.maximize')} onClick={() => run(async () => setMaximized(await window.agentsDock.native.toggleMaximizeWindow()))}><Square size={12} /></button>
+    <button type="button" className="window-frame-close" aria-label={t('native.close')} onClick={() => run(() => window.agentsDock.native.closeWindow())}><X size={15} /></button>
+  </div>
 }

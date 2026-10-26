@@ -235,6 +235,9 @@ const api: AgentsDockAPI = {
   providerAccounts: {
     read: (scope, backend) => ipcRenderer.invoke('provider-accounts:read', scope, backend)
   },
+  cursor: {
+    importAuth: (scope, authFile) => ipcRenderer.invoke('cursor:auth:import', scope, authFile)
+  },
   customModels: {
     read: (scope, backend, sessionId) => ipcRenderer.invoke('custom-models:read', scope, backend, sessionId),
     save: (scope, backend, input) => ipcRenderer.invoke('custom-models:save', scope, backend, input)
@@ -242,6 +245,7 @@ const api: AgentsDockAPI = {
   codex: {
     serverGoals: () => ipcRenderer.invoke('codex:server-goals:get'),
     auth: scope => ipcRenderer.invoke('codex:auth:get', scope),
+    importAuth: (scope, authFile) => ipcRenderer.invoke('codex:auth:import', scope, authFile),
     provider: scope => ipcRenderer.invoke('codex:provider:get', scope),
     providerModels: (scope, sessionId) => ipcRenderer.invoke('codex:provider:models', scope, sessionId),
     testProvider: (scope, input) => ipcRenderer.invoke('codex:provider:test', scope, input),
@@ -350,7 +354,15 @@ const api: AgentsDockAPI = {
     openLinked: (sessionId, target) => ipcRenderer.invoke('files:open-linked', sessionId, target),
     reveal: (sessionId, file) => ipcRenderer.invoke('files:reveal', sessionId, file),
     beginDrag: (sessionId, file) => ipcRenderer.invoke('files:begin-drag', sessionId, file),
-    mediaURL: (profileId, profileGeneration, sessionId, fileId) => buildMediaURL(profileId, profileGeneration, sessionId, fileId)
+    mediaURL: (profileId, profileGeneration, sessionId, fileId) => buildMediaURL(profileId, profileGeneration, sessionId, fileId),
+    previewBytes: (sessionId, fileId) => ipcRenderer.invoke('files:preview-bytes', sessionId, fileId)
+  },
+  papers: {
+    root: () => ipcRenderer.invoke('papers:root'),
+    chooseRoot: () => ipcRenderer.invoke('papers:choose-root'),
+    list: () => ipcRenderer.invoke('papers:list'),
+    read: path => ipcRenderer.invoke('papers:read', path),
+    translate: text => ipcRenderer.invoke('papers:translate', text)
   },
   workspace: {
     info: sessionId => ipcRenderer.invoke('workspace:info', sessionId),
@@ -362,6 +374,7 @@ const api: AgentsDockAPI = {
     overwriteAbsolute: (sessionId, path, content) => ipcRenderer.invoke('workspace:overwrite-absolute', sessionId, path, content),
     previewAvailable: (scope, sessionId, path) => ipcRenderer.invoke('workspace:preview-available', scope, sessionId, path),
     mediaURL: (profileId, profileGeneration, sessionId, path) => buildWorkspaceMediaURL(profileId, profileGeneration, sessionId, path),
+    previewBytes: (sessionId, path) => ipcRenderer.invoke('workspace:preview-bytes', sessionId, path),
     download: (sessionId, path) => ipcRenderer.invoke('workspace:download', sessionId, path),
     create: (sessionId, path, kind) => ipcRenderer.invoke('workspace:create', sessionId, path, kind),
     write: (sessionId, path, content, expectedRevision) => ipcRenderer.invoke('workspace:write', sessionId, path, content, expectedRevision),
@@ -433,6 +446,8 @@ const api: AgentsDockAPI = {
     readyForNotifications: () => ipcRenderer.invoke('native:notification:ready'),
     readyForSecurePeerInvite: () => ipcRenderer.invoke('native:secure-peer-invite:ready'),
     closeWindow: () => ipcRenderer.invoke('native:close-window'),
+    minimizeWindow: () => ipcRenderer.invoke('native:minimize-window'),
+    toggleMaximizeWindow: () => ipcRenderer.invoke('native:toggle-maximize-window'),
     completeCloseFlush: (requestId, saved) => ipcRenderer.invoke('native:close-flush-complete', requestId, saved),
     retryStorage: () => ipcRenderer.invoke('native:retry-storage')
   },

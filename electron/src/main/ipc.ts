@@ -8,11 +8,15 @@ import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
 import type { LanguageSettings } from './language'
 import { reportStorageError } from './storage-health'
+import { createDesktopPaperShelf } from './paper-shelf-desktop'
+import type { PaperShelf } from './paper-shelf'
+import { translateToChinese } from './paper-translate'
 
 export interface RegisterIpcOptions {
   language?: Pick<LanguageSettings, 'get' | 'set'>
   securePeerInviteReady?: () => boolean
   notificationReady?: () => boolean
+  papers?: PaperShelf
 }
 
 export function registerIpc(
@@ -288,6 +292,8 @@ export function registerIpc(
   handle('custom-models:read', (scope, backend, sessionId) => service.customModels(scope, backend, undefined, sessionId))
   handle('custom-models:save', (scope, backend, input) => service.customModels(scope, backend, input))
   handle('codex:auth:get', scope => service.codexAuth(scope))
+  handle('codex:auth:import', (scope, authFile) => service.importCodexAuth(scope, authFile))
+  handle('cursor:auth:import', (scope, authFile) => service.importCursorAuth(scope, authFile))
   handle('codex:provider:get', scope => service.codexProvider(scope))
   handle('codex:provider:models', (scope, sessionId) => service.codexProviderModels(scope, sessionId))
   handle('codex:provider:test', (scope, input) => service.testCodexProvider(scope, input))
@@ -370,6 +376,7 @@ export function registerIpc(
   handleWithEvent('files:upload', (event, sessionId, paths) => service.uploadFiles(event.sender.id, sessionId, paths))
   handle('files:list', (sessionId, offset, limit, contentPrefix) => service.listFiles(sessionId, offset, limit, contentPrefix))
   handle('files:event', (sessionId, fileId) => service.fileEvent(sessionId, fileId))
+  handle('files:preview-bytes', (sessionId, fileId) => service.filePreviewBytes(sessionId, fileId))
   ipcMain.removeHandler('files:read-text')
   ipcMain.handle('files:read-text', async (event, sessionId, file, requestId) => {
     requireTrustedSender(event, 'files:read-text')
@@ -412,6 +419,7 @@ export function registerIpc(
   handle('workspace:write-absolute', (sessionId, path, content, expectedRevision) => service.writeAbsoluteFile(sessionId, path, content, expectedRevision))
   handle('workspace:overwrite-absolute', (sessionId, path, content) => service.overwriteAbsoluteFile(sessionId, path, content))
   handle('workspace:preview-available', (scope, sessionId, path) => service.workspacePreviewAvailable(scope, sessionId, path))
+  handle('workspace:preview-bytes', (sessionId, path) => service.workspacePreviewBytes(sessionId, path))
   handle('workspace:download', (sessionId, path) => service.downloadWorkspaceFile(sessionId, path))
   handle('workspace:create', (sessionId, path, kind) => service.createWorkspaceEntry(sessionId, path, kind))
   handle('workspace:write', (sessionId, path, content, expectedRevision) => service.writeWorkspaceFile(sessionId, path, content, expectedRevision))
@@ -458,6 +466,12 @@ export function registerIpc(
   handle('pins:list', (scope, sessionId) => service.pins(scope, sessionId))
   handle('pins:put', (scope, item) => service.putPin(scope, item))
   handle('pins:remove', (scope, sessionId, itemId) => service.removePin(scope, sessionId, itemId))
+  let desktopPapers: PaperShelf | null = null
+  const papers = () => options.papers ?? (desktopPapers ??= createDesktopPaperShelf())
+  handle('papers:root', async () => ({ root: await papers().root() }))
+  handle('papers:choose-root', () => papers().chooseRoot())
+  handle('papers:list', () => papers().list())
+  handle('papers:read', (relativePath: string) => papers().read(relativePath))
   handle('preferences:get', (key, fallback) => service.preference(key, fallback))
   handle('preferences:set', (key, value) => service.putPreference(key, value))
   handle('preferences:get-scoped', (scope, key, fallback) => service.scopedPreference(scope, key, fallback))
@@ -476,6 +490,24 @@ export function registerIpc(
   handle('native:clipboard:write', text => clipboard.writeText(String(text ?? '')))
   handle('native:notification:ready', () => options.notificationReady?.() ?? false)
   handle('native:secure-peer-invite:ready', () => options.securePeerInviteReady?.() ?? false)
+  handleWithEvent('papers:translate', (_event, text) => {
+    if (typeof text !== 'string' || text.trim().length === 0) throw new Error('translate_failed')
+    return translateToChinese(text)
+  })
+  ipcMain.removeHandler('native:minimize-window')
+  ipcMain.handle('native:minimize-window', event => {
+    requireTrustedSender(event, 'native:minimize-window')
+    BrowserWindow.fromWebContents(event.sender)?.minimize()
+  })
+  ipcMain.removeHandler('native:toggle-maximize-window')
+  ipcMain.handle('native:toggle-maximize-window', event => {
+    requireTrustedSender(event, 'native:toggle-maximize-window')
+    const window = BrowserWindow.fromWebContents(event.sender)
+    if (!window) return false
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+    return window.isMaximized()
+  })
   ipcMain.removeHandler('native:close-window')
   ipcMain.handle('native:close-window', event => {
     requireTrustedSender(event, 'native:close-window')

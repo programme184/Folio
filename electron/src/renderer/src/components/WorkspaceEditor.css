@@ -806,14 +806,42 @@
 
 .workspace-editor-pdf-viewer {
   display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
   background: #252525;
 }
 
-.workspace-editor-pdf-viewer iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: white;
+.workspace-editor-pdf-viewer .paper-document {
+  flex: 1;
+  min-height: 0;
+}
+
+.workspace-editor-pdf-focus {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.workspace-editor-pdf-focus > .workspace-editor-explorer,
+.workspace-editor-pdf-focus > .workspace-editor-explorer-resize-handle {
+  display: none;
+}
+
+.workspace-editor-content-split .workspace-editor-chat-panel .virtual-row {
+  min-width: 0;
+  box-sizing: border-box;
+  padding-left: 16px;
+  padding-right: 12px;
+}
+
+.workspace-editor-content-split .workspace-editor-chat-panel .message-row,
+.workspace-editor-content-split .workspace-editor-chat-panel .message-surface,
+.workspace-editor-content-split .workspace-editor-chat-panel .message-parts {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.workspace-editor-content-split .workspace-editor-chat-panel .message-row.user .message-surface {
+  max-width: min(760px, 100%);
 }
 
 .workspace-editor-markdown {

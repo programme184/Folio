@@ -311,7 +311,7 @@ const COMPOSER_COMMANDS: readonly ComposerCommand[] = [
 
 /** Display order + heading for each command category, top to bottom in the palette. */
 const COMPOSER_COMMAND_CATEGORIES: readonly ComposerCommandCategory[] = [
-  { id: 'agentsdock', heading: 'AgentsDock' },
+  { id: 'agentsdock', heading: 'Folio' },
   { id: 'skills', get heading() { return t('composer.providerCommands.skillsHeading') } },
   { id: 'claude-commands', get heading() { return t('composer.providerCommands.claudeHeading') } }
 ]
@@ -887,6 +887,21 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }, [])
 
   useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => {
+    const focus = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
+      if (sessionId && sessionId !== selectedId) return
+      window.requestAnimationFrame(() => {
+        const field = textareaRef.current
+        if (!field) return
+        field.focus()
+        const end = field.value.length
+        field.setSelectionRange(end, end)
+      })
+    }
+    window.addEventListener('agentsdock:focus-composer', focus)
+    return () => window.removeEventListener('agentsdock:focus-composer', focus)
+  }, [selectedId])
   useEffect(() => { referencesRef.current = references }, [references])
   useEffect(() => { teamReferencesRef.current = teamReferences }, [teamReferences])
   useEffect(() => {

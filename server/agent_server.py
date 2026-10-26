@@ -58467,6 +58467,12 @@ def cursor_auth_probe_state(
     """
 
     api_key_configured = cursor_api_key_configured()
+    if not api_key_configured:
+        # The CLI reads auth.json, not the IDE database. Fill a missing CLI
+        # file from the desktop login before asking `status`. A saved API key
+        # must not inherit or replace that native file.
+        from cursor_desktop_login import share_desktop_login
+        share_desktop_login(runner_env())
     command = (
         [executable, "--list-models"]
         if api_key_configured
@@ -67064,6 +67070,9 @@ async def run_cursor_process(
     await append_event(session_id, "process_started", {"run_id": run_id, "backend": BACKEND_CURSOR, "argv": public_cmd, "cwd": cwd})
     env = agent_runner_env(session_id)
     env.update(sess.get("_cursor_tool_env") or {})
+    if sess.get("provider_connection") != "custom":
+        from cursor_desktop_login import share_desktop_login
+        share_desktop_login(env)
     # Last overlay: a saved key cannot inherit an auth-token override, write
     # the shared CLI credential store, or be redirected by project direnv.
     env.update(PROVIDER_CONNECTION_STORE.cursor_overrides(sess))
@@ -79237,6 +79246,7 @@ async def require_agent_token(request: Request, call_next):
     codex_goals_admin_route = request.url.path in {
         "/api/admin/codex/goals", "/api/admin/codex/subagents",
         "/api/admin/codex/auth", "/api/admin/codex/auth/api-key",
+        "/api/admin/codex/auth/import", "/api/admin/cursor/auth/import",
         "/api/admin/codex/provider", "/api/admin/codex/provider/test",
         "/api/admin/codex/provider/models",
         "/api/admin/provider-connections/claude", "/api/admin/provider-connections/claude/check",
@@ -79373,7 +79383,25 @@ async def require_agent_token(request: Request, call_next):
     ):
         if privileged_native_browser_request_forbidden(request):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
-        if not AGENT_TOKEN:
+        # Chat is already open when this server has no operator token. The
+        # desktop on this machine may still read and replace the Codex file
+        # login. Browser framing was rejected above. Remote clients and every
+        # other administrative route stay closed. The endpoint repeats this
+        # check.
+        client = request.client
+        host = client.host if client is not None else ""
+        loopback_file_login = False
+        if not AGENT_TOKEN and host in {"127.0.0.1", "::1"}:
+            path = request.url.path.rstrip("/")
+            method = request.method.upper()
+            loopback_file_login = (
+                method == "GET" and path == "/api/admin/codex/auth"
+                or method == "POST" and path in {
+                    "/api/admin/codex/auth/import",
+                    "/api/admin/cursor/auth/import",
+                }
+            )
+        if not AGENT_TOKEN and not loopback_file_login:
             return JSONResponse(
                 {
                     "detail": (
@@ -79383,7 +79411,7 @@ async def require_agent_token(request: Request, call_next):
                 },
                 status_code=503,
             )
-        if not request_exact_native_token_header_authorized(request):
+        if not loopback_file_login and not request_exact_native_token_header_authorized(request):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
         if team_hub_host_admin_route and request.method.upper() == "POST":
             declared_size, transport_error = privileged_native_json_transport(
@@ -79420,6 +79448,37 @@ async def require_agent_token(request: Request, call_next):
             body_error = await prebuffer_bounded_request_body(
                 request,
                 max_body_bytes=update_body_limit,
+                declared_size=declared_size,
+            )
+            if body_error is not None:
+                status_code, detail = body_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+        elif request.url.path == "/api/admin/cursor/auth/import" and request.method.upper() == "POST":
+            from cursor_desktop_login import IMPORT_MAX_BODY_BYTES as cursor_auth_import_limit
+            declared_size, transport_error = privileged_native_json_transport(
+                request, max_body_bytes=cursor_auth_import_limit,
+                label="Cursor CLI authentication", require_content_length=True,
+            )
+            if transport_error is not None:
+                status_code, detail = transport_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+            body_error = await prebuffer_bounded_request_body(
+                request, max_body_bytes=cursor_auth_import_limit,
+                declared_size=declared_size,
+            )
+            if body_error is not None:
+                status_code, detail = body_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+        elif request.url.path == "/api/admin/codex/auth/import" and request.method.upper() == "POST":
+            declared_size, transport_error = privileged_native_json_transport(
+                request, max_body_bytes=codex_auth.IMPORT_MAX_BODY_BYTES,
+                label="Codex authentication", require_content_length=True,
+            )
+            if transport_error is not None:
+                status_code, detail = transport_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+            body_error = await prebuffer_bounded_request_body(
+                request, max_body_bytes=codex_auth.IMPORT_MAX_BODY_BYTES,
                 declared_size=declared_size,
             )
             if body_error is not None:
@@ -83092,7 +83151,41 @@ def require_native_admin_control(request: Request) -> None:
 
     if privileged_native_browser_request_forbidden(request):
         raise HTTPException(status_code=403, detail="forbidden")
-    if not AGENT_TOKEN:
+    # Same loopback file-login exception as require_agent_token. A request
+    # that skipped the middleware still cannot change any other control.
+    client = request.client
+    host = client.host if client is not None else ""
+    loopback_file_login = False
+    # Side chat is a session action, not a credential control. On a server
+    # with no operator token the desktop on this machine may use it. Browsers
+    # were rejected above. Remote clients and every other control stay closed.
+    loopback_side_chat = False
+    if not AGENT_TOKEN and host in {"127.0.0.1", "::1"}:
+        path = request.url.path.rstrip("/")
+        method = request.method.upper()
+        loopback_file_login = (
+            method == "GET" and path == "/api/admin/codex/auth"
+            or method == "POST" and path in {
+                "/api/admin/codex/auth/import",
+                "/api/admin/cursor/auth/import",
+            }
+        )
+        parts = path.split("/")
+        session_id = parts[3] if len(parts) > 3 else ""
+        tail = parts[4:]
+
+        def side_id(value: str) -> bool:
+            return 1 <= len(value) <= 128 and all(char.isalnum() or char in "-_" for char in value)
+
+        loopback_side_chat = parts[1:3] == ["api", "sessions"] and side_id(session_id) and (
+            method == "POST" and tail == ["side-questions"]
+            or method == "DELETE" and len(tail) == 2 and tail[0] == "side-questions" and side_id(tail[1])
+            or method in {"GET", "POST"} and tail == ["side-chat"]
+            or method == "DELETE" and len(tail) == 3 and tail[:2] == ["side-chat", "requests"] and side_id(tail[2])
+            or method == "DELETE" and len(tail) == 2 and tail[0] == "side-chat" and side_id(tail[1])
+            or method == "DELETE" and len(tail) == 2 and tail[0] == "side-chats" and side_id(tail[1])
+        )
+    if not AGENT_TOKEN and not loopback_file_login and not loopback_side_chat:
         raise HTTPException(
             status_code=503,
             detail=(
@@ -83100,12 +83193,12 @@ def require_native_admin_control(request: Request) -> None:
                 "AgentsServer mode"
             ),
         )
-    if not request_exact_native_token_header_authorized(request):
+    if not loopback_file_login and not loopback_side_chat and not request_exact_native_token_header_authorized(request):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
 @asynccontextmanager
-async def codex_auth_operation(*, mutate: bool, existing_only: bool = False):
+async def codex_auth_operation(*, mutate: bool, existing_only: bool = False, start_manager: bool = True):
     """Fence native authentication changes with the existing Codex admission barrier."""
     if not mutate:
         await refresh_codex_app_server_login()
@@ -83132,7 +83225,10 @@ async def codex_auth_operation(*, mutate: bool, existing_only: bool = False):
                     for session_id in SIDE_QUESTIONS.active_session_ids()
                 ):
                     raise HTTPException(409, codex_auth.BUSY_MESSAGE)
-            manager = CODEX_APP_SERVER_MANAGER if existing_only else await codex_app_server_manager()
+            if start_manager:
+                manager = CODEX_APP_SERVER_MANAGER if existing_only else await codex_app_server_manager()
+            else:
+                manager = None
             if mutate and any(
                 not turn._completed
                 for active_manager in codex_app_server_managers()
@@ -83149,7 +83245,12 @@ app.include_router(codex_auth.create_router(
     authorize=require_native_admin_control,
     operation=codex_auth_operation,
     available=lambda: CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC,
+    import_auth=lambda document: codex_auth.install_chatgpt_auth(
+        codex_app_server_env(), existing_cwd(DEFAULT_CWD), document),
+    refresh_login=lambda: refresh_codex_app_server_login(request_handoff=True),
 ))
+import cursor_desktop_login as cursor_cli_login
+app.include_router(cursor_cli_login.create_import_router(authorize=require_native_admin_control))
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()

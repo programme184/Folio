@@ -338,6 +338,10 @@ def native_credentials_present(backend: str, diagnostic: dict) -> bool:
             if sys.platform == "darwin":
                 # Omit -w/-g: test existence without extracting a Keychain secret.
                 return subprocess.run(["/usr/bin/security", "find-generic-password", "-s", "Claude Code-credentials"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2).returncode == 0
+        if backend == "cursor" and diagnostic.get("authenticated") is not False:
+            from cursor_desktop_login import cli_credentials_present
+            if cli_credentials_present(os.environ):
+                return True
         if backend == "opencode":
             if any(os.environ.get(key) for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENCODE_API_KEY")):
                 return True

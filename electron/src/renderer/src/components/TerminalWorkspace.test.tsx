@@ -151,17 +151,17 @@ describe('TerminalWorkspace ports surface', () => {
     else document.documentElement.dataset.theme = previousTheme
   })
 
-  it('uses a white light-theme terminal with original blue selection and unchanged ANSI colors', async () => {
+  it('uses a Gruvbox Light terminal', async () => {
     document.documentElement.dataset.theme = 'light'
     render(<TerminalWorkspace session={session} layoutHeight={360} />)
     await waitFor(() => expect(xtermHarness.instances).toHaveLength(1))
 
     expect(xtermHarness.instances[0].options).toMatchObject({ theme: {
-      background: '#ffffff', foreground: '#1a1a1e', cursor: '#1675d1', cursorAccent: '#ffffff',
-      selectionBackground: '#a9d2f4aa', black: '#252523', red: '#c43732', green: '#287f42', yellow: '#9a6b0b',
-      blue: '#1769aa', magenta: '#8755a8', cyan: '#167a83', white: '#e9e9e6', brightBlack: '#74746f',
-      brightRed: '#e0443e', brightGreen: '#369b54', brightYellow: '#b98210', brightBlue: '#2184d7',
-      brightMagenta: '#a268c4', brightCyan: '#2098a2', brightWhite: '#ffffff'
+      background: '#fbf1c7', foreground: '#3c3836', cursor: '#79740e', cursorAccent: '#fbf1c7',
+      selectionBackground: '#d5c4a1aa', black: '#3c3836', red: '#9d0006', green: '#79740e', yellow: '#b57614',
+      blue: '#076678', magenta: '#8f3f71', cyan: '#427b58', white: '#ebdbb2', brightBlack: '#7c6f64',
+      brightRed: '#cc241d', brightGreen: '#98971a', brightYellow: '#d79921', brightBlue: '#458588',
+      brightMagenta: '#b16286', brightCyan: '#689d6a', brightWhite: '#fbf1c7'
     } })
   })
 
@@ -182,8 +182,8 @@ describe('TerminalWorkspace ports surface', () => {
 
     act(() => { document.documentElement.dataset.theme = 'light' })
     await waitFor(() => expect(instance.options).toMatchObject({ theme: {
-      background: '#ffffff', foreground: '#1a1a1e', cursor: '#1675d1', cursorAccent: '#ffffff',
-      selectionBackground: '#a9d2f4aa'
+      background: '#fbf1c7', foreground: '#3c3836', cursor: '#79740e', cursorAccent: '#fbf1c7',
+      selectionBackground: '#d5c4a1aa'
     } }))
     expect(xtermHarness.instances).toHaveLength(1)
   })

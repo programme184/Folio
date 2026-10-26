@@ -15,7 +15,8 @@ import {
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
-import { ChatHeader } from './components/ChatHeader'
+import { ChatHeader, WindowFrameControls } from './components/ChatHeader'
+import { AnswerFollowUp } from './components/AnswerFollowUp'
 import { ChatPane } from './components/ChatPane'
 import { ChatSplitView } from './components/ChatSplitView'
 import { CodeReview } from './components/CodeReview'
@@ -35,6 +36,8 @@ import { TerminalDock } from './components/TerminalDock'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
 import { Timeline } from './components/Timeline'
 import { WelcomeChat } from './components/WelcomeChat'
+import { PaperShelf } from './components/PaperShelf'
+import { sideQuestionsAvailable } from '@shared/side-questions'
 import { WorkspaceEditor } from './components/WorkspaceEditor'
 import { trackEvent } from './lib/analytics'
 import { activeEmergencyAlert } from './lib/emergency-alert'
@@ -139,6 +142,7 @@ export function App() {
   const [inspectorTab, setInspectorTab] = useState<InspectorWorkspaceTab>('details')
   const [sideChatFocusVersion, setSideChatFocusVersion] = useState(0)
   const [sideChatOpenTarget, setSideChatOpenTarget] = useState<string | null>(null)
+  const [papersOpen, setPapersOpen] = useState(false)
   useEffect(() => {
     const unsubscribe = useAppStore.subscribe((state, previous) => {
       if (state.profiles !== previous.profiles) sideChatController.reconcileProfiles(state.profiles)
@@ -161,6 +165,9 @@ export function App() {
     window.addEventListener('agentsdock:open-side-chat', open)
     return () => window.removeEventListener('agentsdock:open-side-chat', open)
   }, [])
+  useEffect(() => {
+    document.title = selectedSession?.title.trim() || ''
+  }, [selectedSession?.title])
   const columnStyle = useMemo(() => savedWorkspaceColumnStyle(activeProfileKey), [activeProfileKey])
   const shellRef = useRef<HTMLElement | null>(null)
   const fileDragTimeout = useRef<number | null>(null)
@@ -815,6 +822,18 @@ export function App() {
     </>}
   </div>
 
+  const askPaperPassage = (quote: string) => {
+    if (!selectedSession || !activeProfileId) return
+    if (!sideQuestionsAvailable(useAppStore.getState().health, selectedSession.backend)) {
+      useAppStore.getState().setDraftForSession(selectedSession.id, quote)
+      return
+    }
+    const scope = { profileId: activeProfileId, profileGeneration, serverIdentity: activeServerIdentity }
+    sideChatController.setDraft(scope, selectedSession.id, quote)
+    setSideChatOpenTarget(JSON.stringify([activeProfileId, profileGeneration, selectedSession.id]))
+    setSideChatFocusVersion(value => value + 1)
+  }
+
   const singleConversation = <>
     <ChatHeader
       key={`header:${selectedRenderKey}`}
@@ -824,8 +843,17 @@ export function App() {
       onSidebarToggle={toggleSidebar}
       onTerminalToggle={selectedSession?.archived ? undefined : toggleTerminal}
       onOpenSplit={sessionId => void useAppStore.getState().openSessionInSplit(sessionId)}
+      papersOpen={papersOpen}
+      onPapersToggle={() => setPapersOpen(open => !open)}
     />
-    {selectedSession
+    {papersOpen
+      ? <PaperShelf
+        chat={chatWorkspace}
+        session={selectedSession}
+        scope={workspaceProfileScope}
+        onAsk={askPaperPassage}
+      />
+      : selectedSession
       ? <WorkspaceEditor
         key={`workspace-editor:${selectedRenderKey}:${selectedSession.cwd ?? ''}`}
         workspaceKey={`${selectedWorkspaceKey}:cwd:${selectedSession.cwd ?? ''}`}
@@ -836,6 +864,7 @@ export function App() {
         maxTextFileBytes={workspaceFilesMaxTextFileBytes}
         unavailableMessage={workspaceFilesUnavailableMessage}
         chatContent={chatWorkspace}
+        onAskPaper={askPaperPassage}
       />
       : chatWorkspace}
   </>
@@ -858,8 +887,10 @@ export function App() {
   return (
     <main ref={shellRef} className={`app-shell ${sidebarVisible ? '' : 'sidebar-hidden '}${visibleDockOpen ? 'inspector-open' : ''}${reviewVisible && !teamspaceOpen ? ' review-open' : ''}${teamspaceOpen ? ' teamspace-open' : ''}${switchingProfileId ? ' profile-switching' : ''}`} style={columnStyle}>
       <ChatFontApplier />
+      <AnswerFollowUp />
+      <WindowFrameControls />
       <Sidebar key={`sidebar:${activeRenderKey}`} hidden={!sidebarVisible} />
-      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : selectedSession ? ' workspace-editor-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
+      <section className={`conversation-pane${teamspaceOpen ? ' teamspace-pane' : splitOpen ? ' split-open' : papersOpen ? ' papers-open' : selectedSession ? ' workspace-editor-open' : ''}`} aria-busy={Boolean(switchingProfileId)} inert={switchingProfileId ? true : undefined}>
         {teamspaceOpen
           ? <TeamNetwork
             key={`teamspace:${activeRenderKey}`}

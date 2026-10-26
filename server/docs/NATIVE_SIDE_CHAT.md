@@ -33,7 +33,10 @@ even when the inherited conversation predates those files.
 
 `DELETE /api/sessions/{session}/side-questions/{request}` cancels one request.
 `DELETE /api/sessions/{session}/side-chats/{side_chat}` closes the side chat.
-Both are native-operator-only and scoped to the authenticated owner and parent.
+With an operator token, both require that exact native header. With no operator
+token, only the desktop on this machine can open, ask, cancel, or close a side
+chat. Browser requests and remote clients stay closed. Each request stays
+scoped to its owner and parent.
 Clear, profile shutdown and server shutdown release owned resources. Idle side
 contexts expire after thirty minutes without polling; stale follow-ups receive
 410 rather than silently starting with different context. Cancellation/error

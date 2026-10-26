@@ -28,7 +28,7 @@ describe('composer command palette styles', () => {
       /\.composer-command-option\.selected \{[^}]*background: var\(--interaction-pressed\);/s
     )
     expect(styles).toMatch(
-      /:root\[data-theme="light"\] \.composer-command-palette \{[^}]*background: #fffffff5;[^}]*border-color: var\(--control-border\);/s
+      /:root\[data-theme="light"\] \.composer-command-palette \{[^}]*background: #fbf1c7f5;[^}]*border-color: var\(--control-border\);/s
     )
   })
 

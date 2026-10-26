@@ -1,8 +1,10 @@
 """Read-only native Codex authentication; custom keys belong to codex_provider."""
 from __future__ import annotations
 
+import asyncio
 import base64
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
@@ -18,7 +20,13 @@ from fastapi.responses import JSONResponse
 
 
 MAX_BODY_BYTES = 8192
+IMPORT_MAX_BODY_BYTES = 32 * 1024
 MAX_API_KEY_CHARS = 4096
+_ACCOUNT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_LAST_REFRESH = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|\+00:00)$")
+_REFRESH_TOKEN = re.compile(r"^[A-Za-z0-9._~-]{20,2048}$")
+_ENV_LOGIN_KEYS = ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_IDENTITY_TOKEN_FILE")
+_IMPORT_INVALID = "Paste a ChatGPT Codex auth.json."
 AUTH_TIMEOUT_SECONDS = 30.0
 BUSY_MESSAGE = "Wait for Codex chats, goals, queued turns and Side chat requests to finish before changing authentication."
 HANDOFF_MESSAGE = (
@@ -134,7 +142,130 @@ def native_login_revision(env: dict[str, str], *, cwd: str) -> LoginRevision | N
 
 def capability(*, available: bool) -> dict:
     return {"available": available, "version": 1, "native_only": True,
-            "api_key_login": False, "max_api_key_chars": MAX_API_KEY_CHARS}
+            "api_key_login": False, "auth_import": True, "max_api_key_chars": MAX_API_KEY_CHARS}
+
+
+def _jwt_object(token: object) -> dict:
+    if not isinstance(token, str) or not 20 <= len(token) <= 8192:
+        raise HTTPException(400, _IMPORT_INVALID)
+    parts = token.split(".")
+    if len(parts) != 3 or any(not re.fullmatch(r"[A-Za-z0-9_-]+", part) for part in parts):
+        raise HTTPException(400, _IMPORT_INVALID)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (ValueError, json.JSONDecodeError):
+        raise HTTPException(400, _IMPORT_INVALID) from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, _IMPORT_INVALID)
+    return payload
+
+
+def _claimed_account(payload: dict) -> str | None:
+    details = payload.get("https://api.openai.com/auth")
+    if not isinstance(details, dict):
+        return None
+    account = details.get("chatgpt_account_id")
+    if account is None:
+        return None
+    if not isinstance(account, str) or not _ACCOUNT_ID.fullmatch(account.lower()):
+        raise HTTPException(400, _IMPORT_INVALID)
+    return account.lower()
+
+
+def validate_chatgpt_auth_import(value: object) -> dict:
+    """Keep only the ChatGPT file Codex writes. Never echo or retain the input."""
+    if not isinstance(value, dict):
+        raise HTTPException(400, _IMPORT_INVALID)
+    if value.get("auth_mode") not in (None, "chatgpt"):
+        raise HTTPException(400, _IMPORT_INVALID)
+    if "OPENAI_API_KEY" in value and value.get("OPENAI_API_KEY") is not None:
+        raise HTTPException(400, "API keys stay on Custom endpoint. Paste a ChatGPT Codex auth.json.")
+    tokens = value.get("tokens")
+    if not isinstance(tokens, dict):
+        raise HTTPException(400, _IMPORT_INVALID)
+    account = tokens.get("account_id")
+    refresh = tokens.get("refresh_token")
+    if not isinstance(account, str) or not _ACCOUNT_ID.fullmatch(account.lower()):
+        raise HTTPException(400, _IMPORT_INVALID)
+    if not isinstance(refresh, str) or not _REFRESH_TOKEN.fullmatch(refresh):
+        raise HTTPException(400, _IMPORT_INVALID)
+    account = account.lower()
+    for field in ("id_token", "access_token"):
+        claimed = _claimed_account(_jwt_object(tokens.get(field)))
+        if claimed is not None and claimed != account:
+            raise HTTPException(400, _IMPORT_INVALID)
+    raw_refresh = value.get("last_refresh")
+    if isinstance(raw_refresh, str) and _LAST_REFRESH.fullmatch(raw_refresh):
+        last_refresh = raw_refresh[:-6] + "Z" if raw_refresh.endswith("+00:00") else raw_refresh
+    else:
+        last_refresh = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    return {
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": None,
+        "tokens": {
+            "id_token": tokens["id_token"],
+            "access_token": tokens["access_token"],
+            "refresh_token": refresh,
+            "account_id": account,
+        },
+        "last_refresh": last_refresh,
+    }
+
+
+def _write_private_file(path: Path, payload: bytes) -> None:
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        existing = None
+    else:
+        if stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode):
+            raise HTTPException(422, "Codex auth.json is not a regular file.")
+    temporary = directory / f".auth-{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
+    except Exception:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    os.close(descriptor)
+    try:
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    os.chmod(path, 0o600)
+    directory_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def install_chatgpt_auth(env: dict[str, str], cwd: str, value: object) -> None:
+    """Replace the server user's file-backed Codex login. Other stores are unchanged."""
+    document = validate_chatgpt_auth_import(value)
+    if any(env.get(key) for key in _ENV_LOGIN_KEYS):
+        raise HTTPException(422, "This server supplies Codex credentials through its environment.")
+    try:
+        root, config = _native_login_config(env, cwd)
+    except (OSError, ValueError, TypeError, RecursionError):
+        raise HTTPException(422, "Codex login storage is unavailable on this server.") from None
+    if config.get("cli_auth_credentials_store", "file") != "file":
+        raise HTTPException(422, "This Codex installation stores login outside a file. Use the Codex CLI on the server.")
+    payload = (json.dumps(document, separators=(",", ":")) + "\n").encode()
+    try:
+        _write_private_file(root / "auth.json", payload)
+    except HTTPException:
+        raise
+    except OSError:
+        raise HTTPException(503, "Could not save the Codex login.") from None
 
 
 def account_summary(result: object) -> dict:
@@ -170,15 +301,38 @@ def validate_api_key(value: object) -> str:
     return key
 
 
+def saved_file_status(env: dict[str, str] | None = None, cwd: str | None = None) -> dict | None:
+    """Report only that a ChatGPT file login is stored. Never return tokens or claims."""
+    source = os.environ if env is None else env
+    try:
+        root, config = _native_login_config(source, cwd or os.getcwd())
+        if config.get("cli_auth_credentials_store", "file") != "file":
+            return None
+        if any(source.get(key) for key in _ENV_LOGIN_KEYS):
+            return None
+        data = json.loads(_bounded_file(root / "auth.json"))
+    except (OSError, ValueError, TypeError, RecursionError, json.JSONDecodeError):
+        return None
+    tokens = data.get("tokens") if isinstance(data, dict) else None
+    if (not isinstance(data, dict) or data.get("auth_mode") != "chatgpt" or not isinstance(tokens, dict)
+            or not isinstance(tokens.get("refresh_token"), str) or not isinstance(tokens.get("account_id"), str)):
+        return None
+    return {"available": True, "auth_mode": "chatgpt", "email": None,
+            "plan_type": None, "requires_openai_auth": True}
+
+
 async def read_account(manager) -> dict:
     try:
         result = await manager.request("account/read", {"refreshToken": False}, timeout=AUTH_TIMEOUT_SECONDS)
     except Exception:
+        saved = saved_file_status()
+        if saved is not None:
+            return saved
         raise HTTPException(503, "Codex authentication status is unavailable. Check Codex on this server and refresh.") from None
     return account_summary(result)
 
 
-def create_router(*, authorize, operation, available) -> APIRouter:
+def create_router(*, authorize, operation, available, import_auth=None, refresh_login=None) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/admin/codex/auth")
@@ -197,6 +351,39 @@ def create_router(*, authorize, operation, available) -> APIRouter:
         except Exception:
             raise HTTPException(503, "Codex authentication status is unavailable.") from None
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    @router.post("/api/admin/codex/auth/import")
+    async def import_login(request: Request):
+        authorize(request)
+        if import_auth is None or refresh_login is None:
+            raise HTTPException(501, "Update AgentsServer to import a Codex login.",
+                headers={"Cache-Control": "no-store"})
+        if not available():
+            raise HTTPException(409, "Codex login import requires the app-server transport.",
+                headers={"Cache-Control": "no-store"})
+        try:
+            raw = await request.body()
+        except Exception:
+            raise HTTPException(400, _IMPORT_INVALID) from None
+        if len(raw) > IMPORT_MAX_BODY_BYTES:
+            raise HTTPException(413, "The auth file is too large.")
+        try:
+            parsed = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(400, _IMPORT_INVALID) from None
+        document = validate_chatgpt_auth_import(parsed)
+        try:
+            async with operation(mutate=True, start_manager=False):
+                await asyncio.to_thread(import_auth, document)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(503, "Could not save the Codex login.") from None
+        try:
+            await refresh_login()
+        except Exception:
+            raise HTTPException(503, "The Codex login was saved. Use Recheck CLIs before the next chat.") from None
+        return JSONResponse({"imported": True}, headers={"Cache-Control": "no-store"})
 
     @router.post("/api/admin/codex/auth/api-key")
     async def login(request: Request):

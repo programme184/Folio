@@ -1,6 +1,6 @@
 import { createReadStream, openAsBlob } from 'node:fs'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
-import { parseCodexAuthStatus } from '../shared/codex-auth'
+import { codexAuthImportDocument, parseCodexAuthStatus, type CodexChatGPTAuthImport } from '../shared/codex-auth'
 import { customModelBackend, customModelInput, parseCustomModels, type CustomModelBackend, type CustomModelInput } from '../shared/custom-models'
 import { cliAccountBackend, parseCLIAccount, type CLIAccountBackend, connectionBackend, connectionRequest, parseConnectionReply, type ConnectionBackend, type ConnectionAction, type ProviderConnectionRequest, type ProviderConnectionReply } from '../shared/provider-connections'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
@@ -790,6 +790,51 @@ export class AgentServerClient {
   }
   codexAuth(): Promise<CodexAuthStatus> {
     return this.codexAuthRequest('/api/admin/codex/auth')
+  }
+  async importCodexAuth(raw: unknown): Promise<{ imported: true }> {
+    const document: CodexChatGPTAuthImport = codexAuthImportDocument(raw)
+    try {
+      const result = await this.privilegedNativeRequest<{ imported?: unknown }>('/api/admin/codex/auth/import', {
+        method: 'POST', body: JSON.stringify(document)
+      }, 30_000, 200, 1024)
+      if (!result || result.imported !== true) throw new Error('CODEX_AUTH_RESPONSE')
+      return { imported: true }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'CODEX_AUTH_RESPONSE') throw error
+      if (error instanceof ServerError) {
+        const code = [401, 403].includes(error.status) ? 'ADMIN'
+          : [404, 405, 501].includes(error.status) ? 'UPDATE'
+            : error.status === 409 ? 'BUSY'
+              : error.status === 422 ? 'UNSUPPORTED'
+                : [400, 413].includes(error.status) ? 'INVALID' : 'FAILED'
+        throw new Error(`CODEX_AUTH_${code}`)
+      }
+      if (error instanceof Error && error.message === 'CODEX_AUTH_INVALID') throw error
+      throw new Error('CODEX_AUTH_CONNECTION')
+    }
+  }
+  async importCursorAuth(raw: unknown): Promise<{ imported: true }> {
+    if (typeof raw !== 'string' || raw.length > 65536) throw new Error('CURSOR_AUTH_INVALID')
+    let document: unknown
+    try { document = JSON.parse(raw) } catch { throw new Error('CURSOR_AUTH_INVALID') }
+    if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error('CURSOR_AUTH_INVALID')
+    try {
+      const result = await this.privilegedNativeRequest<{ imported?: unknown }>('/api/admin/cursor/auth/import', {
+        method: 'POST', body: JSON.stringify(document)
+      }, 30_000, 200, 1024)
+      if (!result || result.imported !== true) throw new Error('CURSOR_AUTH_RESPONSE')
+      return { imported: true }
+    } catch (error) {
+      if (error instanceof Error && error.message === 'CURSOR_AUTH_RESPONSE') throw error
+      if (error instanceof ServerError) {
+        const code = [401, 403].includes(error.status) ? 'ADMIN'
+          : [404, 405, 501].includes(error.status) ? 'UPDATE'
+            : [400, 413].includes(error.status) ? 'INVALID' : 'FAILED'
+        throw new Error(`CURSOR_AUTH_${code}`)
+      }
+      if (error instanceof Error && error.message === 'CURSOR_AUTH_INVALID') throw error
+      throw new Error('CURSOR_AUTH_CONNECTION')
+    }
   }
   private async codexAuthRequest(path: string, init: RequestInit = {}): Promise<CodexAuthStatus> {
     try {
@@ -3202,6 +3247,8 @@ function isPrivilegedNativeControlTarget(
   if (/^\/api\/admin\/provider-accounts\/(claude|cursor|opencode)$/.test(path)) return !target.search && method === 'GET'
   if (/^\/api\/admin\/provider-models\/(codex|claude|opencode|cursor)$/.test(path)) return method === 'PUT' ? !target.search : method === 'GET' && [...target.searchParams.keys()].every(key => key === 'session_id') && target.searchParams.getAll('session_id').length <= 1
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
+  if (path === '/api/admin/codex/auth/import') return !target.search && method === 'POST'
+  if (path === '/api/admin/cursor/auth/import') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search

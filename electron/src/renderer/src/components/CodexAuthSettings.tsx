@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useAppStore } from '../store/app-store'
 import { CheckCircle2, KeyRound, LoaderCircle, RefreshCw } from 'lucide-react'
 import { t } from '@shared/i18n'
+import { CODEX_AUTH_IMPORT_MAX_CHARS } from '@shared/codex-auth'
 import type { CodexAuthStatus, CodexProviderConfiguration, CodexProviderTestResult, CodexServerSettingsScope } from '@shared/types'
 import { useLocale } from '../lib/i18n'
 import { CustomModelSettings } from './CustomModelSettings'
@@ -11,6 +13,7 @@ import './ProviderConnectionSettings.css'
 import { NativeProviderSignIn } from './NativeProviderSignIn'
 
 type AuthFailure = 'admin' | 'update' | 'connection' | 'readFailed'
+type ImportFailure = 'admin' | 'update' | 'connection' | 'invalid' | 'busy' | 'unsupported' | 'saved' | 'failed'
 type ProviderFailure = 'providerAdmin' | 'providerUpdate' | 'providerBusy' | 'providerInvalid' | 'providerConnection' | 'providerFailed'
 
 function providerFailure(reason: unknown): ProviderFailure {
@@ -31,6 +34,30 @@ function authFailure(reason: unknown): AuthFailure {
   return 'readFailed'
 }
 
+const IMPORT_MESSAGE: Record<ImportFailure, 'codexAuth.admin' | 'codexAuth.importUpdate' | 'codexAuth.connection' | 'codexAuth.importInvalid' | 'codexAuth.importBusy' | 'codexAuth.importUnsupported' | 'codexAuth.importSaved' | 'codexAuth.importFailed'> = {
+  admin: 'codexAuth.admin',
+  update: 'codexAuth.importUpdate',
+  connection: 'codexAuth.connection',
+  invalid: 'codexAuth.importInvalid',
+  busy: 'codexAuth.importBusy',
+  unsupported: 'codexAuth.importUnsupported',
+  saved: 'codexAuth.importSaved',
+  failed: 'codexAuth.importFailed'
+}
+
+function importFailure(reason: unknown): ImportFailure {
+  // Electron prefixes handler errors, so the code is not the whole message.
+  const message = reason instanceof Error ? reason.message : String(reason ?? '')
+  if (/CODEX_AUTH_INVALID/.test(message)) return 'invalid'
+  if (/CODEX_AUTH_BUSY/.test(message)) return 'busy'
+  if (/CODEX_AUTH_UNSUPPORTED/.test(message)) return 'unsupported'
+  if (/CODEX_AUTH_SAVED/.test(message)) return 'saved'
+  if (/CODEX_AUTH_ADMIN/.test(message)) return 'admin'
+  if (/CODEX_AUTH_UPDATE/.test(message)) return 'update'
+  if (/CODEX_AUTH_CONNECTION/.test(message)) return 'connection'
+  return 'failed'
+}
+
 export function CodexAuthSettings({ connected, profileId, profileGeneration, serverTitle, onAPIStatus, onNativeStatus, expanded }: {
   connected: boolean
   profileId: string | null
@@ -49,6 +76,11 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<AuthFailure | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [hasPaste, setHasPaste] = useState(false)
+  const [importError, setImportError] = useState<ImportFailure | null>(null)
+  const [importNotice, setImportNotice] = useState<'imported' | null>(null)
   const [reload, setReload] = useState(0)
   const [provider, setProvider] = useState<CodexProviderConfiguration | null>(null)
   const [providerScope, setProviderScope] = useState<CodexServerSettingsScope | null>(null)
@@ -63,10 +95,14 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
   const testRequestRef = useRef(0)
   const draftRevisionRef = useRef(0)
   const requestRef = useRef(0)
+  const importRequestRef = useRef(0)
+  const fileRef = useRef<HTMLInputElement>(null)
+  const pendingFileRef = useRef('')
   const scopeRef = useRef({ connected, profileId, profileGeneration })
   scopeRef.current = { connected, profileId, profileGeneration }
   const keyInputRef = useRef<HTMLInputElement | null>(null)
   const endpointInputRef = useRef<HTMLInputElement | null>(null)
+  const pasteRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Keep credentials out of React state and clear even a detached input when the
   // form, selected server, or settings dialog closes.
@@ -78,6 +114,16 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
   function clearKey() {
     if (keyInputRef.current) keyInputRef.current.value = ''
     setHasKey(false)
+  }
+
+  const attachPaste = useCallback((node: HTMLTextAreaElement | null) => {
+    if (pasteRef.current && pasteRef.current !== node) pasteRef.current.value = ''
+    pasteRef.current = node
+  }, [])
+
+  function clearPaste() {
+    if (pasteRef.current) pasteRef.current.value = ''
+    setHasPaste(false)
   }
 
   function ownsRequest(request: number, scope: CodexServerSettingsScope) {
@@ -102,9 +148,14 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
   useEffect(() => {
     const request = ++requestRef.current
     clearKey()
+    clearPaste()
     setStatus(null)
     setStatusScope(null)
     setFormOpen(false)
+    setImportOpen(false)
+    setImporting(false)
+    setImportError(null)
+    setImportNotice(null)
     setError(null)
     setSaving(false)
     setProvider(null)
@@ -136,6 +187,7 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
     }
     return () => {
       requestRef.current += 1
+      importRequestRef.current += 1
       providerRequestRef.current += 1
       testRequestRef.current += 1
     }
@@ -147,6 +199,18 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
 
   const scopeMatches = statusScope?.profileId === profileId && statusScope?.profileGeneration === profileGeneration
   const currentStatus = connected && scopeMatches ? status : null
+  const codexAuthenticated = useAppStore(state => state.runtimeCatalog?.backends.codex?.diagnostic?.authenticated === true)
+  const adoptedLogin = useRef(false)
+  useEffect(() => { adoptedLogin.current = false }, [profileId, profileGeneration])
+  useEffect(() => {
+    // The connection handoff reports the CLI login through the runtime catalog.
+    // Reread the account once so an open card shows that session. This does not
+    // copy credentials or repeat while the same connection stays signed out.
+    if (!codexAuthenticated || adoptedLogin.current || !connected || !profileId || loading) return
+    adoptedLogin.current = true
+    if (currentStatus?.auth_mode === 'chatgpt' || currentStatus?.auth_mode === 'apiKey' || currentStatus?.requires_openai_auth === false) return
+    setReload(value => value + 1)
+  }, [codexAuthenticated, connected, profileId, profileGeneration, currentStatus, loading])
   // Endpoint configuration has its own authorization and readiness checks.
   // A failed normal-account read must not strand the endpoint recovery flow.
   const canOpenSettings = connected && profileId != null && !saving
@@ -266,6 +330,74 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
     }
   }
 
+  function showAuthFile(text: string) {
+    pendingFileRef.current = text
+    setImportError(null)
+    setImportNotice(null)
+    setImportOpen(true)
+    setHasPaste(Boolean(text.trim()))
+    if (pasteRef.current) {
+      pasteRef.current.value = text
+      pendingFileRef.current = ''
+    }
+  }
+
+  async function openAuthFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    if (file.size > CODEX_AUTH_IMPORT_MAX_CHARS) {
+      showAuthFile('')
+      setImportError('invalid')
+      return
+    }
+    showAuthFile(await file.text())
+  }
+
+  useEffect(() => {
+    if (!importOpen || !pasteRef.current || !pendingFileRef.current) return
+    pasteRef.current.value = pendingFileRef.current
+    pendingFileRef.current = ''
+  }, [importOpen])
+
+  async function importLogin(event: FormEvent) {
+    event.preventDefault()
+    if (!connected || !profileId || importing || !pasteRef.current) return
+    const scope = { profileId, profileGeneration }
+    const request = ++importRequestRef.current
+    const authFile = pasteRef.current.value
+    if (authFile.trim().length > CODEX_AUTH_IMPORT_MAX_CHARS) {
+      clearPaste()
+      setImportError('invalid')
+      return
+    }
+    clearPaste()
+    setImporting(true)
+    setImportError(null)
+    setImportNotice(null)
+    const current = () => request === importRequestRef.current && ownsScope(scope)
+    try {
+      const submit = window.agentsDock.codex?.importAuth
+      if (typeof submit !== 'function') { setImportError('update'); return }
+      const next = await submit(scope, authFile)
+      if (!current()) return
+      setStatus(next)
+      setStatusScope(scope)
+      setError(null)
+      if (next.auth_mode === 'chatgpt' || next.auth_mode === 'apiKey' || next.requires_openai_auth === false) {
+        setImportNotice('imported')
+        setImportOpen(false)
+      } else setImportError('saved')
+    } catch (reason) {
+      if (!current()) return
+      const failure = importFailure(reason)
+      setImportError(failure)
+      if (failure === 'saved') setError(null)
+    } finally {
+      if (current()) setImporting(false)
+    }
+  }
+
   function cancelForm() {
     clearKey()
     invalidateTest()
@@ -291,7 +423,17 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
       <div className="codex-auth-settings-heading">
         <div><strong>{t('codexAuth.title')}</strong>{serverTitle && <small>{serverTitle}</small>}</div>
         <div className="codex-auth-settings-actions">
-          <button type="button" className="quiet-button" disabled={!connected || !profileId || loading || saving}
+          <input ref={fileRef} className="codex-auth-file" type="file" accept=".json,application/json" aria-label={t('codexAuth.open')}
+            disabled={!connected || !profileId || importing} onChange={event => { void openAuthFile(event) }} />
+          <button type="button" className="quiet-button" disabled={!connected || !profileId || importing}
+            onClick={() => fileRef.current?.click()}>
+            {t('codexAuth.open')}
+          </button>
+          <button type="button" className="quiet-button" disabled={!connected || !profileId || importing}
+            onClick={() => { setImportError(null); setImportNotice(null); setImportOpen(true) }}>
+            {t('codexAuth.import')}
+          </button>
+          <button type="button" className="quiet-button" disabled={!connected || !profileId || loading || saving || importing}
             onClick={() => setReload(value => value + 1)}>
             {loading ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}{t('codexAuth.recheck')}
           </button>
@@ -300,6 +442,20 @@ export function CodexAuthSettings({ connected, profileId, profileGeneration, ser
       <small>{!connected || !profileId ? t('codexAuth.connect') : loading ? t('codexAuth.loading')
         : currentStatus?.available === false ? t('codexAuth.nativeRequired') : currentStatus ? account : t('codexAuth.unknown')}</small>
       {!nativeSignedIn && !loading && <NativeProviderSignIn backend="codex" disabled={!connected} />}
+      {importOpen && connected && profileId && <form className="codex-auth-settings-form" onSubmit={event => { void importLogin(event) }}>
+        <label htmlFor={`${fieldId}-auth`}>{t('codexAuth.importHelp')}</label>
+        <textarea ref={attachPaste} id={`${fieldId}-auth`} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          maxLength={CODEX_AUTH_IMPORT_MAX_CHARS} placeholder={t('codexAuth.importPlaceholder')} disabled={importing}
+          onChange={event => setHasPaste(Boolean(event.currentTarget.value.trim()))} />
+        <div className="codex-auth-settings-actions">
+          <button type="submit" className="primary-button" disabled={!hasPaste || importing}>
+            {importing && <LoaderCircle className="spin" size={14} />}{t(importing ? 'codexAuth.importing' : 'codexAuth.importSubmit')}
+          </button>
+          <button type="button" className="quiet-button" disabled={importing} onClick={() => { clearPaste(); setImportOpen(false); setImportError(null) }}>{t('codexAuth.cancel')}</button>
+        </div>
+      </form>}
+      {importNotice && <small role="status">{t(`codexAuth.${importNotice}`)}</small>}
+      {importError && <small className={importError === 'saved' ? undefined : 'codex-auth-settings-error'} role={importError === 'saved' ? 'status' : 'alert'}>{t(IMPORT_MESSAGE[importError])}</small>}
       {error && <small className="codex-auth-settings-error" role="alert">{t(`codexAuth.${error}`)}</small>}
     </div>
   </section>

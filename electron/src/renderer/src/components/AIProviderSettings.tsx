@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { CheckCircle2, Circle, ChevronRight, RefreshCw, KeyRound } from 'lucide-react'
+import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { CheckCircle2, Circle, ChevronRight, LoaderCircle, RefreshCw, KeyRound } from 'lucide-react'
 import { t } from '@shared/i18n'
 import type { Backend } from '@shared/types'
 import type { CLIAccountBackend, CLIAccountMetadata } from '@shared/provider-connections'
@@ -10,6 +10,113 @@ import { CodexAuthSettings } from './CodexAuthSettings'
 import { useRuntimeRecheck } from './RuntimeHealth'
 import { NativeProviderSignIn } from './NativeProviderSignIn'
 import { ProviderConnectionSettings } from './ProviderConnectionSettings'
+
+const CURSOR_AUTH_MAX_CHARS = 65536
+
+function cursorImportFailure(reason: unknown): 'invalid' | 'admin' | 'update' | 'connection' | 'failed' {
+  const message = reason instanceof Error ? reason.message : String(reason ?? '')
+  if (/CURSOR_AUTH_INVALID/.test(message)) return 'invalid'
+  if (/CURSOR_AUTH_ADMIN/.test(message)) return 'admin'
+  if (/CURSOR_AUTH_UPDATE/.test(message)) return 'update'
+  if (/CURSOR_AUTH_CONNECTION/.test(message)) return 'connection'
+  return 'failed'
+}
+
+function CursorCliEditor() {
+  const connected = useAppStore(state => state.connected)
+  const profileId = useAppStore(state => state.activeProfileId)
+  const profileGeneration = useAppStore(state => state.profileGeneration)
+  const fieldId = useId()
+  const fileRef = useRef<HTMLInputElement>(null)
+  const pasteRef = useRef<HTMLTextAreaElement>(null)
+  const pendingFileRef = useRef('')
+  const [open, setOpen] = useState(false)
+  const [hasPaste, setHasPaste] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState(false)
+  const [error, setError] = useState<ReturnType<typeof cursorImportFailure> | null>(null)
+  const ready = connected && profileId != null && !saving
+
+  function showFile(text: string) {
+    pendingFileRef.current = text
+    setError(null)
+    setNotice(false)
+    setOpen(true)
+    setHasPaste(Boolean(text.trim()))
+    if (pasteRef.current) {
+      pasteRef.current.value = text
+      pendingFileRef.current = ''
+    }
+  }
+
+  useEffect(() => {
+    if (!open || !pasteRef.current || !pendingFileRef.current) return
+    pasteRef.current.value = pendingFileRef.current
+    pendingFileRef.current = ''
+  }, [open])
+
+  async function chooseFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0]
+    event.currentTarget.value = ''
+    if (!file) return
+    if (file.size > CURSOR_AUTH_MAX_CHARS) {
+      showFile('')
+      setError('invalid')
+      return
+    }
+    showFile(await file.text())
+  }
+
+  async function save(event: FormEvent) {
+    event.preventDefault()
+    if (!ready || !profileId || !pasteRef.current) return
+    const authFile = pasteRef.current.value
+    pasteRef.current.value = ''
+    setHasPaste(false)
+    setSaving(true)
+    setError(null)
+    setNotice(false)
+    try {
+      const submit = window.agentsDock.cursor?.importAuth
+      if (typeof submit !== 'function') { setError('update'); return }
+      await submit({ profileId, profileGeneration }, authFile)
+      setNotice(true)
+      setOpen(false)
+    } catch (reason) {
+      setError(cursorImportFailure(reason))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const message = error === 'invalid' ? 'connections.cliInvalid'
+    : error === 'admin' ? 'connections.cliAdmin'
+      : error === 'update' ? 'connections.cliUpdate'
+        : error === 'connection' ? 'connections.cliConnection'
+          : 'connections.cliFailed'
+  return <>
+    <div className="codex-auth-settings-actions">
+      <input ref={fileRef} className="codex-auth-file" type="file" accept=".json,application/json" aria-label={t('connections.cliOpen')}
+        disabled={!ready} onChange={event => { void chooseFile(event) }} />
+      <button type="button" className="quiet-button" disabled={!ready} onClick={() => fileRef.current?.click()}>{t('connections.cliOpen')}</button>
+      <button type="button" className="quiet-button" disabled={!ready} onClick={() => { setError(null); setNotice(false); setOpen(true) }}>{t('connections.cliPaste')}</button>
+    </div>
+    {open && <form className="codex-auth-settings-form" onSubmit={event => { void save(event) }}>
+      <label htmlFor={fieldId}>{t('connections.cliHelp')}</label>
+      <textarea ref={pasteRef} id={fieldId} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        maxLength={CURSOR_AUTH_MAX_CHARS} placeholder={t('connections.cliPaste')} disabled={saving}
+        onChange={event => setHasPaste(Boolean(event.currentTarget.value.trim()))} />
+      <div className="codex-auth-settings-actions">
+        <button type="submit" className="primary-button" disabled={!hasPaste || saving}>
+          {saving && <LoaderCircle className="spin" size={14} />}{t(saving ? 'connections.cliSaving' : 'connections.cliSubmit')}
+        </button>
+        <button type="button" className="quiet-button" disabled={saving} onClick={() => { if (pasteRef.current) pasteRef.current.value = ''; setHasPaste(false); setOpen(false); setError(null) }}>{t('codexAuth.cancel')}</button>
+      </div>
+    </form>}
+    {notice && <small role="status">{t('connections.cliSaved')}</small>}
+    {error && <small className="codex-auth-settings-error" role="alert">{t(message)}</small>}
+  </>
+}
 
 function CLIAccountCard({ backend, signedIn, open }: { backend: CLIAccountBackend; signedIn: boolean; open: boolean }) {
   const connected = useAppStore(state => state.connected)
@@ -34,6 +141,7 @@ function CLIAccountCard({ backend, signedIn, open }: { backend: CLIAccountBacken
       {signedIn && account?.email && <small>{t('connections.email')}: {account.email}</small>}
       {signedIn && account?.plan_type && <small>{t('connections.plan')}: {account.plan_type}</small>}
       {signedIn && account?.source === 'local_profile' && <small>{t('connections.cachedProfile')}</small>}
+      {backend === 'cursor' && <CursorCliEditor />}
       {!signedIn && <NativeProviderSignIn backend={backend} disabled={!connected} />}
     </div>
   </section>
@@ -76,6 +184,6 @@ export function AIProviderSettings({ requested }: { requested?: { backend?: Back
       <strong>{profile ? t('settings.providersServer', { server: profile.name }) : t('settings.providersNoServer')}</strong>
       <button type="button" className="quiet-button" disabled={!connected || refreshing} onClick={() => void recheck().then(() => setRevision(value => value + 1))}><RefreshCw size={14} className={refreshing ? 'spin' : ''} />{t('connections.refresh')}</button>
     </div>
-    {(['codex', 'claude', 'cursor', 'opencode'] as Backend[]).map(backend => <ProviderGroup key={`${profile?.id}:${generation}:${revision}:${backend}`} backend={backend} requested={requested} />)}
+    {(['cursor', 'codex', 'claude', 'opencode'] as Backend[]).map(backend => <ProviderGroup key={`${profile?.id}:${generation}:${revision}:${backend}`} backend={backend} requested={requested} />)}
   </div>
 }

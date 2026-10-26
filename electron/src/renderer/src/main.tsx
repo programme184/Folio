@@ -12,6 +12,7 @@ import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
 
 initializeAppearance()
+document.documentElement.dataset.platform = /Mac|iPhone|iPad|iPod/i.test(`${navigator.platform} ${navigator.userAgent}`) ? 'darwin' : /Win/i.test(navigator.platform) ? 'win32' : 'linux'
 
 installChatSwitcherShortcut(window, () => {
   handleMenuCommand('find-chat', useAppStore.getState, value => useAppStore.setState(value))

@@ -4774,7 +4774,7 @@ describe('Composer', () => {
 
     expect(list).toHaveBeenCalledOnce()
     expect(screen.getByRole('group', { name: 'Skills' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: /^Import Chat/ }).closest('[role="group"]')).toHaveAttribute('aria-label', 'AgentsDock')
+    expect(screen.getByRole('option', { name: /^Import Chat/ }).closest('[role="group"]')).toHaveAttribute('aria-label', 'Folio')
     expect(skills).toHaveLength(2)
     expect(skills[0]).toHaveTextContent('project · .agents')
     expect(skills[1]).toHaveTextContent('user · Codex')

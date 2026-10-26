@@ -1,8 +1,11 @@
 # Codex account and custom endpoints
 
-Open **Settings → Server → Codex account**. Normal Codex account status is
-read-only. **Recheck** refreshes the displayed status. Manage normal ChatGPT
-or OpenAI authentication with Codex on the server.
+Open **Settings → My Agents → Codex**. **Paste auth.json** accepts the
+ChatGPT file Codex writes after `codex login`. That replaces the server
+user's file login for ordinary Codex chats. **Recheck** refreshes the
+displayed account. On a server with no operator token, the desktop on the
+same machine can still paste that file. API keys still belong on **Custom
+endpoint**.
 
 Starting with **1.0.4-beta.2**, AgentsDock no longer offers shared API-key
 sign-in. AgentsServer also rejects the legacy login route from older clients.

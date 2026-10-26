@@ -92,7 +92,7 @@ describe('groupComposerCommandsByCategory', () => {
   }
 
   const categories: readonly ComposerCommandCategory[] = [
-    { id: 'agentsdock', heading: 'AgentsDock' },
+    { id: 'agentsdock', heading: 'Folio' },
     { id: 'skills', heading: 'Skills' }
   ]
 
@@ -133,7 +133,7 @@ describe('groupComposerCommandsByCategory', () => {
     ]
     const groups = groupComposerCommandsByCategory(uncategorized, categories)
     expect(groups.map(group => ({ id: group.id, heading: group.heading }))).toEqual([
-      { id: 'agentsdock', heading: 'AgentsDock' },
+      { id: 'agentsdock', heading: 'Folio' },
       { id: 'labs', heading: 'labs' }
     ])
   })

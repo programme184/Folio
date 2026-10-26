@@ -617,7 +617,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
               </label>
               <ReasoningDisplaySettings />
               <div className="app-settings-row">
-                <strong className="app-settings-row-title">AgentsDock</strong>
+                <strong className="app-settings-row-title">Folio</strong>
                 <span className="app-settings-value">{update?.currentVersion ? t('settings.version', { version: update.currentVersion }) : t('settings.versionUnavailable')}</span>
               </div>
               <div className="app-settings-row">
@@ -639,7 +639,7 @@ export function AppSettingsDialog({ serverSettings, serverUpdates, onServerUpdat
             <header><h2 id="app-settings-updates-title">{t('settings.updates')}</h2></header>
             <div className="app-settings-list">
               <div className="app-settings-row app-settings-update-row">
-                <div className="app-settings-row-copy"><strong>AgentsDock {update?.currentVersion ? <small>v{update.currentVersion}</small> : null}</strong><span role="status" aria-live="polite">{[update?.state === 'not-available' ? t("ui.Dialogs.AppSettingsDialog.this_is_the_latest_one_0791214") : update?.message || t("ui.Dialogs.AppSettingsDialog.checking_for_updates_497a199"), appUpdateCheckedAt].filter(Boolean).join(' · ')}</span></div>
+                <div className="app-settings-row-copy"><strong>Folio {update?.currentVersion ? <small>v{update.currentVersion}</small> : null}</strong><span role="status" aria-live="polite">{[update?.state === 'not-available' ? t("ui.Dialogs.AppSettingsDialog.this_is_the_latest_one_0791214") : update?.message || t("ui.Dialogs.AppSettingsDialog.checking_for_updates_497a199"), appUpdateCheckedAt].filter(Boolean).join(' · ')}</span></div>
                 <div className="app-settings-actions">
                   {(update?.channel === 'direct' || update?.channel === 'development') && <div className="segmented update-track-picker" role="group" aria-label={t("ui.Dialogs.AppSettingsDialog.app_update_channel_95487e7")}>
                     <button type="button" className={update.track === 'stable' ? 'active' : ''} aria-pressed={update.track === 'stable'} disabled={updateTrackBusy || updateTrackLocked || updateCancelBusy} onClick={() => void chooseUpdateTrack('stable')}>{t("ui.Dialogs.AppSettingsDialog.stable_90ee305")}</button>
@@ -2947,6 +2947,20 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
     setManualModel(false)
     setCwd(defaultCwd)
   }, [defaultCwd, mode, open])
+  const preferredCursor = useRef(false)
+  useEffect(() => {
+    if (!open) {
+      preferredCursor.current = false
+      return
+    }
+    if (preferredCursor.current || mode !== 'newChat' || backendOptions.length === 0) return
+    preferredCursor.current = true
+    if (!backendOptions.includes('cursor') || !cursorBackendAvailable(health, catalog)) return
+    setBackendChoice('cursor')
+    setModel('')
+    setEffort('')
+    setManualModel(false)
+  }, [backendOptions, catalog, health, mode, open])
   useEffect(() => {
     if (!open || backendOptions.includes(backendChoice)) return
     if (backendOptions[0]) setBackendChoice(backendOptions[0])

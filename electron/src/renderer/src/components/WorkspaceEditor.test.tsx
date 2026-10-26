@@ -1,6 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('./PaperDocument', () => ({
+  PaperDocument: () => <div>Paper pages</div>
+}))
 import type { AgentsDockAPI } from '@shared/ipc'
 import { setLocale } from '@shared/i18n'
 import type {
@@ -172,6 +176,7 @@ describe('WorkspaceEditor', () => {
             scope: 'absolute'
           })),
           previewAvailable: vi.fn().mockResolvedValue(true),
+          previewBytes: vi.fn().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46])),
           mediaURL: vi.fn().mockImplementation((_profileId: string, _generation: number, sessionId: string, path: string) => `agentsdock-media://workspace/profile-a/1/${sessionId}/${encodeURIComponent(path)}`),
           download: vi.fn().mockResolvedValue('/Users/test/Downloads/file'),
           create: vi.fn().mockImplementation((_sessionId: string, path: string, kind: 'file' | 'directory') => Promise.resolve({
@@ -2239,7 +2244,7 @@ describe('WorkspaceEditor', () => {
   })
 
   it('opens workspace images and PDFs through the preview transport without reading them as text', async () => {
-    renderEditor()
+    const view = renderEditor()
     act(() => {
       window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
         detail: { sessionId: 'chat-a', path: 'assets/diagram.png' }
@@ -2259,13 +2264,16 @@ describe('WorkspaceEditor', () => {
       }))
     })
 
-    const pdf = await screen.findByTitle('PDF preview of docs/design.pdf')
-    expect(pdf).toHaveAttribute(
-      'src',
-      'agentsdock-media://workspace/profile-a/1/chat-a/docs%2Fdesign.pdf'
-    )
+    const pdf = await screen.findByRole('region', { name: 'PDF preview of docs/design.pdf' })
+    expect(pdf).toBeVisible()
+    await waitFor(() => expect(window.agentsDock.workspace.previewBytes).toHaveBeenCalledWith('chat-a', 'docs/design.pdf'))
     expect(fetch).not.toHaveBeenCalled()
     expect(window.agentsDock.workspace.read).not.toHaveBeenCalledWith('chat-a', 'docs/design.pdf')
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(screen.getByRole('separator', { name: 'Resize chat and file editor' })).toBeVisible()
+    expect(view.container.querySelector('.workspace-editor-editor-panel')).toHaveClass('workspace-editor-pdf-focus')
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split')
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-right')
   })
 
   it('prefers a live workspace image through the main-process availability probe', async () => {

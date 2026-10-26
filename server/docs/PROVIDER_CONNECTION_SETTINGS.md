@@ -42,7 +42,11 @@ user owning the selected server: [Codex](https://developers.openai.com/codex/aut
 [Claude Code](https://code.claude.com/docs/en/authentication),
 [Cursor](https://cursor.com/docs/cli/reference/authentication), or
 [OpenCode](https://opencode.ai/docs/cli/#auth). They do not start a local login
-on a potentially unrelated client machine or claim login succeeded. Claude
+on a potentially unrelated client machine or claim login succeeded. When the
+server user's Cursor CLI `auth.json` is missing, AgentsServer copies that
+user's desktop Cursor access and refresh tokens into the CLI file. An existing
+CLI login is not replaced, the tokens are not refreshed, and the desktop
+database is not modified. Claude
 continues to verify authentication on actual sends, not a background recheck.
 
 For direct Anthropic API access, create a key and billing setup in the

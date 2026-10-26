@@ -273,7 +273,9 @@ function createWindow(): BrowserWindow {
     minWidth: 1040,
     minHeight: 680,
     show: false,
-    title: 'AgentsDock',
+    title: '',
+    frame: process.platform === 'darwin',
+    autoHideMenuBar: process.platform !== 'darwin',
     ...platformWindowOptions,
     backgroundColor: '#171717',
     webPreferences: {
@@ -289,6 +291,7 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  if (process.platform !== 'darwin') window.setMenuBarVisibility(false)
   window.once('ready-to-show', () => window.show())
   window.webContents.on('preload-error', (_event, path, error) => appLog('preload', 'failed to load', { path, error: error.stack || error.message }))
   window.webContents.on('did-fail-load', (_event, code, description, url) => appLog('renderer', 'page load failed', { code, description, url }))
@@ -405,13 +408,13 @@ function createMenu(window: () => BrowserWindow | null): void {
     ]
   }
   const applicationMenu: MenuItemConstructorOptions = process.platform === 'darwin'
-    ? { role: 'appMenu', label: 'AgentsDock', submenu: [
+    ? { role: 'appMenu', label: 'Folio', submenu: [
         { role: 'about' }, { type: 'separator' },
         { label: t('native.checkUpdates'), click: () => send('check-update') },
         { label: t('native.settings'), accelerator: shortcutAccelerator('settings'), click: () => send('settings') },
         { type: 'separator' }, { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }
       ] }
-    : { label: 'AgentsDock', submenu: [
+    : { label: 'Folio', submenu: [
         { role: 'about' },
         { label: t('native.checkUpdates'), click: () => send('check-update') },
         { label: t('native.settings'), accelerator: shortcutAccelerator('settings'), click: () => send('settings') },

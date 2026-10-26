@@ -250,6 +250,9 @@ def cursor_profile(root: Path, original_env: dict) -> tuple[Path, dict]:
                XDG_DATA_HOME=str(root / 'data'), XDG_CACHE_HOME=str(root / 'cache'),
                TMPDIR=str(root), TMP=str(root), TEMP=str(root),
                NODE_COMPILE_CACHE=str(root / 'cache'), NO_OPEN_BROWSER='1')
+    if not env.get('CURSOR_API_KEY'):
+        from cursor_desktop_login import share_desktop_login
+        share_desktop_login(original_env)
     auth = _cursor_auth_file(Path(original_env.get('HOME') or Path.home()), original_env)
     if not env.get('CURSOR_API_KEY') and auth.exists():
         destination = _cursor_auth_file(home, env)

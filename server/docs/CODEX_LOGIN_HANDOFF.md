@@ -22,6 +22,10 @@ into another authentication mode, or replay a previously submitted turn.
   SSO sessions whose `auth_time` is absent or unchanged, or an OS keychain/keyring.
   It changes future process selection, not authentication.
   Repeated explicit rechecks can retire successive normal process generations.
+  The desktop requests this handoff once per server connection when the current
+  Codex account read is signed out. A ChatGPT or API-key session is left in
+  place. The desktop does not read `auth.json` or the OS keychain, and a later
+  sign-in during the same connection still uses Recheck CLIs.
 - Automatic detection is conservative and is not a complete native credential
   resolver. User configuration selects file detection; managed requirements
   may select another store. A file change is only a hint to load a fresh native

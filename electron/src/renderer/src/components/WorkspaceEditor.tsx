@@ -86,6 +86,7 @@ import './WorkspaceEditor.css'
 const LazyCodeMirrorEditor = lazy(() => import('./CodeMirrorEditor').then(module => ({ default: module.CodeMirrorEditor })))
 const LazySafeHtmlMarkdownContent = lazy(() => import('./SafeHtmlMarkdownContent'))
 const LazyWorkspaceChanges = lazy(() => import('./WorkspaceChanges').then(module => ({ default: module.WorkspaceChanges })))
+const LazyWorkspacePaperViewer = lazy(() => import('./WorkspacePaperViewer').then(module => ({ default: module.WorkspacePaperViewer })))
 const MAX_OPEN_TABS = 12
 const CHANGES_TAB_TARGET = '\0workspace-changes'
 // Servers predating the advertised workspace capability enforce 2 MiB. Keep
@@ -288,6 +289,7 @@ export interface WorkspaceEditorProps {
   unavailableMessage?: string
   onReady?: () => void
   onReturnToChat?: () => void
+  onAskPaper?: (draft: string) => void
 }
 
 export function WorkspaceEditor({
@@ -300,7 +302,8 @@ export function WorkspaceEditor({
   maxTextFileBytes,
   unavailableMessage,
   onReady,
-  onReturnToChat
+  onReturnToChat,
+  onAskPaper
 }: WorkspaceEditorProps) {
   useLocale()
   const gitLabels = useWorkspaceGitLabels()
@@ -352,6 +355,7 @@ export function WorkspaceEditor({
   const [editorAppearance, setEditorAppearance] = useState(readEditorAppearance)
   const [editorNavigation, setEditorNavigation] = useState<EditorNavigationRequest | null>(null)
   const [editorSplit, setEditorSplit] = useState(readEditorSplitPreference)
+  const [pdfFullPath, setPdfFullPath] = useState<string | null>(null)
   const [filePresentation, setFilePresentation] = useState<FilePresentation>(() => (
     memoryMatches ? memory.filePresentation ?? 'full' : 'full'
   ))
@@ -3351,8 +3355,12 @@ export function WorkspaceEditor({
   const chatPanelId = `${instanceId}-chat-panel`
   const editorPanelId = `${instanceId}-editor-panel`
   const fileActive = activePath !== null
-  const editorOnly = fileActive && (filePresentation === 'full' || Boolean(onReturnToChat))
-  const splitActive = !changesOpen && fileActive && filePresentation === 'split' && !onReturnToChat
+  const pdfPath = primaryFile?.viewerKind === 'pdf' ? primaryFile.path : null
+  const pdfFull = pdfFullPath !== null && pdfFullPath === pdfPath
+  const pdfReader = Boolean(pdfPath) && !onReturnToChat && !changesOpen
+  const editorOnly = fileActive && (Boolean(onReturnToChat) || (pdfReader ? pdfFull : filePresentation === 'full'))
+  const splitActive = !changesOpen && fileActive && !onReturnToChat && (pdfReader ? !pdfFull : filePresentation === 'split')
+  const splitSide = pdfReader && !pdfFull ? 'right' : editorSplit.side
   const splitStyle = splitActive
     ? { '--workspace-editor-width': `${editorSplit.editorPercent}%` } as CSSProperties
     : undefined
@@ -3382,7 +3390,7 @@ export function WorkspaceEditor({
           : clampEditorSplitPercent(
             current.editorPercent
             + (event.key === 'ArrowRight' ? 1 : -1)
-            * (current.side === 'left' ? step : -step)
+            * (splitSide === 'left' ? step : -step)
           )
     }))
   }
@@ -3392,7 +3400,7 @@ export function WorkspaceEditor({
     if (!drag || drag.pointerId !== event.pointerId || !container) return
     const bounds = container.getBoundingClientRect()
     if (bounds.width <= 0) return
-    const editorPixels = editorSplit.side === 'left'
+    const editorPixels = splitSide === 'left'
       ? event.clientX - bounds.left
       : bounds.right - event.clientX
     drag.editorPercent = clampEditorSplitPercent(editorPixels / bounds.width * 100)
@@ -3689,7 +3697,7 @@ export function WorkspaceEditor({
                   setActiveGroup('primary')
                 }}
               ><PanelRightClose size={13} aria-hidden="true" /></button>}
-              {focused && !editorOnly && <div className="workspace-editor-split-controls" role="group" aria-label={t('editor.editorSplitPosition')}>
+              {focused && !editorOnly && !pdfReader && <div className="workspace-editor-split-controls" role="group" aria-label={t('editor.editorSplitPosition')}>
                 <button
                   type="button"
                   aria-pressed={editorSplit.side === 'left'}
@@ -3720,6 +3728,10 @@ export function WorkspaceEditor({
                 aria-pressed={editorOnly}
                 title={editorOnly ? t('editor.restoreChatSplitView') : t('editor.showFileWorkspaceFullScreen')}
                 onClick={() => {
+                  if (pdfPath) {
+                    setPdfFullPath(current => current === pdfPath ? null : pdfPath)
+                    return
+                  }
                   filePresentationTouchedRef.current = true
                   setFilePresentation(current => {
                     const next = current === 'full' ? 'split' : 'full'
@@ -3768,7 +3780,18 @@ export function WorkspaceEditor({
                 : <div className="workspace-editor-loading">{t('editor.thisImageSourceIsUnavailable')}</div>
               : file.viewerKind === 'pdf'
                 ? mediaSource
-                  ? <WorkspacePdfViewer source={mediaSource} label={editorContentLabel(file)} />
+                  ? <Suspense fallback={<div className="workspace-editor-loading">{t('papers.loading')}</div>}>
+                    <LazyWorkspacePaperViewer
+                      source={mediaSource}
+                      label={editorContentLabel(file)}
+                      load={() => file.origin === 'artifact' && file.artifact
+                        ? window.agentsDock.files.previewBytes(session.id, file.artifact.id)
+                        : window.agentsDock.workspace.previewBytes(session.id, file.path)}
+                      session={session}
+                      scope={profileScope}
+                      onAsk={onAskPaper}
+                    />
+                  </Suspense>
                   : <div className="workspace-editor-loading">{t('editor.thisPdfSourceIsUnavailable')}</div>
                 : file.viewerKind === 'markdown'
                   ? <WorkspaceMarkdownView
@@ -3923,18 +3946,18 @@ export function WorkspaceEditor({
   return <>
     <nav
       ref={splitTabStripRef}
-      className={`workspace-editor-tab-strip${splitActive ? ` workspace-editor-tab-strip-split workspace-editor-${editorSplit.side}` : ''}`}
+      className={`workspace-editor-tab-strip${splitActive ? ` workspace-editor-tab-strip-split workspace-editor-${splitSide}` : ''}`}
       aria-label={t('editor.workspaceTabs')}
       style={splitStyle}
     >
-      {splitActive && editorSplit.side === 'left'
+      {splitActive && splitSide === 'left'
         ? <>{fileWorkspaceTabs}{chatWorkspaceTab}</>
         : <>{chatWorkspaceTab}{fileWorkspaceTabs}</>}
     </nav>
 
     <section
       ref={splitContainerRef}
-      className={`workspace-editor-content${splitActive ? ` workspace-editor-content-split workspace-editor-${editorSplit.side}${splitDragging ? ' workspace-editor-split-dragging' : ''}` : ''}${editorOnly ? ' workspace-editor-content-editor-only' : ''}`}
+      className={`workspace-editor-content${splitActive ? ` workspace-editor-content-split workspace-editor-${splitSide}${splitDragging ? ' workspace-editor-split-dragging' : ''}` : ''}${editorOnly ? ' workspace-editor-content-editor-only' : ''}`}
       style={splitStyle}
     >
       <div
@@ -3981,7 +4004,7 @@ export function WorkspaceEditor({
       <div
         ref={editorPanelRef}
         id={editorPanelId}
-        className={`workspace-editor-editor-panel${explorerDragging ? ' workspace-editor-explorer-dragging' : ''}${compactExplorer ? ' workspace-editor-explorer-compact' : ''}`}
+        className={`workspace-editor-editor-panel${pdfPath ? ' workspace-editor-pdf-focus' : ''}${explorerDragging ? ' workspace-editor-explorer-dragging' : ''}${compactExplorer ? ' workspace-editor-explorer-compact' : ''}`}
         role="tabpanel"
         tabIndex={-1}
         aria-labelledby={activeFile ? `${instanceId}-${pathToken(activeFile.path)}-tab` : undefined}
@@ -5388,12 +5411,6 @@ function WorkspaceImageViewer({ source, label }: { source: string; label: string
   </div>
 }
 
-function WorkspacePdfViewer({ source, label }: { source: string; label: string }) {
-  useLocale()
-  return <div className="workspace-editor-pdf-viewer">
-    <iframe src={source} title={t('editor.pdfPreviewOf', { name: label })} />
-  </div>
-}
 
 interface MarkdownScrollSyncController {
   setSource(element: HTMLElement | null): void
