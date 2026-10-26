@@ -242,7 +242,7 @@
 }
 
 :root[data-theme="light"] .paper-page {
-  --paper-sheet: #c7edcc;
+  --paper-sheet: #f4ecd8;
 }
 
 :root[data-theme="light"] .paper-page::after {
@@ -292,7 +292,7 @@
 }
 
 .paper-page .textLayer ::selection {
-  background: rgba(0, 0, 255, 0.28);
+  background: rgba(118, 176, 98, 0.45);
   color: transparent;
 }
 
@@ -305,14 +305,25 @@
 }
 
 .paper-page .textLayer span.paper-paragraph-hot,
-.paper-passage-view .paper-page span.paper-paragraph-hot {
-  background: rgba(121, 116, 14, 0.28);
+.paper-passage-view .paper-page span.paper-paragraph-hot,
+.paper-passage-view .paper-page span::selection {
+  background: rgba(118, 176, 98, 0.42);
 }
 
 .paper-toolbar {
   position: fixed;
   z-index: 40;
   transform: translate(-50%, 0);
+}
+
+.paper-toolbar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: -10px;
+  right: -10px;
+  top: -18px;
+  bottom: -10px;
 }
 
 .paper-toolbar.above {

@@ -1,10 +1,22 @@
+import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import type { Plugin } from 'vite'
+
+function copyFolioIcon(): Plugin {
+  const source = resolve(__dirname, 'src/renderer/src/assets/folio-icon.png')
+  return {
+    name: 'copy-folio-icon',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'folio-icon.png', source: readFileSync(source) })
+    }
+  }
+}
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), copyFolioIcon()],
     build: {
       minify: true,
       sourcemap: false,

@@ -46,6 +46,7 @@ describe('sidebar split pane context', () => {
       chatPanes: { primary: sessions[0].id, secondary: null },
       folderOrder: ['General'],
       collapsedFolders: new Set(),
+      selectedFolder: null,
       archivedCollapsed: false,
       activeSessionIds: new Set(),
       runtimeCatalog: null,
@@ -168,6 +169,31 @@ describe('sidebar split pane context', () => {
     act(() => useAppStore.setState({ switchingProfileId: profile.id }))
     expect(within(project).getByRole('button', { name: 'Search chats' })).toBeDisabled()
     expect(within(project).getByRole('button', { name: 'Create folder' })).toBeDisabled()
+  })
+
+  it('selects a folder from its row and creates a chat there from the left-hand plus', () => {
+    const requestNewChat = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({
+      requestNewChat,
+      selectedFolder: null,
+      folderOrder: ['General', 'Research'],
+      collapsedFolders: new Set(['Research']),
+      sessions: [...sessions, { id: 'chat-3', title: 'Research chat', folder: 'Research', backend: 'codex' }]
+    })
+    render(<Sidebar />)
+
+    const research = screen.getByRole('button', { name: 'Research1' })
+    fireEvent.click(research)
+    expect(research).toHaveAttribute('aria-pressed', 'true')
+    expect(useAppStore.getState().selectedFolder).toBe('Research')
+    expect(useAppStore.getState().collapsedFolders.has('Research')).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Research' }))
+    expect(useAppStore.getState().collapsedFolders.has('Research')).toBe(false)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create chat in Research' }))
+    expect(requestNewChat).toHaveBeenCalledExactlyOnceWith('Research')
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeEnabled()
   })
 
   it('routes the top plus button through guarded instant chat creation', () => {

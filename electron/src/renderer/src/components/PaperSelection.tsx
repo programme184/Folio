@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { LoaderCircle, X } from 'lucide-react'
 import { t } from '@shared/i18n'
 import {
-  columnScopedHits,
+  dragSelectionHits,
+  locateDragPassage,
   indexPaperPage,
   locatePassages,
   paperAskDraft,
@@ -38,6 +39,9 @@ interface SelectionToolbar {
   placement: 'above' | 'below'
 }
 
+/** Crossing the next paragraph on the way to the toolbar must not retarget immediately. */
+export const PAPER_PARAGRAPH_RETARGET_MS = 220
+
 export function readPaperHits(root: HTMLElement): Array<{ page: number; glyphIndexes: number[] }> {
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return []
@@ -63,6 +67,8 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
   const pinned = useRef(false)
   const marked = useRef<HTMLElement[]>([])
   const hideTimer = useRef<number | null>(null)
+  const retargetTimer = useRef<number | null>(null)
+  const pendingRetarget = useRef<string | null>(null)
   const mark = (spans: HTMLElement[]) => {
     for (const span of marked.current) span.classList.remove('paper-paragraph-hot')
     for (const span of spans) span.classList.add('paper-paragraph-hot')
@@ -73,8 +79,15 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     window.clearTimeout(hideTimer.current)
     hideTimer.current = null
   }
+  const cancelRetarget = () => {
+    pendingRetarget.current = null
+    if (retargetTimer.current === null) return
+    window.clearTimeout(retargetTimer.current)
+    retargetTimer.current = null
+  }
   const clearHover = () => {
     cancelHide()
+    cancelRetarget()
     hovered.current = null
     pinned.current = false
     mark([])
@@ -107,8 +120,19 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     mark(spans)
     showPassage(passage, spanRects(spans))
   }
+  const scheduleRetarget = (pageNumber: number, glyphIndex: number, id: string) => {
+    if (pendingRetarget.current === id) return
+    cancelRetarget()
+    pendingRetarget.current = id
+    retargetTimer.current = window.setTimeout(() => {
+      retargetTimer.current = null
+      pendingRetarget.current = null
+      showParagraph(pageNumber, glyphIndex)
+    }, PAPER_PARAGRAPH_RETARGET_MS)
+  }
   useEffect(() => () => {
     if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
+    if (retargetTimer.current !== null) window.clearTimeout(retargetTimer.current)
     for (const span of marked.current) span.classList.remove('paper-paragraph-hot')
   }, [])
   const onMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
@@ -122,17 +146,38 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     }
   }
   const onMouseMove = (event: ReactMouseEvent<HTMLElement>) => {
-    if (event.buttons !== 0 || pinned.current) return
+    if (pinned.current) return
+    if (event.buttons !== 0) {
+      const selection = window.getSelection()
+      if (selection && !selection.isCollapsed) mark([])
+      return
+    }
     cancelHide()
     const target = eventElement(event.target)
-    if (!target || target.closest('.paper-toolbar')) return
+    if (!target || target.closest('.paper-toolbar') || pointerInToolbar(event.clientX, event.clientY)) {
+      cancelRetarget()
+      return
+    }
     const hit = glyphHit(target)
     if (!hit) return
-    showParagraph(hit.page, hit.index)
+    const paragraph = paragraphAt(getPages(), hit.page, hit.index)
+    if (!paragraph || paragraph.id === hovered.current) {
+      cancelRetarget()
+      return
+    }
+    if (!hovered.current) {
+      showParagraph(hit.page, hit.index)
+      return
+    }
+    scheduleRetarget(hit.page, hit.index, paragraph.id)
   }
   const onMouseLeave = (event: ReactMouseEvent<HTMLElement>) => {
     const next = eventElement(event.relatedTarget)
-    if (next?.closest('.paper-toolbar') || next?.closest('.paper-paragraph-hot')) return
+    if (next?.closest('.paper-toolbar')) {
+      cancelRetarget()
+      return
+    }
+    if (next?.closest('.paper-paragraph-hot')) return
     scheduleHide()
   }
   const onMouseUp = (event: ReactMouseEvent<HTMLElement>) => {
@@ -147,8 +192,8 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     const element = root.current
     if (!element) return
     const pointer = target ? glyphHit(target) : null
-    const hits = columnScopedHits(getPages(), readPaperHits(element), pointer ?? undefined)
-    const passage = locatePassages(getPages(), hits)
+    const hits = dragSelectionHits(getPages(), readPaperHits(element), pointer ?? undefined)
+    const passage = locateDragPassage(getPages(), hits)
     if (!passage) return
     pinned.current = true
     hovered.current = null
@@ -163,7 +208,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     onMouseMove,
     onMouseLeave,
     onMouseUp,
-    holdToolbar: cancelHide,
+    holdToolbar: () => { cancelHide(); cancelRetarget() },
     releaseToolbar: scheduleHide
   }
 }
@@ -300,6 +345,15 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
         : <button type="button" aria-label={t('papers.dismiss')} onClick={() => setAnswer(null)}><X size={14} /></button>}
     </div>}
   </div>
+}
+
+function pointerInToolbar(x: number, y: number): boolean {
+  const toolbar = document.querySelector('.paper-toolbar')
+  if (!toolbar) return false
+  const box = toolbar.getBoundingClientRect()
+  if (box.width < 8 || box.height < 8) return false
+  const pad = 14
+  return x >= box.left - pad && x <= box.right + pad && y >= box.top - pad && y <= box.bottom + pad
 }
 
 function eventElement(target: EventTarget | null): Element | null {

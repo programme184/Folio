@@ -932,6 +932,7 @@ describe('instant new chat defaults', () => {
     selectSession,
     creatingChat: false,
     error: null,
+    selectedFolder: null,
     modals: closedModals
   }))
 
@@ -1056,6 +1057,66 @@ describe('instant new chat defaults', () => {
     expect(refresh).toHaveBeenCalledOnce()
     expect(select).toHaveBeenCalledWith('created')
     expect(useAppStore.getState().creatingChat).toBe(false)
+  })
+
+  it('creates a chat in the selected folder instead of the open chat folder', async () => {
+    const stored = { version: 1, folder: 'Older', cwd: '/work/older', backend: 'claude', model: 'claude-sonnet', effort: 'high' }
+    const create = vi.fn().mockResolvedValue({
+      id: 'created', title: 'New chat', folder: 'Fresh', cwd: '/work/research', backend: 'claude', model: 'claude-sonnet', effort: 'high'
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(stored), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Selected chat', folder: 'Research', cwd: '/work/research', backend: 'codex', model: 'gpt-current' }],
+      selectedSessionId: 'selected', selectedFolder: 'Fresh', folderOrder: ['Research', 'Fresh'],
+      health: { ok: true }, runtimeCatalog: { backends: { claude: { native_credentials_present: true, models: [], efforts: [] } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined),
+      creatingChat: false, modals: closedModals
+    })
+
+    await useAppStore.getState().requestNewChat()
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      folder: 'Fresh', cwd: '/work/research', backend: 'claude'
+    }))
+  })
+
+  it('opens a collapsed folder when a left click creates a chat there', async () => {
+    const stored = { version: 1, folder: 'Older', cwd: '/work/older', backend: 'claude', model: 'claude-sonnet', effort: 'high' }
+    const create = vi.fn().mockResolvedValue({
+      id: 'created', title: 'New chat', folder: 'Notes', cwd: '/work/research', backend: 'claude', model: 'claude-sonnet', effort: 'high'
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(stored), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Selected chat', folder: 'Research', cwd: '/work/research', backend: 'codex' }],
+      selectedSessionId: 'selected', selectedFolder: 'Fresh', folderOrder: ['Research', 'Notes'],
+      collapsedFolders: new Set(['Notes']),
+      health: { ok: true }, runtimeCatalog: { backends: { claude: { native_credentials_present: true, models: [], efforts: [] } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined),
+      creatingChat: false, modals: closedModals
+    })
+
+    await useAppStore.getState().requestNewChat('Notes')
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ folder: 'Notes', cwd: '/work/research' }))
+    expect(useAppStore.getState().collapsedFolders.has('Notes')).toBe(false)
   })
 
   it('uses the last-opened chat folder and working directory ahead of saved location defaults', async () => {

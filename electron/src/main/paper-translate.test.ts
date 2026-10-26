@@ -16,18 +16,30 @@ describe('paper translation', () => {
     expect(() => readBingTranslation({ statusCode: 205 })).toThrow('translate_failed')
   })
 
-  it('translates through Bing and reuses the result', async () => {
+  it('translates through the edge endpoint and reuses the result', async () => {
+    resetPaperTranslator()
+    const calls: string[] = []
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      calls.push(String(input))
+      return new Response(JSON.stringify([{ translations: [{ text: '补偿力场。' }] }]))
+    }) as typeof fetch
+    await expect(translateToChinese('compensatory force field', fetchImpl)).resolves.toBe('补偿力场。')
+    await expect(translateToChinese('compensatory force field', fetchImpl)).resolves.toBe('补偿力场。')
+    expect(calls).toEqual(['https://edge.microsoft.com/translate/translatetext?from=en&to=zh-Hans&isEnterpriseClient=false'])
+  })
+
+  it('falls back to Bing when the edge endpoint fails', async () => {
     resetPaperTranslator()
     const calls: string[] = []
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input)
       calls.push(url)
-      if (url.includes('/translator')) return new Response(page)
+      if (url.includes('edge.microsoft.com')) return new Response('no', { status: 503 })
+      if (url.includes('/translator')) return new Response(page, { headers: { 'set-cookie': 'a=b; path=/' } })
       return new Response(JSON.stringify([{ translations: [{ text: '补偿力场。' }] }]))
     }) as typeof fetch
     await expect(translateToChinese('compensatory force field', fetchImpl)).resolves.toBe('补偿力场。')
-    await expect(translateToChinese('compensatory force field', fetchImpl)).resolves.toBe('补偿力场。')
-    expect(calls.filter(url => url.includes('ttranslatev3'))).toHaveLength(1)
-    expect(calls.some(url => url.startsWith('https://cn.bing.com/translator'))).toBe(true)
+    expect(calls.some(url => url.includes('edge.microsoft.com'))).toBe(true)
+    expect(calls.some(url => url.includes('ttranslatev3'))).toBe(true)
   })
 })

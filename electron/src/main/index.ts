@@ -1,7 +1,7 @@
-import { app, BrowserWindow, clipboard, dialog, Menu, powerMonitor, protocol, session, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, powerMonitor, protocol, session, shell, type MenuItemConstructorOptions } from 'electron'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { registerIpc } from './ipc'
 import { appLog } from './logger'
 import { reportStorageError } from './storage-health'
@@ -41,6 +41,7 @@ app.setPath('userData', resolveUserDataPath(
   app.isPackaged,
   process.env.AGENTSDOCK_USER_DATA
 ))
+installFolioLinuxIdentity(folioWindowIconPath())
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -260,6 +261,38 @@ function errorDetails(error: unknown): { message: string; stack?: string } {
   return { message: String(error) }
 }
 
+function installFolioLinuxIdentity(iconPath: string | undefined): void {
+  if (process.platform !== 'linux') return
+  // The dock matches this name. Without a desktop entry it shows a gear labeled agentsdock.
+  app.setDesktopName('folio.desktop')
+  if (!iconPath) return
+  try {
+    const applications = join(app.getPath('home'), '.local', 'share', 'applications')
+    mkdirSync(applications, { recursive: true })
+    const command = app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`
+    writeFileSync(join(applications, 'folio.desktop'), `[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Folio
+Comment=Folio
+Exec=${command}
+Icon=${iconPath}
+StartupWMClass=folio
+Terminal=false
+Categories=Office;
+`)
+  } catch (error) {
+    appLog('main', 'could not install the Folio desktop entry', errorDetails(error))
+  }
+}
+
+function folioWindowIconPath(): string | undefined {
+  return [
+    join(__dirname, 'folio-icon.png'),
+    join(__dirname, '../../src/renderer/src/assets/folio-icon.png')
+  ].find(candidate => existsSync(candidate))
+}
+
 function createWindow(): BrowserWindow {
   const platformWindowOptions = process.platform === 'darwin'
     ? {
@@ -267,6 +300,10 @@ function createWindow(): BrowserWindow {
         trafficLightPosition: { x: 16, y: 16 }
       }
     : {}
+  const iconPath = folioWindowIconPath()
+  const loadedIcon = iconPath ? nativeImage.createFromPath(iconPath) : null
+  // A full 512px image is dropped by the Linux window icon property.
+  const windowIcon = loadedIcon && !loadedIcon.isEmpty() ? loadedIcon.resize({ width: 128, height: 128 }) : undefined
   const window = new BrowserWindow({
     width: 1500,
     height: 960,
@@ -274,6 +311,7 @@ function createWindow(): BrowserWindow {
     minHeight: 680,
     show: false,
     title: '',
+    ...(windowIcon ? { icon: windowIcon } : {}),
     frame: process.platform === 'darwin',
     autoHideMenuBar: process.platform !== 'darwin',
     ...platformWindowOptions,
@@ -292,7 +330,11 @@ function createWindow(): BrowserWindow {
   })
 
   if (process.platform !== 'darwin') window.setMenuBarVisibility(false)
-  window.once('ready-to-show', () => window.show())
+  if (windowIcon) window.setIcon(windowIcon)
+  window.once('ready-to-show', () => {
+    if (windowIcon) window.setIcon(windowIcon)
+    window.show()
+  })
   window.webContents.on('preload-error', (_event, path, error) => appLog('preload', 'failed to load', { path, error: error.stack || error.message }))
   window.webContents.on('did-fail-load', (_event, code, description, url) => appLog('renderer', 'page load failed', { code, description, url }))
   window.webContents.on('render-process-gone', (_event, details) => appLog('renderer', 'process gone', details))

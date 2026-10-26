@@ -1,7 +1,8 @@
 const BING_PAGE = 'https://cn.bing.com/translator'
-const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
+const EDGE_URL = 'https://edge.microsoft.com/translate/translatetext?from=en&to=zh-Hans&isEnterpriseClient=false'
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0'
 const MAX_CHARS = 6000
-const CHUNK_CHARS = 1800
+const CHUNK_CHARS = 4500
 
 export interface BingSession {
   key: string
@@ -51,9 +52,8 @@ export async function translateToChinese(text: string, fetchImpl: typeof fetch =
   const clipped = Array.from(source).slice(0, MAX_CHARS).join('')
   const cached = translations.get(clipped)
   if (cached) return cached
-  const parts: string[] = []
-  for (const part of chunks(clipped)) parts.push(await translateChunk(part, fetchImpl))
-  const translated = parts.join('')
+  const parts = chunks(clipped)
+  const translated = (await Promise.all(parts.map(part => translatePiece(part, fetchImpl)))).join('')
   translations.set(clipped, translated)
   if (translations.size > 200) {
     const oldest = translations.keys().next().value
@@ -62,7 +62,25 @@ export async function translateToChinese(text: string, fetchImpl: typeof fetch =
   return translated
 }
 
-async function translateChunk(text: string, fetchImpl: typeof fetch, retry = true): Promise<string> {
+async function translatePiece(text: string, fetchImpl: typeof fetch): Promise<string> {
+  try {
+    return await translateEdge(text, fetchImpl)
+  } catch {
+    return translateBing(text, fetchImpl)
+  }
+}
+
+async function translateEdge(text: string, fetchImpl: typeof fetch): Promise<string> {
+  const response = await fetchImpl(EDGE_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': USER_AGENT },
+    body: JSON.stringify([text])
+  })
+  if (!response.ok) throw new Error('translate_failed')
+  return readBingTranslation(await response.json())
+}
+
+async function translateBing(text: string, fetchImpl: typeof fetch, retry = true): Promise<string> {
   const current = await sessionFor(fetchImpl)
   const url = `https://cn.bing.com/ttranslatev3?isVertical=1&IG=${current.ig}&IID=${encodeURIComponent(current.iid)}.1`
   const response = await fetchImpl(url, {
@@ -83,7 +101,7 @@ async function translateChunk(text: string, fetchImpl: typeof fetch, retry = tru
   })
   if (!response.ok) {
     session = null
-    if (retry) return translateChunk(text, fetchImpl, false)
+    if (retry) return translateBing(text, fetchImpl, false)
     throw new Error('translate_failed')
   }
   const payload: unknown = await response.json()
@@ -91,7 +109,7 @@ async function translateChunk(text: string, fetchImpl: typeof fetch, retry = tru
     return readBingTranslation(payload)
   } catch (error) {
     session = null
-    if (retry) return translateChunk(text, fetchImpl, false)
+    if (retry) return translateBing(text, fetchImpl, false)
     throw error
   }
 }

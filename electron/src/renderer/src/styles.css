@@ -504,7 +504,9 @@ html:not([data-platform="darwin"]) .inspector-drag-region { height: 0; }
 .sidebar-topbar { height: 42px; padding: 0 12px 0 16px; display: flex; align-items: center; justify-content: space-between; }
 html:not([data-platform="darwin"]) .sidebar-topbar { -webkit-app-region: drag; }
 html:not([data-platform="darwin"]) .sidebar-topbar button { -webkit-app-region: no-drag; }
+.sidebar-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sidebar-topbar strong { font-size: var(--text-size-ui); }
+.folio-mark { width: 26px; height: 26px; border-radius: 7px; display: block; flex: none; }
 .toolbar-cluster { display: flex; gap: var(--space-1); }
 .server-selector-trigger { min-width: 0; min-height: 45px; margin: 0 10px 7px; display: flex; align-items: center; gap: 9px; padding: var(--space-3) 9px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-soft); border-radius: var(--radius-selection); text-align: left; -webkit-app-region: no-drag; }
 .server-selector-trigger:hover, .server-selector-trigger[data-state="open"] { background: var(--surface-3); border-color: var(--border); }
@@ -541,8 +543,16 @@ html:not([data-platform="darwin"]) .sidebar-topbar button { -webkit-app-region: 
 .sidebar-project-action:disabled { opacity: .45; }
 .session-list { min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px 8px; }
 .sidebar-section { position: relative; margin-bottom: 7px; }
-.section-header { position: relative; height: 25px; }
-.section-header > button { width: 100%; height: 25px; display: flex; align-items: center; gap: 5px; padding: 0 5px; color: var(--faint); background: transparent; font-size: var(--text-size-meta); font-weight: var(--text-weight-label); text-align: left; }
+.section-header { position: relative; height: 25px; display: flex; align-items: center; }
+.section-header > button { height: 25px; display: flex; align-items: center; gap: 5px; padding: 0 5px; color: var(--faint); background: transparent; font-size: var(--text-size-meta); font-weight: var(--text-weight-label); text-align: left; }
+.section-header > button:only-child,
+.section-header > button.section-folder-main { flex: 1; min-width: 0; }
+.section-header > button.section-chevron,
+.section-header > button.section-new-chat { width: 20px; flex: none; justify-content: center; padding: 0; border-radius: var(--radius-compact); }
+.section-header > button.section-new-chat:hover:not(:disabled),
+.section-header > button.section-chevron:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.section-header > button.section-new-chat:disabled { opacity: .45; }
+.section-header.selected > button.section-folder-main { color: var(--text); background: color-mix(in srgb, var(--accent), transparent 82%); border-radius: var(--radius-control); }
 .section-header span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .section-header small { font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
 .session-row { position: relative; min-height: 48px; display: flex; align-items: center; gap: 9px; margin: 1px 0; padding: var(--space-3) var(--space-4); border-radius: var(--radius-control); color: #b9b9b6; content-visibility: auto; contain-intrinsic-block-size: auto 48px; }
@@ -595,7 +605,8 @@ html:not([data-platform="darwin"]) .sidebar-topbar button { -webkit-app-region: 
 .drop-before::before { top: -2px; }
 .drop-after::after { bottom: -2px; }
 .sidebar-section.drop-before::before, .sidebar-section.drop-after::after { left: 0; right: 0; }
-.section-header.drop-inside > button { color: var(--text); background: color-mix(in srgb, var(--accent), transparent 84%); outline: 1px solid color-mix(in srgb, var(--accent), transparent 38%); border-radius: var(--radius-control); }
+.section-header.drop-inside > button.section-folder-main,
+.section-header.drop-inside > button:only-child { color: var(--text); background: color-mix(in srgb, var(--accent), transparent 84%); outline: 1px solid color-mix(in srgb, var(--accent), transparent 38%); border-radius: var(--radius-control); }
 .drag-overlay { min-width: 170px; max-width: 250px; display: flex; align-items: center; gap: 7px; padding: 8px 10px; color: var(--text); background: var(--surface-3); border: 1px solid color-mix(in srgb, var(--text), transparent 72%); border-radius: 7px; box-shadow: 0 12px 34px #000b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .sidebar-empty { padding: 30px 10px; text-align: center; color: var(--faint); }
 .sidebar-footer { min-height: 48px; display: flex; align-items: center; padding: 6px 8px; border-top: 1px solid var(--border-soft); }
@@ -605,9 +616,10 @@ html:not([data-platform="darwin"]) .sidebar-topbar button { -webkit-app-region: 
 
 /* Header */
 .chat-header { min-width: 0; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
-html:not([data-platform="darwin"]) .chat-header { padding-right: 138px; }
-.window-frame-controls { position: absolute; z-index: 60; top: 0; right: 0; height: 40px; display: flex; align-items: stretch; -webkit-app-region: no-drag; }
-.window-frame-controls button { width: 46px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; }
+html:not([data-platform="darwin"]) .conversation-pane > .chat-header,
+html:not([data-platform="darwin"]) .teamspace-header { margin-right: 138px; }
+.window-frame-controls { position: absolute; z-index: 80; top: 0; right: 0; height: 40px; display: flex; align-items: stretch; -webkit-app-region: no-drag; pointer-events: auto; }
+.window-frame-controls button { width: 46px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; -webkit-app-region: no-drag; pointer-events: auto; }
 .window-frame-controls button:hover { color: var(--text); background: var(--interaction-hover); }
 .window-frame-controls .window-frame-close:hover { color: #fff; background: #e81123; }
 .chat-pane .chat-header { height: 40px; padding: 0 10px; display: flex; gap: 8px; }

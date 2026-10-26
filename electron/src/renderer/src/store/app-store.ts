@@ -210,6 +210,7 @@ interface AppState {
   revokingAgentRouteIds: Set<string>
   folderOrder: string[]
   collapsedFolders: Set<string>
+  selectedFolder: string | null
   archivedCollapsed: boolean
   inspectorVisible: boolean
   activeSessionIds: Set<string>
@@ -258,7 +259,8 @@ interface AppState {
   removeUpload(fileId: string): void
   removeUploadForSession(sessionId: string, fileId: string): void
   refreshSessions(cleanupEmpty?: boolean): Promise<void>
-  requestNewChat(): Promise<void>
+  requestNewChat(folder?: string): Promise<void>
+  selectFolder(folder: string | null): void
   updateSession(
     sessionId: string,
     patch: Partial<Session>,
@@ -476,6 +478,25 @@ const agentRouteRefreshTokens = new Map<string, number>()
 const agentRouteMutationTokens = new Map<string, number>()
 const pendingCrossChatQueueRefreshes = new Map<string, { scope: RendererProfileScope; retryAfter: number }>()
 
+const SELECTED_FOLDER_KEY = 'agentsdock.selectedFolder'
+
+function readSelectedFolder(): string | null {
+  try {
+    return localStorage.getItem(SELECTED_FOLDER_KEY)?.trim() || null
+  } catch {
+    return null
+  }
+}
+
+function writeSelectedFolder(folder: string | null): void {
+  try {
+    if (folder) localStorage.setItem(SELECTED_FOLDER_KEY, folder)
+    else localStorage.removeItem(SELECTED_FOLDER_KEY)
+  } catch {
+    // Private browsing can reject storage; the in-memory selection still works.
+  }
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   initialized: false,
   profiles: [],
@@ -514,6 +535,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   revokingAgentRouteIds: new Set(),
   folderOrder: [],
   collapsedFolders: new Set(),
+  selectedFolder: readSelectedFolder(),
   archivedCollapsed: false,
   inspectorVisible: false,
   activeSessionIds: new Set(),
@@ -2068,9 +2090,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
   },
 
-  async requestNewChat() {
+  async requestNewChat(folder?: string) {
     const initial = get()
     if (initial.switchingProfileId || initial.creatingChat) return
+    const requestedFolder = folder?.trim() || initial.selectedFolder?.trim() || null
     const preferenceScope = captureWorkspaceScope(initial)
     if (!preferenceScope) {
       initial.setModal('newChat', true)
@@ -2115,7 +2138,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const lastOpenedCwd = lastOpened ? lastOpened.cwd?.trim() || defaultCwd : null
       defaults = {
         ...defaults,
-        folder: lastOpenedFolder ?? defaults.folder,
+        folder: requestedFolder || lastOpenedFolder || defaults.folder,
         cwd: lastOpenedCwd ?? (defaults.cwd || defaultCwd)
       }
       if (
@@ -2126,6 +2149,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         current.setModal('newChat', true)
         return
       }
+      if (requestedFolder && get().collapsedFolders.has(requestedFolder)) get().toggleFolder(requestedFolder)
       const input: CreateSessionInput = {
         title: 'New chat',
         folder: defaults.folder,
@@ -2215,6 +2239,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
       ])
       if (!profileScopeMatches(scope, get())) return
+      if (get().selectedFolder === source) writeSelectedFolder(null)
       set(state => {
         const snapshots = { ...state.snapshots }
         for (const [sessionId, session] of movedById) {
@@ -2224,7 +2249,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           sessions: state.sessions.map(session => movedById.get(session.id) ?? session),
           snapshots,
           folderOrder,
-          collapsedFolders
+          collapsedFolders,
+          ...(state.selectedFolder === source ? { selectedFolder: null } : {})
         }
       })
       trackEvent('folder_deleted')
@@ -2507,6 +2533,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       { ...state.snapshots[sessionId], queuedTurns: turns },
       visibleChatSessionIds(currentChatPaneLayout(state).panes)
     ) }))
+  },
+  selectFolder(folder) {
+    const next = folder?.trim() || null
+    if ((get().selectedFolder?.trim() || null) === next) return
+    writeSelectedFolder(next)
+    set({ selectedFolder: next })
   },
   toggleFolder(folder) {
     const next = new Set(get().collapsedFolders)

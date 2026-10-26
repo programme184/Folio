@@ -122,6 +122,75 @@ export function indexPaperPage(page: number, glyphs: readonly PaperGlyph[]): Pap
   return { page, paragraphs, glyphs: glyphs.slice() }
 }
 
+/** Keep a drag inside one column without expanding it to the whole paragraph. */
+export function dragSelectionHits(
+  pages: readonly PaperPageIndex[],
+  hits: readonly PaperHit[],
+  pointer?: { page: number, index: number }
+): PaperHit[] {
+  const tagged: Array<{ page: number, index: number, column: PaperColumn }> = []
+  for (const hit of hits) {
+    const page = pages.find(item => item.page === hit.page)
+    if (!page) continue
+    for (const index of hit.glyphIndexes) {
+      const paragraph = page.paragraphs.find(item => !item.furniture && item.glyphIndexes.includes(index))
+      if (!paragraph) continue
+      tagged.push({ page: hit.page, index, column: paragraph.column })
+    }
+  }
+  if (!tagged.length) return []
+  const pointerColumn = pointer
+    ? tagged.find(item => item.page === pointer.page && item.index === pointer.index)?.column
+    : undefined
+  const column = pointerColumn ?? majorityColumn(tagged.map(item => ({ column: item.column, glyphIndexes: [item.index] } as PaperParagraph)))
+  const byPage = new Map<number, number[]>()
+  for (const item of tagged) {
+    if (item.column !== column) continue
+    const list = byPage.get(item.page) ?? []
+    list.push(item.index)
+    byPage.set(item.page, list)
+  }
+  return [...byPage].map(([page, glyphIndexes]) => ({ page, glyphIndexes }))
+}
+
+/** The text of a manual drag, in reading order, replacing the hovered paragraph. */
+export function locateDragPassage(pages: readonly PaperPageIndex[], hits: readonly PaperHit[]): LocatedPassage | null {
+  const scoped = hits.filter(hit => hit.glyphIndexes.length)
+  if (!scoped.length) return null
+  const columns = new Set<PaperColumn>()
+  const parts: string[] = []
+  const pageNumbers: number[] = []
+  let anchor: PaperParagraph | null = null
+  for (const hit of [...scoped].sort((a, b) => a.page - b.page)) {
+    const page = pages.find(item => item.page === hit.page)
+    if (!page) continue
+    const wanted = new Set(hit.glyphIndexes)
+    const glyphs: IndexedGlyph[] = []
+    page.glyphs.forEach((glyph, index) => {
+      if (!wanted.has(index) || !glyph.text.trim()) return
+      glyphs.push({ ...glyph, index })
+      const paragraph = page.paragraphs.find(item => !item.furniture && item.glyphIndexes.includes(index))
+      if (paragraph) columns.add(paragraph.column)
+      if (!anchor && paragraph) anchor = paragraph
+    })
+    const text = textFromGlyphs(glyphs)
+    if (!text) continue
+    parts.push(text)
+    pageNumbers.push(hit.page)
+  }
+  const text = parts.join('\n\n').trim()
+  if (!text || !anchor) return null
+  const readable = [...pages].sort((a, b) => a.page - b.page).flatMap(page => page.paragraphs).filter(paragraph => !paragraph.furniture)
+  const place = readable.findIndex(paragraph => paragraph.id === anchor?.id)
+  return {
+    text,
+    pages: pageNumbers,
+    column: columns.size === 1 ? [...columns][0] : 'mixed',
+    before: place > 0 ? readable[place - 1].text : undefined,
+    after: place >= 0 && place < readable.length - 1 ? readable[place + 1].text : undefined
+  }
+}
+
 /** Keep a drag inside one column and expand every touched line to its paragraph. */
 export function columnScopedHits(
   pages: readonly PaperPageIndex[],
@@ -364,6 +433,17 @@ function gapCrossesGutter(previous: IndexedGlyph, glyph: IndexedGlyph, gutters: 
   const gapEnd = glyph.x
   if (gapEnd <= gapStart) return false
   return gutters.some(gutter => Math.min(gapEnd, gutter.end) - Math.max(gapStart, gutter.start) > 0)
+}
+
+function textFromGlyphs(glyphs: readonly IndexedGlyph[]): string {
+  const sorted = [...glyphs].sort((a, b) => b.y - a.y || a.x - b.x)
+  const rows: IndexedGlyph[][] = []
+  for (const glyph of sorted) {
+    const row = rows[rows.length - 1]
+    if (!row || !sameVisualLine(row, glyph)) rows.push([glyph])
+    else row.push(glyph)
+  }
+  return joinLines(rows.map(row => lineFromGlyphs(row).text))
 }
 
 function lineFromGlyphs(glyphs: IndexedGlyph[]): PaperLine {

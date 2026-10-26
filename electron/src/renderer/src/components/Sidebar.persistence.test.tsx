@@ -52,6 +52,7 @@ describe('profile-scoped sidebar position', () => {
     const list = container.querySelector<HTMLDivElement>('.session-list')!
     await waitFor(() => expect(list.scrollTop).toBe(42))
     expect(screen.getByText('Folio')).toBeInTheDocument()
+    expect(container.querySelector('img.folio-mark')).toHaveAttribute('src', expect.stringContaining('folio-icon'))
     expect(screen.queryByText(/^v\d/)).not.toBeInTheDocument()
 
     list.scrollTop = 91

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   columnScopedHits,
+  dragSelectionHits,
+  locateDragPassage,
   glyphsFromTextContent,
   indexPaperPage,
   locatePassages,
@@ -94,6 +96,15 @@ describe('paper passage index', () => {
     expect(located?.column).toBe('left')
     expect(located?.text).toContain('environment')
     expect(located?.text).not.toContain('Section heading')
+    const dragged = dragSelectionHits([page], [{
+      page: 6,
+      glyphIndexes: [environmentHit, (environment?.glyphIndexes[3] ?? environmentHit), headingHit]
+    }], { page: 6, index: environmentHit })
+    const partial = locateDragPassage([page], dragged)
+    expect(partial?.column).toBe('left')
+    expect(partial?.text).not.toContain('Section heading')
+    expect(partial?.text).not.toContain('Left sentence 0')
+    expect(dragged[0]?.glyphIndexes).not.toContain(headingHit)
   })
 
   it('keeps a wide space inside a one-column paragraph', () => {

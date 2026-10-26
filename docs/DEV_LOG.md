@@ -1,5 +1,41 @@
 # Public development log
 
+## 2026-10-26 — Use the Folio mark in the dock
+
+- The dock and app switcher use the thread-bound folio instead of a gear,
+  and the label is Folio.
+
+## 2026-10-26 — Show the Folio mark
+
+- The thread-bound folio sits beside the Folio name and is the window icon.
+
+## 2026-10-26 — Replace a hovered paragraph with a drag
+
+- Moving over a paragraph still highlights it. A left-button drag replaces
+  that highlight with only the dragged text, in a light green.
+
+## 2026-10-26 — Keep a paper toolbar on its paragraph
+
+- Moving onto Translate or Explain no longer swaps the highlight to the
+  next paragraph. The passage changes only after the pointer rests there.
+
+## 2026-10-26 — Create a chat inside the selected folder
+
+- Left-click a folder to select it. New chat, and the plus on that folder,
+  opens the chat there. The sidebar mark is a thread-bound folio with a
+  cinnabar seal.
+
+## 2026-10-26 — Translate a paper paragraph in one request
+
+- Paragraph translation uses the same Edge endpoint as PDF Translate,
+  so a passage comes back without first loading a translator page.
+
+## 2026-10-26 — Match the paper page to the warm sheet
+
+- In the eye-care theme, the PDF page uses the warm cream of the
+  surrounding page. Minimize and maximize sit outside the draggable
+  title strip, so those buttons reach the window.
+
 ## 2026-10-26 — Select one paper paragraph in one column
 
 - Pointing at a line selects the whole paragraph in that column. A

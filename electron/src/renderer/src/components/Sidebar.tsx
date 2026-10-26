@@ -21,6 +21,7 @@ import { openSessionHistoryResult } from '../lib/session-history-search'
 import { rankSessionsForSearch } from '../lib/sessions'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
+import folioMark from '../assets/folio-icon.png'
 import { BackendMark } from './BackendMark'
 import { ServerSelector } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
@@ -231,7 +232,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
     <aside className="sidebar" aria-hidden={hidden} inert={hidden ? true : undefined}>
       <div className="sidebar-drag-region" />
       <div className="sidebar-topbar">
-        <strong>Folio</strong>
+        <span className="sidebar-brand"><img className="folio-mark" src={folioMark} alt="" /><strong>Folio</strong></span>
         <div className="toolbar-cluster">
           <ShortcutTooltip shortcut="toggleSidebar" label={t('ui.sidebar.hideChatList')}><button className="icon-button" aria-label={t('ui.sidebar.hideChatList')} onClick={() => window.dispatchEvent(new Event('agentsdock:toggle-sidebar'))}><PanelLeftClose size={15} /></button></ShortcutTooltip>
           <button className="icon-button" title={connected ? t("ui.Sidebar.Sidebar.refresh_0e91610") : t("ui.Sidebar.Sidebar.reconnect_bf8a9ea")} aria-label={connected ? t("ui.Sidebar.Sidebar.refresh_chats_bf904ec") : t("ui.Sidebar.Sidebar.reconnect_server_558abe3")} disabled={Boolean(switchingProfileId)} onClick={() => void useAppStore.getState().refreshSessions(true)}><RefreshCw size={15} /></button>
@@ -313,7 +314,32 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
   const id = `folder:${section.title}`
   const draggable = useDraggable({ id, disabled: section.kind !== 'folder', data: { type: 'folder', label: section.title } })
   const indicator = drop?.id === id && drop.placement === 'inside' ? 'drop-inside' : ''
-  const header = (
+  const selectedFolder = useAppStore(state => state.selectedFolder)
+  const creatingChat = useAppStore(state => state.creatingChat)
+  const switchingProfileId = useAppStore(state => state.switchingProfileId)
+  const selected = section.kind === 'folder' && selectedFolder === section.title
+  const selectFolder = () => {
+    if (suppressClick(id)) return
+    useAppStore.getState().selectFolder(section.title)
+  }
+  const createInFolder = () => {
+    useAppStore.getState().selectFolder(section.title)
+    void useAppStore.getState().requestNewChat(section.title)
+  }
+  const header = section.kind === 'folder' ? (
+    <div ref={draggable.setNodeRef} className={`section-header ${selected ? 'selected' : ''} ${indicator} ${draggable.isDragging ? 'dragging' : ''}`}>
+      <button type="button" className="section-chevron" aria-label={t(collapsed ? 'ui.Sidebar.FolderHeader.expand_folder' : 'ui.Sidebar.FolderHeader.collapse_folder', { folder: section.title })} onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onToggle() }}>
+        {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+      </button>
+      <button type="button" className="section-folder-main" onClick={selectFolder} {...draggable.listeners} {...draggable.attributes} aria-pressed={selected ? 'true' : 'false'}>
+        <Folder size={11} />
+        <span>{section.title}</span><small>{section.sessions.length}</small>
+      </button>
+      <button type="button" className="section-new-chat" aria-label={t('ui.Sidebar.FolderHeader.new_chat_in_folder', { folder: section.title })} disabled={Boolean(switchingProfileId) || creatingChat} onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); createInFolder() }}>
+        <Plus size={13} />
+      </button>
+    </div>
+  ) : (
     <div ref={draggable.setNodeRef} className={`section-header ${indicator} ${draggable.isDragging ? 'dragging' : ''}`}>
       <button onClick={() => { if (!suppressClick(id)) onToggle() }} {...draggable.listeners} {...draggable.attributes}>
         {section.kind !== 'search' && (collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
