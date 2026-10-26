@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  columnScopedHits,
   glyphsFromTextContent,
   indexPaperPage,
   locatePassages,
@@ -61,6 +62,38 @@ describe('paper passage index', () => {
     expect(insight?.column).toBe('left')
     expect(insight?.text).not.toContain('hardware')
     expect(page.paragraphs.filter(paragraph => paragraph.column === 'right').every(paragraph => !paragraph.text.includes('key insight'))).toBe(true)
+  })
+
+  it('keeps a paragraph in one column when equation numbers sit past the gutter', () => {
+    const rows = []
+    for (let index = 0; index < 8; index += 1) {
+      const y = 700 - index * 12
+      const left = index === 4 ? 'as at where the environment state continues.' : `Left sentence ${index} keeps going across the column.`
+      rows.push(glyph(left, 54, y, 245, 10))
+      rows.push(glyph(index === 0 ? 'E. Section heading' : `Right sentence ${index} keeps going across.`, 313, y, index === 0 ? 142 : 200, 10))
+      rows.push(glyph(`(${index + 1})`, 530, y, 22, 8))
+    }
+    const page = indexPaperPage(6, rows)
+    const environment = page.paragraphs.find(paragraph => paragraph.text.includes('environment'))
+    const heading = page.paragraphs.find(paragraph => paragraph.text.includes('Section heading'))
+    expect(environment?.column).toBe('left')
+    expect(environment?.text).toContain('Left sentence 3')
+    expect(environment?.text).toContain('Left sentence 5')
+    expect(environment?.text).not.toContain('Section heading')
+    expect(environment?.text).not.toContain('Right sentence')
+    expect(heading?.column).toBe('right')
+    expect(heading?.text).not.toContain('Left sentence')
+    expect(heading?.text).not.toContain('(1)')
+    const environmentHit = environment?.glyphIndexes[2] ?? 0
+    const headingHit = heading?.glyphIndexes[0] ?? 0
+    const scoped = columnScopedHits([page], [{
+      page: 6,
+      glyphIndexes: [environmentHit, headingHit]
+    }], { page: 6, index: environmentHit })
+    const located = locatePassages([page], scoped)
+    expect(located?.column).toBe('left')
+    expect(located?.text).toContain('environment')
+    expect(located?.text).not.toContain('Section heading')
   })
 
   it('keeps a wide space inside a one-column paragraph', () => {

@@ -122,6 +122,48 @@ export function indexPaperPage(page: number, glyphs: readonly PaperGlyph[]): Pap
   return { page, paragraphs, glyphs: glyphs.slice() }
 }
 
+/** Keep a drag inside one column and expand every touched line to its paragraph. */
+export function columnScopedHits(
+  pages: readonly PaperPageIndex[],
+  hits: readonly PaperHit[],
+  pointer?: { page: number, index: number }
+): PaperHit[] {
+  const touched: PaperParagraph[] = []
+  for (const page of pages) {
+    const hit = hits.find(item => item.page === page.page)
+    if (!hit) continue
+    const wanted = new Set(hit.glyphIndexes)
+    for (const paragraph of page.paragraphs) {
+      if (paragraph.furniture) continue
+      if (paragraph.glyphIndexes.some(index => wanted.has(index))) touched.push(paragraph)
+    }
+  }
+  if (!touched.length) return []
+  const pointerParagraph = pointer
+    ? pages.find(page => page.page === pointer.page)?.paragraphs.find(paragraph => (
+      !paragraph.furniture && paragraph.glyphIndexes.includes(pointer.index)
+    ))
+    : undefined
+  const columns = new Set(touched.map(paragraph => paragraph.column))
+  const column = pointerParagraph && columns.has(pointerParagraph.column)
+    ? pointerParagraph.column
+    : majorityColumn(touched)
+  const byPage = new Map<number, number[]>()
+  for (const paragraph of touched) {
+    if (paragraph.column !== column) continue
+    const list = byPage.get(paragraph.page) ?? []
+    list.push(...paragraph.glyphIndexes)
+    byPage.set(paragraph.page, list)
+  }
+  return [...byPage].map(([page, glyphIndexes]) => ({ page, glyphIndexes }))
+}
+
+function majorityColumn(paragraphs: readonly PaperParagraph[]): PaperColumn {
+  const counts = new Map<PaperColumn, number>()
+  for (const paragraph of paragraphs) counts.set(paragraph.column, (counts.get(paragraph.column) ?? 0) + paragraph.glyphIndexes.length)
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'body'
+}
+
 export function locatePassages(pages: readonly PaperPageIndex[], hits: readonly PaperHit[]): LocatedPassage | null {
   const selected: PaperParagraph[] = []
   const byPage = new Map(hits.map(hit => [hit.page, new Set(hit.glyphIndexes)]))
@@ -130,7 +172,7 @@ export function locatePassages(pages: readonly PaperPageIndex[], hits: readonly 
     if (!indexes) continue
     for (const paragraph of page.paragraphs) {
       if (paragraph.glyphIndexes.some(index => indexes.has(index))) {
-        selected.push({ ...paragraph, text: selectedParagraphText(page, paragraph, indexes) })
+        selected.push(paragraph)
       }
     }
   }
@@ -241,19 +283,11 @@ function linesFromGlyphs(glyphs: readonly PaperGlyph[]): PaperLine[] {
 }
 
 function sameVisualLine(row: IndexedGlyph[], glyph: IndexedGlyph): boolean {
-  const body = row.reduce((best, item) => item.height >= best.height ? item : best, row[0])
+  const body = row.reduce((best, item) => item.height > best.height ? item : best, row[0])
   const height = Math.max(body.height, glyph.height, 1)
-  // Superscripts and subscripts sit within one em of the base glyph. The next
-  // text line is farther than that, so a formula stays one reading line.
+  // Equal-height glyphs must not move the baseline downward, or each line's
+  // superscript pulls the next line into the same row.
   return Math.abs(body.y - glyph.y) <= height * 0.9
-}
-
-function selectedParagraphText(page: PaperPageIndex, paragraph: PaperParagraph, indexes: Set<number>): string {
-  const chosen = paragraph.glyphIndexes.filter(index => indexes.has(index))
-  if (!page.glyphs.length || chosen.length === paragraph.glyphIndexes.length) return paragraph.text
-  const subset = chosen.map(index => page.glyphs[index]).filter((glyph): glyph is PaperGlyph => Boolean(glyph))
-  const text = joinLines(linesFromGlyphs(subset).map(line => line.text))
-  return text || paragraph.text
 }
 
 function splitRow(row: IndexedGlyph[], gutters: readonly Gutter[]): PaperLine[] {
@@ -365,6 +399,72 @@ function lineFromGlyphs(glyphs: IndexedGlyph[]): PaperLine {
 
 function assignColumns(lines: PaperLine[]): TaggedLine[] {
   if (!lines.length) return []
+  const gutter = textColumnGutter(lines) ?? clusteredGutter(lines)
+  if (!gutter) return lines.map(line => ({ line, column: 'body' }))
+  return lines.map(line => {
+    if (line.x <= gutter.start + 2 && line.right >= gutter.end - 2) return { line, column: 'full' }
+    if (line.x >= gutter.end - 1) return { line, column: 'right' }
+    if (line.right <= gutter.start + 1) return { line, column: 'left' }
+    const center = line.x + line.width / 2
+    return { line, column: center >= (gutter.start + gutter.end) / 2 ? 'right' : 'left' }
+  })
+}
+
+/** The empty vertical band between two text columns, ignoring equation numbers parked at the outer margin. */
+function textColumnGutter(lines: readonly PaperLine[]): Gutter | null {
+  if (lines.length < 8) return null
+  const left = Math.min(...lines.map(line => line.x))
+  const right = Math.max(...lines.map(line => line.right))
+  const width = right - left
+  const height = median(lines.map(line => line.height)) || 1
+  if (width < height * 25) return null
+  const regionLeft = left + width * 0.2
+  const regionRight = left + width * 0.8
+  const bins = 64
+  const binWidth = (regionRight - regionLeft) / bins
+  const covered = new Array<number>(bins).fill(0)
+  let used = 0
+  for (const line of lines) {
+    if (line.width < Math.max(width * 0.18, height * 8)) continue
+    used += 1
+    const start = Math.max(regionLeft, line.x)
+    const end = Math.min(regionRight, line.right)
+    if (end <= start) continue
+    const first = Math.max(0, Math.floor((start - regionLeft) / binWidth))
+    const last = Math.min(bins, Math.ceil((end - regionLeft) / binWidth))
+    for (let index = first; index < last; index += 1) covered[index] += 1
+  }
+  if (used < 8) return null
+  const limit = Math.max(2, used * 0.1)
+  const minimum = Math.max(height * 0.35, 4)
+  let best: Gutter | null = null
+  let bestWidth = 0
+  let runStart = -1
+  for (let index = 0; index <= bins; index += 1) {
+    const empty = index < bins && covered[index] <= limit
+    if (empty && runStart < 0) runStart = index
+    if (!empty && runStart >= 0) {
+      const start = regionLeft + runStart * binWidth
+      const end = regionLeft + index * binWidth
+      const before = covered.slice(0, runStart)
+      const after = covered.slice(index)
+      const leftPeak = before.length ? Math.max(...before) : 0
+      const rightPeak = after.length ? Math.max(...after) : 0
+      const leftSupport = runStart > 0 ? covered[runStart - 1] : 0
+      const rightSupport = index < bins ? covered[index] : 0
+      const supported = leftPeak >= used * 0.2 && rightPeak >= used * 0.2
+        && leftSupport >= leftPeak * 0.3 && rightSupport >= rightPeak * 0.3
+      if (end - start >= minimum && end - start > bestWidth && supported) {
+        best = { start, end }
+        bestWidth = end - start
+      }
+      runStart = -1
+    }
+  }
+  return best
+}
+
+function clusteredGutter(lines: readonly PaperLine[]): Gutter | null {
   const height = median(lines.map(line => line.height)) || 1
   const starts = lines.map(line => line.x).sort((a, b) => a - b)
   const clusters: number[][] = []
@@ -373,7 +473,7 @@ function assignColumns(lines: PaperLine[]): TaggedLine[] {
     if (!cluster || start - cluster[cluster.length - 1] > height * 2) clusters.push([start])
     else cluster.push(start)
   }
-  if (clusters.length < 2) return lines.map(line => ({ line, column: 'body' }))
+  if (clusters.length < 2) return null
   let splitAt = 1
   let splitGap = -1
   for (let index = 1; index < clusters.length; index += 1) {
@@ -383,15 +483,11 @@ function assignColumns(lines: PaperLine[]): TaggedLine[] {
       splitAt = index
     }
   }
-  if (splitGap < Math.max(height * 4, 20)) return lines.map(line => ({ line, column: 'body' }))
-  const splitX = clusters[splitAt - 1][clusters[splitAt - 1].length - 1]
-  const rightStart = clusters[splitAt][0]
-  return lines.map(line => {
-    const spansRight = line.x <= splitX + height && line.right > rightStart + height
-    if (spansRight) return { line, column: 'full' }
-    if (line.x >= rightStart - height) return { line, column: 'right' }
-    return { line, column: 'left' }
-  })
+  if (splitGap < Math.max(height * 4, 20)) return null
+  return {
+    start: clusters[splitAt - 1][clusters[splitAt - 1].length - 1],
+    end: clusters[splitAt][0]
+  }
 }
 
 function paragraphsFromLines(page: number, column: PaperColumn, lines: PaperLine[], start: number): PaperParagraph[] {

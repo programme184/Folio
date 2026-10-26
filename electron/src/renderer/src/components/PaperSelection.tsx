@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { LoaderCircle, X } from 'lucide-react'
 import { t } from '@shared/i18n'
 import {
+  columnScopedHits,
   indexPaperPage,
   locatePassages,
   paperAskDraft,
@@ -145,13 +146,16 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     if (target?.closest('.paper-toolbar')) return
     const element = root.current
     if (!element) return
-    const passage = locatePassages(getPages(), readPaperHits(element))
+    const pointer = target ? glyphHit(target) : null
+    const hits = columnScopedHits(getPages(), readPaperHits(element), pointer ?? undefined)
+    const passage = locatePassages(getPages(), hits)
     if (!passage) return
     pinned.current = true
     hovered.current = null
-    mark([])
-    const range = window.getSelection()?.rangeCount ? window.getSelection()?.getRangeAt(0) : null
-    showPassage(passage, range ? clientRects(range) : [])
+    window.getSelection()?.removeAllRanges()
+    const spans = hits.flatMap(hit => spansFor(element, hit.page, hit.glyphIndexes))
+    mark(spans)
+    showPassage(passage, spanRects(spans))
   }
   return {
     selection,
@@ -332,11 +336,6 @@ function spanRects(spans: readonly HTMLElement[]): ToolbarRect[] {
 
 function rectBox(rect: Pick<DOMRect, 'left' | 'top' | 'width' | 'height'>): ToolbarRect {
   return { left: rect.left, top: rect.top, width: rect.width, height: rect.height }
-}
-
-function clientRects(range: Range): ToolbarRect[] {
-  if (typeof range.getClientRects !== 'function') return []
-  return [...range.getClientRects()].map(rectBox).filter(rect => rect.width > 0 || rect.height > 0)
 }
 
 function rangeIntersects(range: Range, node: Node): boolean {

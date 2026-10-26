@@ -1,5 +1,11 @@
 # Public development log
 
+## 2026-10-26 — Select one paper paragraph in one column
+
+- Pointing at a line selects the whole paragraph in that column. A
+  two-column page no longer highlights the facing column, and a line of
+  inline math stays with its paragraph.
+
 ## 2026-10-26 — Name the desktop Folio
 
 - The sidebar and settings call this desktop Folio.
