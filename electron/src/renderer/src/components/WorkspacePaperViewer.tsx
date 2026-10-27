@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { t } from '@shared/i18n'
+import { paperWorkspaceMarkKey } from '@shared/paper-passages'
 import { sideQuestionsAvailable } from '@shared/side-questions'
 import type { Session, WorkspaceProfileScope } from '@shared/types'
 import { useLocale } from '../lib/i18n'
@@ -47,7 +48,13 @@ export function WorkspacePaperViewer({ source, label, load, session, scope, onAs
   return <div className="workspace-editor-pdf-viewer" role="region" aria-label={t('editor.pdfPreviewOf', { name: label })}>
     {failed && <div className="workspace-editor-loading">{t('papers.loadFailed')}</div>}
     {!failed && data && <Suspense fallback={<div className="workspace-editor-loading">{t('papers.loading')}</div>}>
-      <PaperDocument data={data} canAsk={canAsk} askPassage={askPassage} onAsk={askInChat} />
+      <PaperDocument
+        data={data}
+        documentKey={paperWorkspaceMarkKey(scope?.profileId ?? 'local', session.id, source)}
+        canAsk={canAsk}
+        askPassage={askPassage}
+        onAsk={askInChat}
+      />
     </Suspense>}
     {!failed && !data && <div className="workspace-editor-loading">{t('papers.loading')}</div>}
   </div>

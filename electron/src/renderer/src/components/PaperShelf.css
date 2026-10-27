@@ -221,6 +221,8 @@
   min-height: 0;
   flex: 1;
   overflow: auto;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
   background: #2b2b2b;
 }
 
@@ -243,16 +245,6 @@
 
 :root[data-theme="light"] .paper-page {
   --paper-sheet: #f4ecd8;
-}
-
-:root[data-theme="light"] .paper-page::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  background: var(--paper-sheet);
-  mix-blend-mode: darken;
-  pointer-events: none;
 }
 
 .paper-page canvas {
@@ -304,6 +296,16 @@
   user-select: text;
 }
 
+.paper-page .textLayer span.paper-mark-highlight,
+.paper-passage-view .paper-page span.paper-mark-highlight {
+  background: color-mix(in srgb, var(--paper-highlight, #ffd400) 45%, transparent);
+}
+
+.paper-page .textLayer span.paper-mark-underline,
+.paper-passage-view .paper-page span.paper-mark-underline {
+  box-shadow: inset 0 -2px 0 var(--paper-underline, #e6a817);
+}
+
 .paper-page .textLayer span.paper-paragraph-hot,
 .paper-passage-view .paper-page span.paper-paragraph-hot,
 .paper-passage-view .paper-page span::selection {
@@ -314,6 +316,7 @@
   position: fixed;
   z-index: 40;
   transform: translate(-50%, 0);
+  pointer-events: none;
 }
 
 .paper-toolbar::before {
@@ -337,13 +340,20 @@
   color: var(--text);
   border: 1px solid var(--border);
   box-shadow: 0 10px 28px #0008;
+  pointer-events: auto;
 }
 
 .paper-toolbar-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
+  max-width: min(440px, 80vw);
   padding: 4px;
   border-radius: 10px;
+}
+
+.paper-toolbar-actions button[aria-pressed="true"] {
+  background: rgba(255, 212, 0, 0.35);
 }
 
 .paper-toolbar-actions button,

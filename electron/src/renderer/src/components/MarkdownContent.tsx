@@ -23,6 +23,7 @@ import {
   requestOpenWorkspaceReference
 } from '../lib/workspace-file-links'
 import { useAppStore } from '../store/app-store'
+import { FormulaSource, useFormulaCopy } from './formula-copy'
 
 const COLLAPSED_CHARACTERS = 6300
 const COLLAPSED_LINES = 72
@@ -63,6 +64,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   const locale = useLocale()
   const uiLocale = preserveEnglishUI ? 'en' : locale
   const [expanded, setExpanded] = useState(false)
+  useFormulaCopy()
   const preparedChatReferences = useMemo(
     () => prepareInlineChatReferences(text, inlineChatReferences, inlineTeamReferences, sessionId),
     [inlineChatReferences, inlineTeamReferences, sessionId, text]
@@ -196,7 +198,11 @@ export const MarkdownContent = memo(function MarkdownContent({
           }}
         >{children}</span>
       }
-      return className?.split(/\s+/).includes('katex-error')
+      const classes = className?.split(/\s+/) ?? []
+      if (classes.includes('katex')) {
+        return <span className={className} {...props}>{children}<FormulaSource /></span>
+      }
+      return classes.includes('katex-error')
         ? <code className="math-fallback" title={t("ui.MarkdownContent.this_equation_could_not_be_rendered_0390d07", undefined, uiLocale)}>{children}</code>
         : <span className={className} {...props}>{children}</span>
     },

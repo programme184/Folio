@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { FolderOpen, LoaderCircle, Search } from 'lucide-react'
 import { t } from '@shared/i18n'
+import { paperShelfMarkKey } from '@shared/paper-passages'
 import type { SideQuestionScope } from '@shared/side-questions'
 import type { Session } from '@shared/types'
 import { useLocale } from '../lib/i18n'
@@ -217,7 +218,7 @@ export function PaperShelf({ chat, session, scope, onAsk }: {
           {documentError && <p className="paper-document-status" role="alert">{documentError}</p>}
           {!opening && !bytes && !documentError && <p className="paper-document-status">{t('papers.choose')}</p>}
           {bytes && <Suspense fallback={<p className="paper-document-status" role="status">{t('papers.loading')}</p>}>
-            <PaperDocument data={bytes} canAsk={canAsk} askPassage={askPassage} onAsk={onAsk} />
+            <PaperDocument data={bytes} documentKey={active ? paperShelfMarkKey(active) : null} canAsk={canAsk} askPassage={askPassage} onAsk={onAsk} />
           </Suspense>}
         </div>
       </div>

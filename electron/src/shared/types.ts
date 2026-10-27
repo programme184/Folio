@@ -2319,6 +2319,8 @@ export interface BootstrapPayload {
   selectedSessionId?: string | null
   folderOrder: string[]
   collapsedFolders: string[]
+  /** Local folders that belong to each sidebar project. Absent on older cached payloads. */
+  projectWorkspaces?: Record<string, { directories: string[] }>
   archivedCollapsed: boolean
   inspectorVisible: boolean
   /** Present for profile-aware bootstraps; omitted by the legacy single-server path. */

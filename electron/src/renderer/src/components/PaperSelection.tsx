@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject, type WheelEvent as ReactWheelEvent } from 'react'
 import { LoaderCircle, X } from 'lucide-react'
 import { t } from '@shared/i18n'
 import {
@@ -6,15 +6,21 @@ import {
   locateDragPassage,
   indexPaperPage,
   locatePassages,
+  paintHitsForMark,
   paperAskDraft,
   paperToolbarPosition,
+  retargetPaperMarks,
   type LocatedPassage,
   type PaperGlyph,
+  type PaperHit,
+  type PaperMark,
+  type PaperMarkType,
   type PaperPageIndex,
   type PaperParagraph,
   type ToolbarRect
 } from '@shared/paper-passages'
 import { useLocale } from '../lib/i18n'
+import { usePaperMarkController } from './paper-marks'
 import { sideQuestionError } from './SideQuestionPanel'
 
 export interface PaperAskInput {
@@ -34,6 +40,7 @@ export interface PaperViewPage {
 
 interface SelectionToolbar {
   passage: LocatedPassage
+  hits: PaperHit[]
   left: number
   top: number
   placement: 'above' | 'below'
@@ -97,7 +104,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     cancelHide()
     hideTimer.current = window.setTimeout(clearHover, 220)
   }
-  const showPassage = (passage: LocatedPassage, rects: ToolbarRect[]) => {
+  const showPassage = (passage: LocatedPassage, hits: PaperHit[], rects: ToolbarRect[]) => {
     const element = root.current
     if (!element) return
     const frame = rectBox(element.getBoundingClientRect())
@@ -105,7 +112,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
       rects.length ? rects : [{ left: frame.left + 24, top: frame.top + 24, width: 8, height: 8 }],
       frame
     )
-    setSelection({ passage, ...position })
+    setSelection({ passage, hits, ...position })
   }
   const showParagraph = (pageNumber: number, glyphIndex: number) => {
     const element = root.current
@@ -116,9 +123,10 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     if (!passage) return
     hovered.current = paragraph.id
     pinned.current = false
+    const hits = [{ page: paragraph.page, glyphIndexes: paragraph.glyphIndexes }]
     const spans = spansFor(element, paragraph.page, paragraph.glyphIndexes)
     mark(spans)
-    showPassage(passage, spanRects(spans))
+    showPassage(passage, hits, spanRects(spans))
   }
   const scheduleRetarget = (pageNumber: number, glyphIndex: number, id: string) => {
     if (pendingRetarget.current === id) return
@@ -173,7 +181,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
   }
   const onMouseLeave = (event: ReactMouseEvent<HTMLElement>) => {
     const next = eventElement(event.relatedTarget)
-    if (next?.closest('.paper-toolbar')) {
+    if (next?.closest('.paper-toolbar, .workspace-editor-editor-toolbar, .paper-mark-bar, .paper-mark-colors')) {
       cancelRetarget()
       return
     }
@@ -200,7 +208,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     window.getSelection()?.removeAllRanges()
     const spans = hits.flatMap(hit => spansFor(element, hit.page, hit.glyphIndexes))
     mark(spans)
-    showPassage(passage, spanRects(spans))
+    showPassage(passage, hits, spanRects(spans))
   }
   return {
     selection,
@@ -226,6 +234,17 @@ export function PaperPassageView({ pages, canAsk, askPassage, onAsk }: {
   indexedRef.current = indexed
   const getPages = useCallback(() => indexedRef.current, [])
   const { selection, onMouseDown, onMouseMove, onMouseLeave, onMouseUp, holdToolbar, releaseToolbar } = usePaperSelection(root, getPages)
+  const { marks, replace, toggle, highlightActive, underlineActive } = usePaperMarkController(null, getPages, selection)
+  useEffect(() => {
+    const element = root.current
+    if (!element) return
+    const resolved = retargetPaperMarks(indexed, marks)
+    if (resolved.changed) {
+      replace(resolved.marks)
+      return
+    }
+    applyPaperMarkClasses(element, indexed, marks)
+  }, [indexed, marks, replace])
   return <div className="paper-passage-view" ref={root} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave} onMouseUp={onMouseUp}>
     {pages.map(page => {
       const width = page.width ?? 612
@@ -243,19 +262,33 @@ export function PaperPassageView({ pages, canAsk, askPassage, onAsk }: {
         >{glyph.text}</span>)}
       </article>
     })}
-    {selection && <PaperToolbar selection={selection} canAsk={canAsk} askPassage={askPassage} onAsk={onAsk} onHold={holdToolbar} onRelease={releaseToolbar} />}
+    {selection && <PaperToolbar
+      selection={selection}
+      canAsk={canAsk}
+      askPassage={askPassage}
+      onAsk={onAsk}
+      onHold={holdToolbar}
+      onRelease={releaseToolbar}
+      highlightActive={highlightActive}
+      underlineActive={underlineActive}
+      onToggleMark={toggle}
+    />}
   </div>
 }
 
 const passageTranslations = new Map<string, string>()
 
-export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onRelease }: {
+export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onRelease, highlightActive, underlineActive, onToggleMark, onWheel }: {
   selection: SelectionToolbar
   canAsk: boolean
   askPassage?: PaperAsk
   onAsk?: (draft: string) => void
   onHold?: () => void
   onRelease?: () => void
+  highlightActive: boolean
+  underlineActive: boolean
+  onToggleMark: (type: PaperMarkType) => void
+  onWheel?: (event: ReactWheelEvent<HTMLDivElement>) => void
 }) {
   useLocale()
   const [copied, setCopied] = useState(false)
@@ -328,12 +361,15 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
     onMouseUp={event => event.stopPropagation()}
     onMouseEnter={onHold}
     onMouseLeave={onRelease}
+    onWheel={onWheel}
   >
     <div className="paper-toolbar-actions">
       <button type="button" disabled={!canAsk || !askPassage} title={canAsk ? t('papers.explain') : unavailable} onClick={() => run('explain')}>{t('papers.explain')}</button>
       <button type="button" title={t('papers.translateHint')} onClick={translate}>{t('papers.translate')}</button>
       <button type="button" onClick={copy}>{copied ? t('papers.copied') : t('papers.copy')}</button>
       <button type="button" disabled={!canAsk || !onAsk} title={canAsk ? t('papers.ask') : unavailable} onClick={() => onAsk?.(paperAskDraft(selection.passage))}>{t('papers.ask')}</button>
+      <button type="button" aria-pressed={highlightActive} title={highlightActive ? t('papers.removeHighlight') : t('papers.highlightHint')} onClick={() => onToggleMark('highlight')}>{t('papers.highlight')}</button>
+      <button type="button" aria-pressed={underlineActive} title={underlineActive ? t('papers.removeUnderline') : t('papers.underlineHint')} onClick={() => onToggleMark('underline')}>{t('papers.underline')}</button>
     </div>
     {answer && <div className="paper-answer" role="status">
       {answer.status === 'pending' && <p><LoaderCircle className="spin" size={14} />{t(answer.kind === 'translate' ? 'papers.translating' : 'papers.answering')}</p>}
@@ -374,6 +410,24 @@ function paragraphAt(pages: readonly PaperPageIndex[], pageNumber: number, glyph
   const page = pages.find(item => item.page === pageNumber)
   if (!page) return null
   return page.paragraphs.find(paragraph => !paragraph.furniture && paragraph.glyphIndexes.includes(glyphIndex)) ?? null
+}
+
+export function applyPaperMarkClasses(root: HTMLElement, pages: readonly PaperPageIndex[], marks: readonly PaperMark[]): void {
+  for (const span of root.querySelectorAll<HTMLElement>('.paper-mark-highlight, .paper-mark-underline')) {
+    span.classList.remove('paper-mark-highlight', 'paper-mark-underline')
+    span.style.removeProperty('--paper-highlight')
+    span.style.removeProperty('--paper-underline')
+  }
+  for (const mark of marks) {
+    const className = mark.type === 'highlight' ? 'paper-mark-highlight' : 'paper-mark-underline'
+    const variable = mark.type === 'highlight' ? '--paper-highlight' : '--paper-underline'
+    for (const hit of paintHitsForMark(pages, mark)) {
+      for (const span of spansFor(root, hit.page, hit.glyphIndexes)) {
+        span.classList.add(className)
+        span.style.setProperty(variable, mark.color)
+      }
+    }
+  }
 }
 
 function spansFor(root: HTMLElement, pageNumber: number, indexes: readonly number[]): HTMLElement[] {

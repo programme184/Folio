@@ -4,6 +4,7 @@ import { t } from '@shared/i18n'
 import { paperQuotePreview } from '@shared/paper-passages'
 import { useLocale } from '../lib/i18n'
 import { useAppStore } from '../store/app-store'
+import { formulaSelectionText } from './formula-copy'
 
 interface FollowUpBar {
   text: string
@@ -14,14 +15,17 @@ interface FollowUpBar {
 function answerSelection(): FollowUpBar | null {
   const selection = window.getSelection()
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) return null
-  const text = selection.toString().replace(/\s+/g, ' ').trim()
-  if (!text) return null
   const node = selection.anchorNode
   const element = node instanceof Element ? node : node?.parentElement ?? null
   const markdown = element?.closest('.markdown')
   if (!element || !markdown?.closest('.message-row.assistant')) return null
   if (element.closest('.answer-followup')) return null
-  const range = selection.getRangeAt(0)
+  let range: Range | null = null
+  try { range = selection.getRangeAt(0) } catch { range = null }
+  if (!range) return null
+  const formula = formulaSelectionText(range)
+  const text = (formula ?? selection.toString().replace(/\s+/g, ' ')).trim()
+  if (!text) return null
   const rect = typeof range.getBoundingClientRect === 'function'
     ? range.getBoundingClientRect()
     : { left: 0, top: 0, width: 0, height: 0 }

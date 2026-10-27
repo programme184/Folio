@@ -14,6 +14,15 @@ import { chatBackendChoice, cursorBackendAvailable, runtimeSelectionError, runti
 import { isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
+import {
+  normalizeProjectDirectories,
+  normalizeProjectWorkspaces,
+  PROJECT_WORKSPACES_PREFERENCE_KEY,
+  projectDirectories,
+  renameProjectWorkspace,
+  withoutProject,
+  type ProjectWorkspaceMap
+} from '@shared/project-workspaces'
 import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot } from '@shared/session-files'
 import { isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedHistoryRecord, isImportedProviderControlMetadata, isImportedProviderInterruption, mergeProviderInterruptionEvent } from '@shared/provider-origin'
 import { isReasoningSummaryStream } from '@shared/reasoning-stream'
@@ -210,6 +219,7 @@ interface AppState {
   revokingAgentRouteIds: Set<string>
   folderOrder: string[]
   collapsedFolders: Set<string>
+  projectWorkspaces: ProjectWorkspaceMap
   selectedFolder: string | null
   archivedCollapsed: boolean
   inspectorVisible: boolean
@@ -267,6 +277,9 @@ interface AppState {
     options?: { allowDuringWorkspaceFlush?: boolean }
   ): Promise<void>
   deleteFolder(folder: string): Promise<void>
+  createProject(name: string, directories: string[]): boolean
+  renameProject(from: string, to: string): Promise<boolean>
+  setProjectDirectories(folder: string, directories: string[]): boolean
   forkSession(sessionId: string): Promise<void>
   deleteSession(sessionId: string): Promise<boolean>
   markRead(sessionId: string, force?: boolean): Promise<void>
@@ -488,6 +501,16 @@ function readSelectedFolder(): string | null {
   }
 }
 
+function projectNameTaken(state: { folderOrder: string[]; sessions: Session[] }, name: string, except?: string): boolean {
+  const key = name.toLocaleLowerCase()
+  const exceptKey = except?.trim().toLocaleLowerCase()
+  const names = [
+    ...state.folderOrder,
+    ...state.sessions.map(session => session.folder?.trim() || 'General')
+  ]
+  return names.some(folder => folder.toLocaleLowerCase() === key && folder.toLocaleLowerCase() !== exceptKey)
+}
+
 function writeSelectedFolder(folder: string | null): void {
   try {
     if (folder) localStorage.setItem(SELECTED_FOLDER_KEY, folder)
@@ -535,6 +558,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   revokingAgentRouteIds: new Set(),
   folderOrder: [],
   collapsedFolders: new Set(),
+  projectWorkspaces: {},
   selectedFolder: readSelectedFolder(),
   archivedCollapsed: false,
   inspectorVisible: false,
@@ -2136,10 +2160,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       const lastOpenedFolder = lastOpened ? lastOpened.folder?.trim() || 'General' : null
       const lastOpenedCwd = lastOpened ? lastOpened.cwd?.trim() || defaultCwd : null
+      const folder = requestedFolder || lastOpenedFolder || defaults.folder
+      const directories = projectDirectories(current.projectWorkspaces ?? {}, folder)
+      const inheritedCwd = lastOpened && (lastOpened.folder?.trim() || 'General') === folder && directories.includes(lastOpenedCwd || '')
+        ? lastOpenedCwd
+        : ''
       defaults = {
         ...defaults,
-        folder: requestedFolder || lastOpenedFolder || defaults.folder,
-        cwd: lastOpenedCwd ?? (defaults.cwd || defaultCwd)
+        folder,
+        cwd: inheritedCwd || directories[0] || lastOpenedCwd || defaults.cwd || defaultCwd
       }
       if (
         !selectableChatBackendChoices(current.health, current.runtimeCatalog).includes(chatBackendChoice(defaults))
@@ -2234,9 +2263,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       const movedById = new Map(movedSessions.map(session => [session.id, session]))
       const folderOrder = get().folderOrder.filter(candidate => candidate !== source)
       const collapsedFolders = new Set([...get().collapsedFolders].filter(candidate => candidate !== source))
+      const projectWorkspaces = withoutProject(get().projectWorkspaces ?? {}, source)
       await Promise.all([
         setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
-        setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders])
+        setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders]),
+        setWorkspacePreference(preferenceScope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces)
       ])
       if (!profileScopeMatches(scope, get())) return
       if (get().selectedFolder === source) writeSelectedFolder(null)
@@ -2250,6 +2281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           snapshots,
           folderOrder,
           collapsedFolders,
+          projectWorkspaces,
           ...(state.selectedFolder === source ? { selectedFolder: null } : {})
         }
       })
@@ -2260,6 +2292,107 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!profileScopeMatches(scope, get())) return
       set({ error: errorMessage(error) })
     }
+  },
+
+  createProject(name, directories) {
+    const clean = name.trim()
+    const paths = normalizeProjectDirectories(directories)
+    if (!clean || clean.toLocaleLowerCase() === 'general') {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_a_project_name') })
+      return false
+    }
+    if (!paths.length) {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_at_least_one_local_folder') })
+      return false
+    }
+    if (projectNameTaken(get(), clean)) {
+      set({ error: t('ui.Dialogs.FolderDialog.folder_already_exists', { name: clean }) })
+      return false
+    }
+    const folderOrder = [...get().folderOrder, clean]
+    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [clean]: { directories: paths } }
+    const scope = captureWorkspaceScope(get())
+    set({ folderOrder, projectWorkspaces, error: null })
+    void Promise.all([
+      setWorkspacePreference(scope, 'folderOrder', folderOrder),
+      setWorkspacePreference(scope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces)
+    ]).catch(() => undefined)
+    trackEvent('folder_created')
+    return true
+  },
+
+  async renameProject(from, to) {
+    if (get().switchingProfileId) return false
+    const source = from.trim()
+    const clean = to.trim()
+    if (!source || source.toLocaleLowerCase() === 'general') return false
+    if (!clean || clean.toLocaleLowerCase() === 'general') {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_a_project_name') })
+      return false
+    }
+    if (clean === source) return true
+    if (projectNameTaken(get(), clean, source)) {
+      set({ error: t('ui.Dialogs.FolderDialog.folder_already_exists', { name: clean }) })
+      return false
+    }
+    const scope = captureProfileScope(get())
+    const preferenceScope = captureWorkspaceScope(get())
+    const sessionsToMove = get().sessions.filter(session => (session.folder?.trim() || 'General') === source)
+    try {
+      const movedSessions = await Promise.all(sessionsToMove.map(async session => ({
+        ...(await window.agentsDock.sessions.update(session.id, { folder: clean })),
+        folder: clean
+      })))
+      if (!profileScopeMatches(scope, get())) return false
+      const movedById = new Map(movedSessions.map(session => [session.id, session]))
+      const folderOrder = get().folderOrder.map(candidate => candidate === source ? clean : candidate)
+      const collapsedFolders = new Set([...get().collapsedFolders].map(candidate => candidate === source ? clean : candidate))
+      const projectWorkspaces = renameProjectWorkspace(get().projectWorkspaces ?? {}, source, clean)
+      await Promise.all([
+        setWorkspacePreference(preferenceScope, 'folderOrder', folderOrder),
+        setWorkspacePreference(preferenceScope, 'collapsedFolders', [...collapsedFolders]),
+        setWorkspacePreference(preferenceScope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces)
+      ])
+      if (!profileScopeMatches(scope, get())) return false
+      if (get().selectedFolder === source) writeSelectedFolder(clean)
+      set(state => {
+        const snapshots = { ...state.snapshots }
+        for (const [sessionId, session] of movedById) {
+          if (snapshots[sessionId]) snapshots[sessionId] = { ...snapshots[sessionId], session }
+        }
+        return {
+          sessions: state.sessions.map(session => movedById.get(session.id) ?? session),
+          snapshots,
+          folderOrder,
+          collapsedFolders,
+          projectWorkspaces,
+          error: null,
+          ...(state.selectedFolder === source ? { selectedFolder: clean } : {})
+        }
+      })
+      return true
+    } catch (error) {
+      if (!profileScopeMatches(scope, get())) return false
+      await get().refreshSessions()
+      if (!profileScopeMatches(scope, get())) return false
+      set({ error: errorMessage(error) })
+      return false
+    }
+  },
+
+  setProjectDirectories(folder, directories) {
+    const source = folder.trim()
+    const paths = normalizeProjectDirectories(directories)
+    if (!source || source.toLocaleLowerCase() === 'general') return false
+    if (!paths.length) {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_at_least_one_local_folder') })
+      return false
+    }
+    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [source]: { directories: paths } }
+    const scope = captureWorkspaceScope(get())
+    set({ projectWorkspaces, error: null })
+    void setWorkspacePreference(scope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces).catch(() => undefined)
+    return true
   },
 
   async forkSession(sessionId) {
@@ -3013,6 +3146,7 @@ function workspaceStateFromBootstrap(
     revokingAgentRouteIds: new Set(),
     folderOrder: payload.folderOrder,
     collapsedFolders: new Set(payload.collapsedFolders.filter(folder => !emergencyFolders.has(folder))),
+    projectWorkspaces: normalizeProjectWorkspaces(payload.projectWorkspaces),
     archivedCollapsed: payload.sessions.some(session => session.archived && activeEmergencyAlert(session))
       ? false
       : payload.archivedCollapsed,
@@ -3183,6 +3317,7 @@ async function runProfileRefresh(
       snapshots: syncSnapshotSessions(current.snapshots, payload.sessions),
       folderOrder: payload.folderOrder,
       collapsedFolders: new Set(payload.collapsedFolders),
+      projectWorkspaces: normalizeProjectWorkspaces(payload.projectWorkspaces),
       archivedCollapsed: payload.archivedCollapsed,
       inspectorVisible: payload.inspectorVisible
     })

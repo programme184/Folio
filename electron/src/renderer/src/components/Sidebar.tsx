@@ -8,7 +8,7 @@ import {
   type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent
 } from '@dnd-kit/core'
 import {
-  Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, FolderPlus, GripVertical, Inbox, MoreHorizontal,
+  Archive, ArchiveRestore, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, GripVertical, Inbox, MoreHorizontal,
   Columns2, PanelLeftClose, Pencil, Pin, PinOff, Plus, RefreshCw, Search, Settings, Share2, Trash2, Undo2, UsersRound
 } from 'lucide-react'
 import type { Session } from '@shared/types'
@@ -36,6 +36,8 @@ export type SidebarDropOperation =
   | { kind: 'reorder-folder'; order: string[] }
   | { kind: 'move-session'; sessionId: string; folder: string }
   | { kind: 'reorder-session'; sessionId: string; targetId: string; placement: 'before' | 'after'; targetFolder?: string }
+
+const EMPTY_PROJECT_DIRECTORIES: string[] = []
 
 const sidebarCollisionDetection: CollisionDetection = (args) => {
   const activeType = args.active.data.current?.type
@@ -318,6 +320,10 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
   const creatingChat = useAppStore(state => state.creatingChat)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const selected = section.kind === 'folder' && selectedFolder === section.title
+  const directories = useAppStore(state => (
+    section.kind === 'folder' ? state.projectWorkspaces?.[section.title]?.directories ?? EMPTY_PROJECT_DIRECTORIES : EMPTY_PROJECT_DIRECTORIES
+  ))
+  const locationTitle = directories.join('\n')
   const selectFolder = () => {
     if (suppressClick(id)) return
     useAppStore.getState().selectFolder(section.title)
@@ -331,7 +337,7 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
       <button type="button" className="section-chevron" aria-label={t(collapsed ? 'ui.Sidebar.FolderHeader.expand_folder' : 'ui.Sidebar.FolderHeader.collapse_folder', { folder: section.title })} onPointerDown={event => event.stopPropagation()} onClick={event => { event.stopPropagation(); onToggle() }}>
         {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
       </button>
-      <button type="button" className="section-folder-main" onClick={selectFolder} {...draggable.listeners} {...draggable.attributes} aria-pressed={selected ? 'true' : 'false'}>
+      <button type="button" className="section-folder-main" onClick={selectFolder} {...draggable.listeners} {...draggable.attributes} aria-pressed={selected ? 'true' : 'false'} title={locationTitle || undefined}>
         <Folder size={11} />
         <span>{section.title}</span><small>{section.sessions.length}</small>
       </button>
@@ -354,6 +360,8 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
       <ContextMenu.Trigger asChild>{header}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content className="menu-content">
+          <MenuItem icon={Pencil} label={t('ui.Sidebar.FolderHeader.rename_project')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:rename-project', { detail: section.title }))} />
+          <MenuItem icon={FolderOpen} label={t('ui.Sidebar.FolderHeader.change_folders')} onSelect={() => window.dispatchEvent(new CustomEvent('agentsdock:edit-project-folders', { detail: section.title }))} />
           <MenuItem icon={Trash2} label={t("ui.Sidebar.FolderHeader.delete_folder_0fac016")} danger onSelect={() => void useAppStore.getState().deleteFolder(section.title)} />
         </ContextMenu.Content>
       </ContextMenu.Portal>

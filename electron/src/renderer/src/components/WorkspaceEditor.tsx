@@ -1,4 +1,5 @@
 import { t, useLocale } from '../lib/i18n'
+import { useAppStore } from '../store/app-store'
 import {
   lazy,
   memo,
@@ -48,6 +49,7 @@ import {
   X
 } from 'lucide-react'
 import { internalFileViewerKind, type InternalFileViewerKind } from '@shared/file-content-type'
+import { PaperMarkBar, PaperMarkBarProvider } from './paper-mark-bar'
 import type {
   AgentFile,
   AgentTextFile,
@@ -292,6 +294,13 @@ export interface WorkspaceEditorProps {
   onAskPaper?: (draft: string) => void
 }
 
+const EMPTY_WORKSPACE_DIRECTORIES: string[] = []
+
+function folderLabel(path: string): string {
+  const segments = path.replace(/[\\/]+$/, '').split(/[\\/]/)
+  return segments[segments.length - 1] || path
+}
+
 export function WorkspaceEditor({
   chatContent,
   workspaceKey,
@@ -315,6 +324,11 @@ export function WorkspaceEditor({
   const instanceId = useId().replace(/:/g, '')
   const preferenceKey = `workspace-editor:${session.id}`
   const cwd = session.cwd ?? ''
+  const workspaceFolders = useAppStore(state => {
+    const folder = session.folder?.trim()
+    if (!folder || folder.toLocaleLowerCase() === 'general') return EMPTY_WORKSPACE_DIRECTORIES
+    return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
+  })
   const maxEditableFileBytes = resolvedWorkspaceFileByteLimit(maxTextFileBytes)
   const memory = workspaceMemory.get(workspaceKey)
   const memoryMatches = memory?.sessionId === session.id && memory.cwd === cwd
@@ -1619,6 +1633,29 @@ export function WorkspaceEditor({
     })
     if (!directories[path]) void loadDirectory(path)
   }
+
+  const reloadExplorerAtRoot = () => {
+    const generation = directoryGeneration.current + 1
+    directoryGeneration.current = generation
+    revealRequestSequence.current += 1
+    directoryLoadsRef.current.clear()
+    directoriesRef.current = {}
+    setDirectories({})
+    setExpandedDirectories(new Set())
+    setWorkspaceRoot(cwd)
+    void loadDirectory('', false, generation)
+  }
+  const reloadExplorerAtRootRef = useRef(reloadExplorerAtRoot)
+  reloadExplorerAtRootRef.current = reloadExplorerAtRoot
+  useEffect(() => {
+    const onRoot = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
+      if (sessionId !== session.id) return
+      reloadExplorerAtRootRef.current()
+    }
+    window.addEventListener('agentsdock:workspace-root-changed', onRoot)
+    return () => window.removeEventListener('agentsdock:workspace-root-changed', onRoot)
+  }, [session.id])
 
   const refreshExplorer = () => {
     if (workspaceMutationRef.current) {
@@ -3635,7 +3672,7 @@ export function WorkspaceEditor({
     const mediaSource = file && (file.viewerKind === 'image' || file.viewerKind === 'pdf')
       ? workspaceMediaSource(file, profileScope, session.id)
       : null
-    return <section
+    return <PaperMarkBarProvider><section
       ref={element => { editorGroupRefs.current[group] = element }}
       className={`workspace-editor-editor${focused ? ' workspace-editor-editor-focused' : ''}`}
       aria-label={group === 'primary' ? t('editor.primaryFileEditor') : t('editor.secondaryFileEditor')}
@@ -3658,6 +3695,7 @@ export function WorkspaceEditor({
               title={file.displayPath || file.path}
             >{breadcrumb(file.displayPath || file.path, file.name)}</div>
             <div className="workspace-editor-editor-actions">
+              {file.viewerKind === 'pdf' && <PaperMarkBar />}
               {file.viewerKind === 'markdown' && !largeTextPreview && <div className="workspace-editor-markdown-controls" role="group" aria-label={t('editor.markdownViewMode')}>
                 <button type="button" aria-pressed={markdownMode === 'source'} onClick={() => setMarkdownMode('source')}><FileCode2 size={12} />{t('editor.source')}</button>
                 <button type="button" aria-pressed={markdownMode === 'split'} onClick={() => setMarkdownMode('split')}><Columns2 size={12} />{t('editor.split')}</button>
@@ -3834,7 +3872,7 @@ export function WorkspaceEditor({
         </>
         : <div className="workspace-editor-empty-state"><FileText size={24} aria-hidden="true" /><strong>{t('editor.noFileIsOpen')}</strong><span>{t('editor.openHintBeforeShortcut')}<ShortcutKey shortcut="openWorkspaceFile" />{t('editor.openHintAfterShortcut')}</span></div>}
       {paletteOpen && paletteRenderGroup === group && renderFilePalette()}
-    </section>
+    </section></PaperMarkBarProvider>
   }
 
   const workspaceErrorNotice = workspaceError
@@ -4014,6 +4052,13 @@ export function WorkspaceEditor({
         <Explorer
           root={workspaceLabel}
           cwd={workspaceRoot}
+          workspaceFolders={workspaceFolders}
+          onOpenWorkspaceFolder={path => {
+            if (!path || path === cwd) return
+            void useAppStore.getState().updateSession(session.id, { cwd: path }).then(() => {
+              window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
+            })
+          }}
           activePath={focusedPath}
           openPaths={openPaths}
           directories={directories}
@@ -4241,6 +4286,8 @@ export function WorkspaceEditor({
 const Explorer = memo(function Explorer({
   root,
   cwd,
+  workspaceFolders = EMPTY_WORKSPACE_DIRECTORIES,
+  onOpenWorkspaceFolder,
   activePath,
   openPaths,
   directories,
@@ -4264,6 +4311,8 @@ const Explorer = memo(function Explorer({
 }: {
   root: string
   cwd: string
+  workspaceFolders?: string[]
+  onOpenWorkspaceFolder?: (path: string) => void
   activePath: string | null
   openPaths: Set<string>
   directories: Record<string, DirectoryState>
@@ -4317,7 +4366,18 @@ const Explorer = memo(function Explorer({
         <button type="button" aria-label={t('editor.refreshFileExplorer')} title={t('editor.refreshExplorer')} onClick={onRefresh}><RefreshCw size={12} /></button>
       </div>
     </header>
-    <div className="workspace-editor-explorer-root" title={cwd}><FolderOpen size={14} aria-hidden="true" /><strong>{root}</strong></div>
+    {workspaceFolders.length > 0
+      ? <div className="workspace-editor-roots" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
+        {workspaceFolders.map(path => <button
+          type="button"
+          className={`workspace-editor-root-folder${path === cwd ? ' active' : ''}`}
+          key={path}
+          title={path}
+          aria-label={t('ui.WorkingDirectoryPopover.open_workspace_folder', { folder: path })}
+          onClick={() => onOpenWorkspaceFolder?.(path)}
+        ><FolderOpen size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>)}
+      </div>
+      : <div className="workspace-editor-explorer-root" title={cwd}><FolderOpen size={14} aria-hidden="true" /><strong>{root}</strong></div>}
     <ContextMenu.Root onOpenChange={open => { if (!open) setContextEntryPath(null) }}>
       <ContextMenu.Trigger asChild>
         <div className="workspace-editor-tree" onContextMenuCapture={(event: ReactMouseEvent<HTMLDivElement>) => {

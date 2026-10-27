@@ -36,6 +36,46 @@ export interface PaperHit {
   glyphIndexes: number[]
 }
 
+export type PaperMarkType = 'highlight' | 'underline'
+
+/** Zotero's default annotation yellow, kept distinct from the ephemeral hover green. */
+export const PAPER_HIGHLIGHT_COLOR = '#ffd400'
+/** Earlier underline marks used this gold before the shared color list. */
+export const PAPER_UNDERLINE_COLOR = '#e6a817'
+
+/** Same eight colors as Zotero's annotation menu, yellow first. */
+export const PAPER_MARK_COLORS = [
+  { id: 'yellow', value: '#ffd400' },
+  { id: 'red', value: '#ff6666' },
+  { id: 'green', value: '#5fb236' },
+  { id: 'blue', value: '#2ea8e5' },
+  { id: 'purple', value: '#a28ae5' },
+  { id: 'magenta', value: '#e56eee' },
+  { id: 'orange', value: '#f19837' },
+  { id: 'gray', value: '#aaaaaa' }
+] as const
+
+export function isPaperMarkColor(value: string): boolean {
+  return value === PAPER_UNDERLINE_COLOR || PAPER_MARK_COLORS.some(item => item.value === value)
+}
+
+export interface PaperMarkRect {
+  page: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface PaperMark {
+  id: string
+  type: PaperMarkType
+  color: string
+  hits: PaperHit[]
+  text: string
+  rects: PaperMarkRect[]
+}
+
 export interface LocatedPassage {
   text: string
   pages: number[]
@@ -71,6 +111,195 @@ interface TaggedLine {
 }
 
 const HYPHEN_TAIL = /[-­\u00ad]$/
+const MARK_ID = /^[A-Za-z0-9-]{1,80}$/
+const MAX_MARKS = 400
+const MAX_MARK_TEXT = 20_000
+const MAX_MARK_GLYPHS = 2_000
+const MAX_MARK_RECTS = 2_000
+
+function compactHits(hits: readonly PaperHit[]): PaperHit[] {
+  const byPage = new Map<number, number[]>()
+  for (const hit of hits) {
+    if (!Number.isInteger(hit.page) || hit.page < 1) continue
+    const list = byPage.get(hit.page) ?? []
+    for (const index of hit.glyphIndexes) {
+      if (!Number.isInteger(index) || index < 0 || list.includes(index)) continue
+      list.push(index)
+    }
+    if (list.length) byPage.set(hit.page, list.sort((left, right) => left - right))
+  }
+  return [...byPage].sort((left, right) => left[0] - right[0]).map(([page, glyphIndexes]) => ({ page, glyphIndexes }))
+}
+
+function hitKeys(hits: readonly PaperHit[]): Set<string> {
+  const keys = new Set<string>()
+  for (const hit of compactHits(hits)) {
+    for (const index of hit.glyphIndexes) keys.add(`${hit.page}:${index}`)
+  }
+  return keys
+}
+
+function markOverlaps(mark: PaperMark, keys: ReadonlySet<string>): boolean {
+  for (const hit of mark.hits) {
+    for (const index of hit.glyphIndexes) if (keys.has(`${hit.page}:${index}`)) return true
+  }
+  return false
+}
+
+function quotesMatch(pages: readonly PaperPageIndex[], mark: PaperMark): boolean {
+  return normalizeQuote(textForHits(pages, mark.hits)) === normalizeQuote(mark.text)
+}
+
+function sameHits(left: readonly PaperHit[], right: readonly PaperHit[]): boolean {
+  const first = compactHits(left)
+  const second = compactHits(right)
+  if (first.length !== second.length) return false
+  return first.every((hit, index) => (
+    hit.page === second[index].page
+    && hit.glyphIndexes.length === second[index].glyphIndexes.length
+    && hit.glyphIndexes.every((glyph, glyphIndex) => glyph === second[index].glyphIndexes[glyphIndex])
+  ))
+}
+
+function normalizeQuote(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function hyphenFold(text: string): string {
+  return normalizeQuote(text).replace(/[-­\u00ad]/g, '')
+}
+
+function readingOrder(page: PaperPageIndex): IndexedGlyph[] {
+  const glyphs: IndexedGlyph[] = []
+  page.glyphs.forEach((glyph, index) => {
+    if (glyph.text.trim()) glyphs.push({ ...glyph, index })
+  })
+  glyphs.sort((left, right) => right.y - left.y || left.x - right.x)
+  return glyphs
+}
+
+function findQuoteOnPage(page: PaperPageIndex, quote: string): number[] | null {
+  const wanted = normalizeQuote(quote)
+  const foldedWanted = hyphenFold(quote)
+  if (!wanted) return null
+  const ordered = readingOrder(page)
+  for (let start = 0; start < ordered.length; start += 1) {
+    const head = hyphenFold(ordered[start].text)
+    if (
+      head.length >= 4
+      && foldedWanted.length >= 4
+      && !foldedWanted.startsWith(head.slice(0, 4))
+      && !head.startsWith(foldedWanted.slice(0, 4))
+    ) continue
+    for (let end = start; end < ordered.length; end += 1) {
+      const text = normalizeQuote(textFromGlyphs(ordered.slice(start, end + 1)))
+      if (text === wanted) return ordered.slice(start, end + 1).map(glyph => glyph.index).sort((left, right) => left - right)
+      if (text.length > wanted.length + 24) break
+    }
+  }
+  return null
+}
+
+function findQuoteHits(pages: readonly PaperPageIndex[], quote: string): PaperHit[] | null {
+  const wanted = normalizeQuote(quote)
+  if (!wanted) return null
+  for (const page of pages) {
+    const indexes = findQuoteOnPage(page, quote)
+    if (!indexes?.length) continue
+    const hits = [{ page: page.page, glyphIndexes: indexes }]
+    if (normalizeQuote(textForHits(pages, hits)) === wanted) return hits
+  }
+  const parts = quote.split(/\n\n/).map(part => part.trim()).filter(Boolean)
+  if (parts.length < 2) return null
+  const hits: PaperHit[] = []
+  const used = new Set<number>()
+  for (const part of parts) {
+    let matched: PaperHit | null = null
+    for (const page of pages) {
+      if (used.has(page.page)) continue
+      const indexes = findQuoteOnPage(page, part)
+      if (!indexes?.length) continue
+      const candidate = [{ page: page.page, glyphIndexes: indexes }]
+      if (normalizeQuote(textForHits(pages, candidate)) !== normalizeQuote(part)) continue
+      matched = candidate[0]
+      break
+    }
+    if (!matched) return null
+    used.add(matched.page)
+    hits.push(matched)
+  }
+  return normalizeQuote(textForHits(pages, hits)) === wanted ? hits : null
+}
+
+function roundPdf(value: number): number {
+  return Math.round(value * 1000) / 1000
+}
+
+function markPart(value: string): boolean {
+  return value.length > 0 && value.length <= 300 && !/[\u0000-\u001f]/.test(value)
+}
+
+function joinMarkKey(kind: 'shelf' | 'workspace', rest: string): string | null {
+  if (!rest || /[\u0000-\u001f]/.test(rest)) return null
+  const key = `${kind}:${rest}`
+  return isPaperMarkKey(key) ? key : null
+}
+
+function parsePaperMark(value: unknown): PaperMark | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  if (typeof record.id !== 'string' || !MARK_ID.test(record.id)) return null
+  if (record.type !== 'highlight' && record.type !== 'underline') return null
+  if (typeof record.color !== 'string' || !isPaperMarkColor(record.color)) return null
+  const color = record.color
+  if (typeof record.text !== 'string' || !record.text.trim() || record.text.length > MAX_MARK_TEXT) return null
+  const hits = parseMarkHits(record.hits)
+  const rects = parseMarkRects(record.rects)
+  if (!hits || !rects) return null
+  return { id: record.id, type: record.type, color, hits, text: record.text, rects }
+}
+
+function parseMarkHits(value: unknown): PaperHit[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 80) return null
+  const raw: PaperHit[] = []
+  let count = 0
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const record = item as { page?: unknown; glyphIndexes?: unknown }
+    if (typeof record.page !== 'number' || !Number.isInteger(record.page) || record.page < 1 || record.page > 10000) return null
+    if (!Array.isArray(record.glyphIndexes) || record.glyphIndexes.length === 0) return null
+    const glyphIndexes: number[] = []
+    for (const index of record.glyphIndexes) {
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index > 100000) return null
+      glyphIndexes.push(index)
+      count += 1
+      if (count > MAX_MARK_GLYPHS) return null
+    }
+    raw.push({ page: record.page, glyphIndexes })
+  }
+  const hits = compactHits(raw)
+  return hits.length ? hits : null
+}
+
+function parseMarkRects(value: unknown): PaperMarkRect[] | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_MARK_RECTS) return null
+  const rects: PaperMarkRect[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') return null
+    const record = item as Record<string, unknown>
+    if (typeof record.page !== 'number' || !Number.isInteger(record.page) || record.page < 1 || record.page > 10000) return null
+    if (![record.x, record.y, record.width, record.height].every(coord => typeof coord === 'number' && Number.isFinite(coord))) return null
+    if ((record.width as number) < 0 || (record.height as number) < 0) return null
+    rects.push({
+      page: record.page,
+      x: record.x as number,
+      y: record.y as number,
+      width: record.width as number,
+      height: record.height as number
+    })
+  }
+  return rects
+}
 
 export function glyphsFromTextContent(items: readonly unknown[]): PaperGlyph[] {
   const glyphs: PaperGlyph[] = []
@@ -270,6 +499,154 @@ export function locatePassages(pages: readonly PaperPageIndex[], hits: readonly 
     before,
     after
   }
+}
+
+export function textForHits(pages: readonly PaperPageIndex[], hits: readonly PaperHit[]): string {
+  const parts: string[] = []
+  for (const hit of compactHits(hits)) {
+    const page = pages.find(item => item.page === hit.page)
+    if (!page) continue
+    const wanted = new Set(hit.glyphIndexes)
+    const glyphs: IndexedGlyph[] = []
+    page.glyphs.forEach((glyph, index) => {
+      if (!wanted.has(index) || !glyph.text.trim()) return
+      glyphs.push({ ...glyph, index })
+    })
+    const text = textFromGlyphs(glyphs)
+    if (text) parts.push(text)
+  }
+  return parts.join('\n\n').trim()
+}
+
+export function rectsFromHits(pages: readonly PaperPageIndex[], hits: readonly PaperHit[]): PaperMarkRect[] {
+  const rects: PaperMarkRect[] = []
+  for (const hit of compactHits(hits)) {
+    const page = pages.find(item => item.page === hit.page)
+    if (!page) continue
+    for (const index of hit.glyphIndexes) {
+      const glyph = page.glyphs[index]
+      if (!glyph?.text.trim()) continue
+      rects.push({
+        page: hit.page,
+        x: roundPdf(glyph.x),
+        y: roundPdf(glyph.y),
+        width: roundPdf(Math.max(0, glyph.width)),
+        height: roundPdf(Math.max(0, glyph.height))
+      })
+    }
+  }
+  return rects
+}
+
+/** True when every selected glyph is already inside a mark of this type. */
+export function paperMarkActive(marks: readonly PaperMark[], type: PaperMarkType, hits: readonly PaperHit[]): boolean {
+  const wanted = hitKeys(hits)
+  if (!wanted.size) return false
+  const covered = new Set<string>()
+  for (const mark of marks) {
+    if (mark.type !== type) continue
+    for (const key of hitKeys(mark.hits)) covered.add(key)
+  }
+  for (const key of wanted) if (!covered.has(key)) return false
+  return true
+}
+
+/** Add a mark for the selection, or remove overlapping marks of the same type when it is already covered. */
+export function togglePaperMark(
+  marks: readonly PaperMark[],
+  input: { type: PaperMarkType; hits: readonly PaperHit[]; pages: readonly PaperPageIndex[]; id: string; color?: string }
+): PaperMark[] {
+  const hits = compactHits(input.hits)
+  const text = textForHits(input.pages, hits)
+  if (!hits.length || !text || !MARK_ID.test(input.id)) return marks.slice()
+  if (paperMarkActive(marks, input.type, hits)) {
+    const wanted = hitKeys(hits)
+    return marks.filter(mark => mark.type !== input.type || !markOverlaps(mark, wanted))
+  }
+  return [...marks, {
+    id: input.id,
+    type: input.type,
+    color: markColor(input.type, input.color),
+    hits,
+    text,
+    rects: rectsFromHits(input.pages, hits)
+  }]
+}
+
+/** Recolor marks that overlap the selection. Returns null when nothing changes. */
+export function recolorPaperMarks(marks: readonly PaperMark[], hits: readonly PaperHit[], color: string): PaperMark[] | null {
+  if (!PAPER_MARK_COLORS.some(item => item.value === color)) return null
+  const wanted = hitKeys(hits)
+  if (!wanted.size) return null
+  let changed = false
+  const next = marks.map(mark => {
+    if (!markOverlaps(mark, wanted) || mark.color === color) return mark
+    changed = true
+    return { ...mark, color }
+  })
+  return changed ? next : null
+}
+
+function markColor(type: PaperMarkType, color: string | undefined): string {
+  if (color && isPaperMarkColor(color)) return color
+  return type === 'highlight' ? PAPER_HIGHLIGHT_COLOR : PAPER_UNDERLINE_COLOR
+}
+
+/** Glyphs to paint. A stored index list that no longer reads as the quote is left unpainted. */
+export function paintHitsForMark(pages: readonly PaperPageIndex[], mark: PaperMark): PaperHit[] {
+  if (!mark.hits.every(hit => pages.some(page => page.page === hit.page))) return []
+  return quotesMatch(pages, mark) ? mark.hits : []
+}
+
+/**
+ * When a PDF extract shifts glyph indexes, retarget a mark once by searching for its quote.
+ * A miss stays stored so a later open can try again, and is not painted on the wrong line.
+ */
+export function retargetPaperMarks(
+  pages: readonly PaperPageIndex[],
+  marks: readonly PaperMark[]
+): { marks: PaperMark[]; changed: boolean } {
+  const indexed = new Set(pages.map(page => page.page))
+  let changed = false
+  const next = marks.map(mark => {
+    if (mark.hits.some(hit => !indexed.has(hit.page))) return mark
+    if (quotesMatch(pages, mark)) return mark
+    const found = findQuoteHits(pages, mark.text)
+    if (!found || sameHits(found, mark.hits)) return mark
+    changed = true
+    return { ...mark, hits: found, rects: rectsFromHits(pages, found) }
+  })
+  return { marks: changed ? next : marks.slice(), changed }
+}
+
+export function paperShelfMarkKey(relativePath: string): string | null {
+  return joinMarkKey('shelf', relativePath)
+}
+
+export function paperWorkspaceMarkKey(profileId: string, sessionId: string, source: string): string | null {
+  if (!markPart(profileId) || !markPart(sessionId) || !markPart(source)) return null
+  return joinMarkKey('workspace', `${profileId}:${sessionId}:${source}`)
+}
+
+export function isPaperMarkKey(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 6
+    && value.length <= 1024
+    && !/[\u0000-\u001f]/.test(value)
+    && (/^shelf:.+/.test(value) || /^workspace:.+/.test(value))
+}
+
+export function parsePaperMarks(value: unknown): PaperMark[] | null {
+  if (!Array.isArray(value) || value.length > MAX_MARKS) return null
+  const marks: PaperMark[] = []
+  const ids = new Set<string>()
+  for (const item of value) {
+    const mark = parsePaperMark(item)
+    if (!mark || ids.has(mark.id)) return null
+    ids.add(mark.id)
+    marks.push(mark)
+  }
+  return marks
 }
 
 export function paperToolbarPosition(

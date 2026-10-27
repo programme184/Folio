@@ -34,6 +34,7 @@ import { ServerManagement } from './ServerManagement'
 import { KeyboardShortcutsSettings } from './KeyboardShortcutsSettings'
 import { ShortcutKey } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
+import { FolderDialog, ProjectFoldersDialog, RenameProjectDialog } from './ProjectFolderDialogs'
 import { ADD_SERVER_EVENT, MANAGE_SERVERS_EVENT } from './ServerSelector'
 import { TeamMentionPalette, type TeamMentionCandidate } from './Composer'
 import { parseServerUpdateIntents, serverUpdateIntentKey, serverUpdateIntentResolved, serverUpdateIntentHealthResolved, serverUpdateStartErrorIsAmbiguous, type ServerUpdateIntent } from '../lib/server-update-intent'
@@ -448,6 +449,8 @@ export function Dialogs() {
     <SessionDialog mode="resume" />
     <ImportChatsDialog />
     <FolderDialog />
+    <RenameProjectDialog />
+    <ProjectFoldersDialog />
     <SearchDialog />
     <DigestDialog />
     <JobDialog />
@@ -1090,34 +1093,6 @@ export function ServerOnboardingDialog() {
         <footer><button type="button" className="quiet-button" onClick={() => setOpen(false)}>{t("ui.Dialogs.ServerOnboardingDialog.not_now_a0e63d7")}</button><button className="primary-button" disabled={!url.trim() || saving}>{saving && <LoaderCircle className="spin" size={14} />}{" "}{t("ui.Dialogs.ServerOnboardingDialog.connect_1a2303e")}</button></footer>
       </form>}
     </div>
-  </Shell>
-}
-
-function FolderDialog() {
-  useLocale()
-  const open = useAppStore(state => state.modals.folder)
-  const sessions = useAppStore(state => state.sessions)
-  const folderOrder = useAppStore(state => state.folderOrder)
-  const [name, setName] = useState('')
-  useEffect(() => { if (open) setName('') }, [open])
-  const submit = (event: FormEvent) => {
-    event.preventDefault()
-    const clean = name.trim()
-    if (!clean) return
-    const existing = new Set([...folderOrder, ...sessions.map(session => session.folder?.trim() || 'General')].map(folder => folder.toLocaleLowerCase()))
-    if (existing.has(clean.toLocaleLowerCase())) {
-      useAppStore.getState().setError(`Folder “${clean}” already exists.`)
-      return
-    }
-    useAppStore.getState().setFolderOrder([...folderOrder, clean])
-    trackEvent('folder_created')
-    useAppStore.getState().setModal('folder', false)
-  }
-  return <Shell open={open} onOpenChange={value => useAppStore.getState().setModal('folder', value)} title={t("ui.Dialogs.FolderDialog.new_folder_cf28f49")} description={t("ui.Dialogs.FolderDialog.create_an_empty_chat_folder_then_drag_or_m_b438439")}>
-    <form onSubmit={submit} className="dialog-form">
-      <label><span>{t("ui.Dialogs.FolderDialog.folder_name_14d34ed")}</span><input autoFocus value={name} onChange={event => setName(event.target.value)} /></label>
-      <footer><button type="button" className="quiet-button" onClick={() => useAppStore.getState().setModal('folder', false)}>{t("ui.Dialogs.FolderDialog.cancel_19766ed")}</button><button className="primary-button" disabled={!name.trim()}>{t("ui.Dialogs.FolderDialog.create_folder_82b9e1e")}</button></footer>
-    </form>
   </Shell>
 }
 

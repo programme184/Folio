@@ -8,7 +8,9 @@ import type { LazyTeamHubService } from './team-hub-lazy-service'
 import { LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, parseBulkImportSessionItems } from '../shared/local-session-import'
 import type { LanguageSettings } from './language'
 import { reportStorageError } from './storage-health'
+import { createDesktopPaperMarkStore } from './paper-marks-desktop'
 import { createDesktopPaperShelf } from './paper-shelf-desktop'
+import type { PaperMarkStore } from './paper-marks'
 import type { PaperShelf } from './paper-shelf'
 import { translateToChinese } from './paper-translate'
 
@@ -17,6 +19,7 @@ export interface RegisterIpcOptions {
   securePeerInviteReady?: () => boolean
   notificationReady?: () => boolean
   papers?: PaperShelf
+  paperMarks?: PaperMarkStore
 }
 
 export function registerIpc(
@@ -468,10 +471,14 @@ export function registerIpc(
   handle('pins:remove', (scope, sessionId, itemId) => service.removePin(scope, sessionId, itemId))
   let desktopPapers: PaperShelf | null = null
   const papers = () => options.papers ?? (desktopPapers ??= createDesktopPaperShelf())
+  let desktopMarks: PaperMarkStore | null = null
+  const paperMarks = () => options.paperMarks ?? (desktopMarks ??= createDesktopPaperMarkStore())
   handle('papers:root', async () => ({ root: await papers().root() }))
   handle('papers:choose-root', () => papers().chooseRoot())
   handle('papers:list', () => papers().list())
   handle('papers:read', (relativePath: string) => papers().read(relativePath))
+  handle('papers:marks:load', (key: string) => paperMarks().load(key))
+  handle('papers:marks:save', (key: string, marks: unknown) => paperMarks().save(key, marks))
   handle('preferences:get', (key, fallback) => service.preference(key, fallback))
   handle('preferences:set', (key, value) => service.putPreference(key, value))
   handle('preferences:get-scoped', (scope, key, fallback) => service.scopedPreference(scope, key, fallback))

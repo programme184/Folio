@@ -15,7 +15,10 @@ export function WorkingDirectoryInput({
   onCommit,
   defaultCwd,
   available,
-  showBrowseButton = false
+  showBrowseButton = false,
+  label,
+  placeholder,
+  hideLabel = false
 }: {
   value: string
   onChange: (value: string) => void
@@ -23,6 +26,9 @@ export function WorkingDirectoryInput({
   defaultCwd: string
   available: boolean
   showBrowseButton?: boolean
+  label?: string
+  placeholder?: string
+  hideLabel?: boolean
 }) {
   useLocale()
   const inputRef = useRef<HTMLInputElement | null>(null)
@@ -199,6 +205,8 @@ export function WorkingDirectoryInput({
     }
   }
 
+  const fieldLabel = label ?? t("ui.WorkingDirectoryInput.WorkingDirectoryInput.working_directory_865e85c")
+  const fieldPlaceholder = placeholder ?? (defaultCwd || t("ui.WorkingDirectoryInput.WorkingDirectoryInput.server_default_42b9983"))
   const currentBrowsePath = browseCompletion?.exists
     ? browseCompletion.resolved_path
     : browseCompletion?.base_path || browsePath
@@ -207,7 +215,7 @@ export function WorkingDirectoryInput({
   const canBrowseUp = Boolean(currentBrowsePath && parentBrowsePath && parentBrowsePath !== currentBrowsePath)
 
   return <div className={`working-directory-field${completionEnabled ? ' completion-enabled' : ''}${browseOpen ? ' picker-open' : ''}`}>
-    <label className="working-directory-label" htmlFor={inputId}>{t("ui.WorkingDirectoryInput.WorkingDirectoryInput.working_directory_865e85c")}</label>
+    {!hideLabel && <label className="working-directory-label" htmlFor={inputId}>{fieldLabel}</label>}
     <div className="working-directory-input-row">
       <div className="working-directory-combobox">
         <Folder className="working-directory-input-icon" size={14} aria-hidden="true" />
@@ -215,7 +223,7 @@ export function WorkingDirectoryInput({
           id={inputId}
           ref={inputRef}
           role={completionEnabled ? 'combobox' : undefined}
-          aria-label={t("ui.WorkingDirectoryInput.WorkingDirectoryInput.working_directory_865e85c")}
+          aria-label={fieldLabel}
           aria-autocomplete={completionEnabled ? 'list' : undefined}
           aria-expanded={completionEnabled ? showResults : undefined}
           aria-busy={completionEnabled && loading ? true : undefined}
@@ -226,7 +234,7 @@ export function WorkingDirectoryInput({
           onFocus={() => { setFocused(true); setExpanded(true) }}
           onBlur={() => { setFocused(false); setExpanded(false); setActiveIndex(-1); onCommit?.(value) }}
           onKeyDown={handleKeyDown}
-          placeholder={defaultCwd || t("ui.WorkingDirectoryInput.WorkingDirectoryInput.server_default_42b9983")}
+          placeholder={fieldPlaceholder}
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}

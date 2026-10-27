@@ -8,6 +8,13 @@ import type { Session, WorkingDirectoryCompletion } from '@shared/types'
 import { parentDirectory } from '../lib/working-directory-path'
 import { useAppStore } from '../store/app-store'
 
+const EMPTY_WORKSPACE_DIRECTORIES: string[] = []
+
+function folderLabel(path: string): string {
+  const segments = path.replace(/[\\/]+$/, '').split(/[\\/]/)
+  return segments[segments.length - 1] || path
+}
+
 const TYPED_PATH_LOOKUP_DELAY_MS = 120
 
 export function cwdChipLabel(cwd?: string | null): string {
@@ -26,6 +33,11 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
   useLocale()
   const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
+  const workspaceFolders = useAppStore(state => {
+    const folder = session.folder?.trim()
+    if (!folder || folder.toLocaleLowerCase() === 'general') return EMPTY_WORKSPACE_DIRECTORIES
+    return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
+  })
   const [open, setOpen] = useState(false)
   const [pathDraft, setPathDraft] = useState('')
   const [completion, setCompletion] = useState<WorkingDirectoryCompletion | null>(null)
@@ -83,6 +95,7 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
     setSaving(true)
     try {
       await useAppStore.getState().updateSession(session.id, { cwd: target })
+      window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
       setOpen(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -121,6 +134,18 @@ export function WorkingDirectoryPopover({ session }: { session: Session }) {
         {!completionAvailable
           ? <div className="cwd-popover-empty">{t("ui.WorkingDirectoryPopover.WorkingDirectoryPopover.folder_browsing_needs_a_newer_agentsserver_5e4747d")}</div>
           : <>
+            {workspaceFolders.length > 0 && <div className="cwd-popover-workspace" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
+              <p>{t('ui.WorkingDirectoryPopover.workspace_folders')}</p>
+              {workspaceFolders.map(path => <button
+                type="button"
+                className={`cwd-folder-row${path === session.cwd?.trim() ? ' selected' : ''}`}
+                key={path}
+                aria-label={t('ui.WorkingDirectoryPopover.open_workspace_folder', { folder: path })}
+                title={path}
+                disabled={saving}
+                onClick={() => void choose(path)}
+              ><Folder size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>)}
+            </div>}
             <div className="cwd-popover-path">
               <button
                 type="button"

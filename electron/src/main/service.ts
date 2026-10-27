@@ -20,6 +20,7 @@ import type { CoordinatedConnection, CoordinatedProfile } from './coordinated-up
 import { SideQuestionRequests } from './side-question-requests'
 import { sideChatSyncAvailable, type SyncedSideChat, sideQuestionLimit, sideQuestionsAvailable, validateSideQuestionInput, type SideQuestionAnswer, type SideQuestionCancellation, type SideQuestionInput, type SideQuestionScope } from '../shared/side-questions'
 import { parseBulletinHintRefresh } from '../shared/team-bulletin-hints'
+import { normalizeProjectWorkspaces, PROJECT_WORKSPACES_PREFERENCE_KEY } from '../shared/project-workspaces'
 import {
   cursorLocalSessionImportSupported,
   localSessionImportBatchLimit,
@@ -6562,6 +6563,7 @@ export class AppService {
       selectedSessionId: this.focusedSessionId,
       folderOrder: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'folderOrder', [] as string[]), []),
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
+      projectWorkspaces: resetPending ? {} : cacheValue(() => normalizeProjectWorkspaces(this.cache.preference(scope.namespace, PROJECT_WORKSPACES_PREFERENCE_KEY, {})), {}),
       archivedCollapsed: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'archivedCollapsed', false), false),
       inspectorVisible: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'inspectorVisible', false), false),
       activeProfileId: scope.profileId,

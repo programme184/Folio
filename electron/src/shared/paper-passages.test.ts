@@ -6,12 +6,24 @@ import {
   glyphsFromTextContent,
   indexPaperPage,
   locatePassages,
+  paintHitsForMark,
   paperCitation,
   paperAskDraft,
+  paperMarkActive,
   paperQuotePreview,
   paperPassageQuestion,
+  paperShelfMarkKey,
   paperToolbarPosition,
-  type PaperGlyph
+  paperWorkspaceMarkKey,
+  parsePaperMarks,
+  retargetPaperMarks,
+  textForHits,
+  togglePaperMark,
+  recolorPaperMarks,
+  PAPER_HIGHLIGHT_COLOR,
+  PAPER_UNDERLINE_COLOR,
+  type PaperGlyph,
+  type PaperMark
 } from './paper-passages'
 
 const glyph = (text: string, x: number, y: number, width: number, height = 10): PaperGlyph => ({ text, x, y, width, height })
@@ -267,5 +279,75 @@ describe('paper passage index', () => {
     const preview = paperQuotePreview(`${'wrench directions '.repeat(20)}`)
     expect(Array.from(preview).length).toBeLessThanOrEqual(96)
     expect(preview.endsWith('…')).toBe(true)
+  })
+})
+
+describe('paper marks', () => {
+  const passage = () => indexPaperPage(1, [
+    glyph('Their rich kinematic structure en-', 50, 700, 200),
+    glyph('ables robots to reproduce.', 50, 686, 170),
+    glyph('Next paragraph stays separate.', 50, 640, 210)
+  ])
+
+  it('stores the selected glyphs and removes that mark when the same passage is marked again', () => {
+    const page = passage()
+    const hits = [{ page: 1, glyphIndexes: page.paragraphs[0].glyphIndexes }]
+    const marked = togglePaperMark([], { type: 'highlight', hits, pages: [page], id: 'mark-1' })
+    expect(marked).toHaveLength(1)
+    expect(marked[0].color).toBe(PAPER_HIGHLIGHT_COLOR)
+    expect(marked[0].text).toBe(locatePassages([page], hits)?.text)
+    expect(marked[0].text).toBe(textForHits([page], hits))
+    expect(marked[0].rects).toEqual([
+      { page: 1, x: 50, y: 700, width: 200, height: 10 },
+      { page: 1, x: 50, y: 686, width: 170, height: 10 }
+    ])
+    expect(paperMarkActive(marked, 'highlight', hits)).toBe(true)
+    expect(paintHitsForMark([page], marked[0])).toEqual(hits.map(hit => ({ ...hit, glyphIndexes: [...hit.glyphIndexes].sort((a, b) => a - b) })))
+    expect(togglePaperMark(marked, { type: 'highlight', hits, pages: [page], id: 'mark-2' })).toEqual([])
+    const underlined = togglePaperMark(marked, { type: 'underline', hits, pages: [page], id: 'mark-3' })
+    expect(underlined.map(mark => mark.type)).toEqual(['highlight', 'underline'])
+    expect(underlined[1].color).toBe(PAPER_UNDERLINE_COLOR)
+  })
+
+  it('keeps a drag mark on the dragged glyphs', () => {
+    const page = passage()
+    const dragged = dragSelectionHits([page], [{ page: 1, glyphIndexes: [0] }], { page: 1, index: 0 })
+    const passageText = locateDragPassage([page], dragged)
+    const marked = togglePaperMark([], { type: 'underline', hits: dragged, pages: [page], id: 'drag-1' })
+    expect(marked[0].hits).toEqual([{ page: 1, glyphIndexes: [0] }])
+    expect(marked[0].text).toBe(passageText?.text)
+    expect(marked[0].text).toBe('Their rich kinematic structure en-')
+    expect(marked[0].text).not.toContain('ables')
+  })
+
+  it('retargets a quote whose glyph indexes moved and leaves a missing quote unpainted', () => {
+    const page = passage()
+    const hits = [{ page: 1, glyphIndexes: page.paragraphs[0].glyphIndexes }]
+    const marked = togglePaperMark([], { type: 'highlight', hits, pages: [page], id: 'mark-1' })
+    const stale: PaperMark = { ...marked[0], hits: [{ page: 1, glyphIndexes: [2] }] }
+    expect(paintHitsForMark([page], stale)).toEqual([])
+    const resolved = retargetPaperMarks([page], [stale])
+    expect(resolved.changed).toBe(true)
+    expect(textForHits([page], resolved.marks[0].hits)).toBe(marked[0].text)
+    expect(paintHitsForMark([page], resolved.marks[0]).flatMap(hit => hit.glyphIndexes)).toEqual(page.paragraphs[0].glyphIndexes)
+    const missing: PaperMark = { ...marked[0], text: 'This sentence is not on the page.' }
+    expect(retargetPaperMarks([page], [missing])).toEqual({ marks: [missing], changed: false })
+    expect(paintHitsForMark([page], missing)).toEqual([])
+    const roundTrip = parsePaperMarks(JSON.parse(JSON.stringify(marked)))
+    expect(roundTrip).toEqual(marked)
+    expect(parsePaperMarks([{ ...marked[0], color: '#000000' }])).toBeNull()
+    const red = togglePaperMark([], { type: 'highlight', hits, pages: [page], id: 'mark-red', color: '#ff6666' })
+    expect(red[0].color).toBe('#ff6666')
+    expect(parsePaperMarks(JSON.parse(JSON.stringify(red)))).toEqual(red)
+    expect(recolorPaperMarks(red, hits, '#2ea8e5')?.[0].color).toBe('#2ea8e5')
+    expect(recolorPaperMarks(red, hits, '#2ea8e5')?.[0].text).toBe(red[0].text)
+    expect(recolorPaperMarks(red, hits, '#000000')).toBeNull()
+  })
+
+  it('names shelf and workspace documents without accepting an empty key', () => {
+    expect(paperShelfMarkKey('nested/hand.pdf')).toBe('shelf:nested/hand.pdf')
+    expect(paperWorkspaceMarkKey('profile-a', 'chat-1', 'docs/paper.pdf')).toBe('workspace:profile-a:chat-1:docs/paper.pdf')
+    expect(paperShelfMarkKey('')).toBeNull()
+    expect(paperWorkspaceMarkKey('profile-a', '', 'docs/paper.pdf')).toBeNull()
   })
 })

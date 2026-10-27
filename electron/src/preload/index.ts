@@ -362,7 +362,9 @@ const api: AgentsDockAPI = {
     chooseRoot: () => ipcRenderer.invoke('papers:choose-root'),
     list: () => ipcRenderer.invoke('papers:list'),
     read: path => ipcRenderer.invoke('papers:read', path),
-    translate: text => ipcRenderer.invoke('papers:translate', text)
+    translate: text => ipcRenderer.invoke('papers:translate', text),
+    loadMarks: key => ipcRenderer.invoke('papers:marks:load', key),
+    saveMarks: (key, marks) => ipcRenderer.invoke('papers:marks:save', key, marks)
   },
   workspace: {
     info: sessionId => ipcRenderer.invoke('workspace:info', sessionId),

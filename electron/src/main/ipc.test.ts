@@ -94,6 +94,22 @@ describe('Team Hub IPC registration', () => {
     })).toThrow('untrusted renderer')
   })
 
+  it('loads and saves paper marks only from a trusted renderer', async () => {
+    const load = vi.fn().mockReturnValue([])
+    const save = vi.fn().mockReturnValue([])
+    registerIpc({} as AppService, {} as AppUpdateManager, undefined, {
+      paperMarks: { load, save }
+    })
+    await harness.handlers.get('papers:marks:load')?.(trustedEvent, 'shelf:nested/a.pdf')
+    await harness.handlers.get('papers:marks:save')?.(trustedEvent, 'shelf:nested/a.pdf', [])
+    expect(load).toHaveBeenCalledExactlyOnceWith('shelf:nested/a.pdf')
+    expect(save).toHaveBeenCalledExactlyOnceWith('shelf:nested/a.pdf', [])
+    expect(() => harness.handlers.get('papers:marks:save')?.({
+      sender: { id: 2, getURL: () => 'https://untrusted.test/' },
+      senderFrame: { url: 'https://untrusted.test/', parent: null }
+    }, 'shelf:nested/a.pdf', [])).toThrow('untrusted renderer')
+  })
+
   it('routes member rename through exact scoped IPC and blocks untrusted frames', async () => {
     const result = { id: 'node-1', server_identity: 'server-1', display_name: 'New name' }
     const renameNetworkServer = vi.fn().mockResolvedValue(result)

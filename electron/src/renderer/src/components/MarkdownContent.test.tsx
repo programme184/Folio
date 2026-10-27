@@ -503,4 +503,86 @@ v_{\text{OBJ}}$$`
     expect(container.querySelector('.katex')).toBeNull()
     expect(container.querySelector('code')?.textContent).toContain('\\[ h_t = 1 \\]')
   })
+
+  it('copies a rendered formula as LaTeX instead of the KaTeX span text', () => {
+    const source = String.raw`\(\boldsymbol{\tau_{\text{ref}}} = \big[
+\;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*)
+\;\big]\)`
+    const { container } = render(<MarkdownContent text={`The reference is ${source}.`} />)
+    const visual = container.querySelector('.katex-html')
+    expect(visual).not.toBeNull()
+    expect(visual?.textContent).not.toContain('\\boldsymbol')
+    selectNode(visual!)
+    const formulaOnly = dispatchCopy()
+    expect(formulaOnly.plain).toBe(source)
+    expect(formulaOnly.html).toContain('\\boldsymbol{\\tau_{\\text{ref}}}')
+    expect(formulaOnly.html).not.toContain('katex')
+    selectNode(container.querySelector('p')!)
+    expect(dispatchCopy().plain).toBe(`The reference is ${source}.`)
+  })
+
+  it('keeps only the LaTeX source selectable in a paragraph of inline formulas', () => {
+    const text = String.raw`在时刻 $t$，从候选的力场系数 $\xi_t$ 里选一个，使得：经 $B_t$、再经 $G_t$ 作用后，在物体上产生的 wrench 尽量接近目标 $w_t$；同时惩罚 $\|B_t\xi_t\|$，避免为凑 $w_t$ 用过大的力场。$\chi_{t,k}=0$ 时强制对应约束 $B_{t,k}\xi_t=0$，关掉该通道上的力场分量。`
+    const { container } = render(<MarkdownContent text={text} />)
+    const sources = [...container.querySelectorAll('.formula-tex')].map(node => node.textContent)
+    expect(sources).toEqual([
+      '\\(t\\)',
+      '\\(\\xi_t\\)',
+      '\\(B_t\\)',
+      '\\(G_t\\)',
+      '\\(w_t\\)',
+      '\\(\\|B_t\\xi_t\\|\\)',
+      '\\(w_t\\)',
+      '\\(\\chi_{t,k}=0\\)',
+      '\\(B_{t,k}\\xi_t=0\\)'
+    ])
+    expect(container.querySelector('.katex-html .formula-tex')).toBeNull()
+    expect(container.querySelector('.katex-mathml .formula-tex')).toBeNull()
+    selectNode(container.querySelector('p')!)
+    expect(dispatchCopy().plain).toBe('在时刻 \\(t\\)，从候选的力场系数 \\(\\xi_t\\) 里选一个，使得：经 \\(B_t\\)、再经 \\(G_t\\) 作用后，在物体上产生的 wrench 尽量接近目标 \\(w_t\\)；同时惩罚 \\(\\|B_t\\xi_t\\|\\)，避免为凑 \\(w_t\\) 用过大的力场。\\(\\chi_{t,k}=0\\) 时强制对应约束 \\(B_{t,k}\\xi_t=0\\)，关掉该通道上的力场分量。')
+  })
+
+  it('copies a display equation inside the same delimiters as an inline formula', () => {
+    const body = String.raw`\begin{array}{rl}
+\hat{\xi}_{t}=\arg \min_{\xi_{t}} & \frac{1}{2}\left\| G_{t}B_{t}\xi_{t}-w_{t}^{\text{cmd}} \right\| _{2}^{2} \\
+\text{s.t. } & B_{t,k}\xi_{t}=0
+\end{array}`
+    const { container } = render(<MarkdownContent text={`$$\n${body}\n$$`} />)
+    selectNode(container.querySelector('.katex-display')!)
+    expect(dispatchCopy().plain).toBe(`\\(${body}\\)`)
+    expect(container.querySelector('.formula-tex')?.textContent).toBe(`\\(${body}\\)`)
+  })
+
+  it('copies display math with inline delimiters and leaves code copy alone', () => {
+    const { container } = render(<MarkdownContent text={'\\[ h_t = \\mathrm{Fuse}(E_t) \\]\n\n```tex\n\\\\[ h_t = 1 \\\\]\n```'} />)
+    selectNode(container.querySelector('.katex-display')!)
+    const formula = dispatchCopy()
+    expect(formula.plain).toBe('\\(h_t = \\mathrm{Fuse}(E_t)\\)')
+    const code = container.querySelector('code')!
+    selectNode(code)
+    const literal = dispatchCopy()
+    expect(literal.prevented).toBe(false)
+    expect(literal.plain).toBeNull()
+  })
 })
+
+function selectNode(node: Node): void {
+  const range = document.createRange()
+  range.selectNode(node)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+function dispatchCopy(): { plain: string | null; html: string | null; prevented: boolean } {
+  const store = new Map<string, string>()
+  const event = new Event('copy', { bubbles: true, cancelable: true })
+  Object.defineProperty(event, 'clipboardData', {
+    value: {
+      setData: (type: string, value: string) => { store.set(type, value) },
+      getData: (type: string) => store.get(type) ?? ''
+    }
+  })
+  const prevented = !document.dispatchEvent(event)
+  return { plain: store.get('text/plain') ?? null, html: store.get('text/html') ?? null, prevented }
+}

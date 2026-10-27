@@ -1,3 +1,4 @@
+import type { PaperMark } from './paper-passages'
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
 import type {
   AgentFile,
@@ -560,6 +561,8 @@ export interface AgentsDockAPI {
     list(): Promise<{ root: string; files: Array<{ path: string; name: string; bytes: number }>; error?: string }>
     read(path: string): Promise<{ path: string; name: string; data: Uint8Array }>
     translate(text: string): Promise<string>
+    loadMarks(key: string): Promise<PaperMark[]>
+    saveMarks(key: string, marks: PaperMark[]): Promise<PaperMark[]>
   }
   workspace: {
     info(sessionId: string): Promise<WorkspaceInfo>

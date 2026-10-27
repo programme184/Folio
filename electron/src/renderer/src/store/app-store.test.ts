@@ -1016,6 +1016,32 @@ describe('instant new chat defaults', () => {
     )
   })
 
+  it('starts a new chat in a project inside one of that project’s local folders', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'created', title: 'New chat', folder: 'Humanoid', cwd: '/work/hand', backend: 'cursor' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(null), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Elsewhere', folder: 'General', cwd: '/tmp/elsewhere', backend: 'cursor' }],
+      selectedSessionId: 'selected', folderOrder: ['Humanoid'], creatingChat: false, modals: closedModals,
+      projectWorkspaces: { Humanoid: { directories: ['/work/hand', '/work/notes'] } },
+      health: { ok: true, capabilities: { cursor_backend: { available: true, required: false, message: 'Cursor is ready.', action: null, version: 2, permission_modes: ['default', 'full_access', 'plan'] } } },
+      runtimeCatalog: { backends: { cursor: { native_credentials_present: true, available: true, models: [{ value: 'auto', label: 'Auto' }], efforts: [] } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined)
+    })
+
+    await useAppStore.getState().requestNewChat('Humanoid')
+
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ folder: 'Humanoid', cwd: '/work/hand' }))
+  })
+
   it('creates once from the last-opened chat location and saved runtime defaults', async () => {
     const stored = { version: 1, folder: 'Saved', cwd: '/work/saved', backend: 'claude', model: 'claude-sonnet', effort: 'high' }
     const created = deferred<Session>()
@@ -1274,6 +1300,38 @@ describe('folder deletion', () => {
     expect(update).not.toHaveBeenCalled()
     expect(useAppStore.getState().folderOrder).toEqual(['General'])
     expect(useAppStore.getState().collapsedFolders.has('Empty')).toBe(false)
+  })
+
+  it('creates a project with its local folders, renames it, and removes those folders on delete', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ ...sessionFor('research'), folder: 'Research' }],
+      folderOrder: ['Research'],
+      projectWorkspaces: { Research: { directories: ['/work/research'] } },
+      selectedFolder: 'Research',
+      collapsedFolders: new Set(['Research']),
+      error: null
+    })
+
+    expect(useAppStore.getState().createProject('Humanoid', ['/work/hand/', 'relative', '/work/notes'])).toBe(true)
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Humanoid'])
+    expect(useAppStore.getState().projectWorkspaces.Humanoid.directories).toEqual(['/work/hand', '/work/notes'])
+    expect(useAppStore.getState().createProject('Humanoid', ['/work/other'])).toBe(false)
+
+    await expect(useAppStore.getState().renameProject('Humanoid', 'Robot')).resolves.toBe(true)
+    expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Robot'])
+    expect(useAppStore.getState().projectWorkspaces.Robot.directories).toEqual(['/work/hand', '/work/notes'])
+    expect(useAppStore.getState().setProjectDirectories('Robot', ['/work/hand', '/work/lab/'])).toBe(true)
+    expect(useAppStore.getState().projectWorkspaces.Robot.directories).toEqual(['/work/hand', '/work/lab'])
+
+    await useAppStore.getState().deleteFolder('Research')
+    expect(useAppStore.getState().projectWorkspaces.Research).toBeUndefined()
+    expect(setPreference).toHaveBeenCalledWith('projectWorkspaces:v1', expect.not.objectContaining({ Research: expect.anything() }))
   })
 })
 

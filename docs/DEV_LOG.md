@@ -1,5 +1,172 @@
 # Public development log
 
+## 2026-10-27 — Keep PDF scrolling attached to the wheel
+
+- Opening a PDF no longer restarts the render when the scrollbar appears, so
+  the wheel keeps moving the page. Only pages near the viewport are drawn.
+  Light paper is painted into the page image instead of a blend that froze
+  scrolling. A wheel over the selection bar moves the PDF, and an open
+  translation still scrolls on its own when it has more text.
+
+```text
+Change and expected user behavior: scrolling a PDF stays on the page the
+wheel is pointing at. A small width change from the scrollbar does not
+blank the document. Zooming keeps the same relative position. Light pages
+stay cream without a live blend. The selection bar does not swallow the wheel
+unless its answer panel can scroll.
+Source commit / app build / server version: uncommitted desktop source.
+The paper shelf does not use AgentsServer.
+Test surface: component fixture
+Actions exercised and observed outcomes: a three-page fixture painted only
+the visible page, cleared that paint when the page left the viewport, ignored
+a 1px width flicker, and kept a 1000px scroll offset after a real width
+change without opening the file again. Light theme passed the cream color
+into the canvas. Scroll math covered a line-mode wheel and an answer panel
+that is already at its end.
+Real boundaries exercised; any mocked/stubbed boundaries: pdf.js, canvas,
+and intersection observers were test doubles. The installed Folio window
+was not scrolled.
+Focused regression / typecheck / production build: paper document, selection,
+and shelf style tests passed (17). electron tsc --noEmit passed. electron-vite
+production build verified. The open window was not restarted.
+Remaining limitations or blocked acceptance: live wheel scrolling in the
+installed app is unverified. Pages far from the viewport have no text layer
+until they are scrolled into view.
+Availability: source only
+```
+
+## 2026-10-27 — Copy a rendered formula as LaTeX
+
+- Selecting a formula in a chat answer and copying it, including the answer
+  Copy button, puts the LaTeX source on the clipboard. Every formula,
+  including a display equation, is wrapped in `\(...\)`. The surrounding sentence stays
+  in place. The rendered formula and its MathML text are not part of the
+  selection, so a system copy cannot paste both layers.
+
+```text
+Change and expected user behavior: copying a rendered formula from an
+answer no longer pastes the broken KaTeX characters. The clipboard receives
+the formula source wrapped in \(\,\), including display equations.
+Source commit / app build / server version: uncommitted desktop source
+Test surface: component fixture
+Actions exercised and observed outcomes: selecting the visual formula
+copied the Doubao-style source, including a multiline inline formula and a
+paragraph of inline symbols; display math copied with display delimiters;
+a sentence around a formula kept its words; fenced TeX and prose without a
+formula were left to the normal copy path; the answer Copy button wrote
+the same LaTeX. The selectable text inside each formula is that source.
+Real boundaries exercised; any mocked/stubbed boundaries: jsdom rendered
+KaTeX and dispatched the copy event. The clipboard write was the test
+double. The installed Folio window was not clicked.
+Focused regression / typecheck / production build: formula, markdown, and
+answer follow-up tests passed; electron typecheck passed. Production build
+was not run.
+Remaining limitations or blocked acceptance: live Ctrl+C in the installed
+app is unverified. Copying the whole message from its header still copies
+the stored answer text.
+Availability: source only
+```
+
+## 2026-10-27 — Paper highlight bar on the file header
+
+- A PDF open in the file header now has Highlight, Underline, and a color
+  menu beside Split right and Full screen. The eight colors match Zotero's
+  menu. Point at a passage, then use the header. The same control removes
+  the mark. Choosing another color changes marks already on that passage.
+
+```text
+Change and expected user behavior: the PDF file header shows a highlight
+swatch, an underline A, and a color menu. They apply to the passage under
+the pointer or the dragged words, and they stay after zoom and reopen.
+Source commit / app build / server version: uncommitted desktop source.
+The paper shelf does not use AgentsServer.
+Test surface: component fixture
+Actions exercised and observed outcomes: component tests show the header
+controls stay disabled until a passage is selected, then Highlight and
+Underline call the mark action, and Red is stored as #ff6666. The running
+desktop window was not relaunched.
+Real boundaries exercised; any mocked/stubbed boundaries: passage storage,
+painting, and the header control were covered in component tests. The open
+Folio window was left alone.
+Focused regression / typecheck / production build: passage, selection, and
+header-bar tests passed; electron typecheck passed; electron-vite production
+build verified. The open window was not restarted, so it still needs one
+reload to load this bundle.
+Remaining limitations or blocked acceptance: no note, annotation list, or
+import of marks already stored by Zotero. The paper shelf still uses the
+selection toolbar rather than this header.
+Availability: local package
+```
+
+## 2026-10-27 — Highlight and underline a paper passage
+
+- Pointing at a passage still turns it green and keeps Explain, Translate,
+  Copy, and Ask. Highlight and Underline remember that passage in yellow,
+  or as a line under the words. The same button removes it. Zooming or
+  reopening the PDF keeps the mark. A drag marks only the dragged words.
+
+```text
+Change and expected user behavior: a paper selection can be highlighted or
+underlined. The mark stays when the pointer moves on, when the page is
+zoomed, and when the PDF is opened again. Pressing the same control removes
+that mark. Hover and drag selection are unchanged.
+Source commit / app build / server version: uncommitted desktop source,
+electron-vite production build. The paper shelf does not use AgentsServer.
+Test surface: isolated headless desktop, disposable one-line PDF
+Actions exercised and observed outcomes: Open papers showed the line; the
+pointer turned it green and offered Highlight and Underline; both marks
+stayed after zooming in; Highlight again left only the underline; reopening
+the paper showed that underline.
+Real boundaries exercised; any mocked/stubbed boundaries: the desktop wrote
+the mark file through the paper IPC and painted it with pdf.js. Component
+tests covered drag-only marks, quote retargeting, and Ctrl-Alt-1 / Ctrl-Alt-2.
+A workspace PDF was not opened in this window.
+Focused regression / typecheck / production build: passage, selection, mark
+store, IPC, and locale tests passed; electron typecheck passed; production
+build verified.
+Remaining limitations or blocked acceptance: marks use one yellow for
+highlight and one gold line for underline. There is no color choice, note,
+or annotation list, and existing Zotero marks are not imported.
+Availability: local package
+```
+
+## 2026-10-27 — Give each sidebar folder its own project folders
+
+- Creating a folder asks for the project name and one or more local folders
+  on the active server. Right-click a project to rename it or change those
+  folders. A new chat in that project starts in one of them.
+- The Folio folder is the workspace inside the app. The folders added to it
+  are the directories used when opening files. One workspace can hold several
+  paths.
+
+```text
+Change and expected user behavior: a sidebar folder is a project. Creation
+requires a name and at least one server folder, and a project can hold more
+than one. Right-click renames it or replaces its folders. A new chat there
+opens in one of those folders.
+Source commit / app build / server version: uncommitted desktop source,
+electron-vite production build, AgentsServer 1.0.7-beta.11
+Test surface: actual running desktop against the local server
+Actions exercised and observed outcomes: create stayed disabled until a name
+and a folder were present; a relative path was rejected; two folders enabled
+create; a duplicate name showed an error and left the dialog open; rename and
+change-folders updated the sidebar; the server folder browser listed real
+directories; two new chats in that project were created on the server in its
+first folder; deleting those chats and the project left the other projects in
+place.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop IPC created
+and removed the sessions on the live server. Component tests covered the
+store and menus. The default General row was absent, so its menu exclusion
+was not exercised in this window.
+Focused regression / typecheck / production build: project workspace, store,
+sidebar, and dialog tests passed; electron typecheck passed; production build
+verified.
+Remaining limitations or blocked acceptance: projects that already exist have
+no folders until they are set. Until then, a new chat there keeps the previous
+working directory.
+Availability: local package
+```
+
 ## 2026-10-26 — Use the Folio mark in the dock
 
 - The dock and app switcher use the thread-bound folio instead of a gear,

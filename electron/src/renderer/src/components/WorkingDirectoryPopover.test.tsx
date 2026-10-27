@@ -112,4 +112,31 @@ describe('WorkingDirectoryPopover', () => {
     expect(screen.getByRole('textbox', { name: 'Folder path' })).toHaveValue('/')
     expect(parent).toBeDisabled()
   })
+
+  it('opens files in one of the folders that belong to the workspace', async () => {
+    const complete = vi.fn(async (path: string) => completion(path, []))
+    const updateSession = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { workingDirectories: { complete } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      health: {
+        ok: true,
+        default_cwd: '/srv',
+        capabilities: {
+          working_directory_completion: { available: true, required: false, message: '', action: null }
+        }
+      },
+      projectWorkspaces: { Humanoid: { directories: ['/srv/work', '/tmp/notes'] } },
+      updateSession
+    })
+    const user = userEvent.setup()
+    render(<WorkingDirectoryPopover session={{ id: 'chat-1', title: 'Chat', backend: 'codex', folder: 'Humanoid', cwd: '/srv/work' }} />)
+
+    await user.click(screen.getByRole('button', { name: 'Working directory: /srv/work' }))
+    expect(await screen.findByText('Folders in this workspace')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Open files in /tmp/notes' }))
+    await waitFor(() => expect(updateSession).toHaveBeenCalledWith('chat-1', { cwd: '/tmp/notes' }))
+  })
 })

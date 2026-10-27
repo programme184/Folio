@@ -121,4 +121,71 @@ describe('paper selection toolbar', () => {
     expect(translate).toHaveBeenCalledWith('Their rich kinematic structure enables robots to reproduce.')
     expect(askPassage).not.toHaveBeenCalled()
   })
+
+  it('keeps a highlight on the passage after the pointer moves, and removes it with the same button', () => {
+    vi.useFakeTimers()
+    try {
+      const view = render(<PaperPassageView pages={[{ page: 1, glyphs: twoParagraphs }]} canAsk={false} />)
+      const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
+      const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!
+      fireEvent.mouseMove(first)
+      fireEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+      expect(first).toHaveClass('paper-mark-highlight')
+      expect(first.style.getPropertyValue('--paper-highlight')).toBe('#ffd400')
+      expect(first).toHaveClass('paper-paragraph-hot')
+      expect(screen.getByRole('button', { name: 'Highlight' })).toHaveAttribute('aria-pressed', 'true')
+
+      fireEvent.mouseMove(second)
+      vi.advanceTimersByTime(PAPER_PARAGRAPH_RETARGET_MS)
+      expect(first).toHaveClass('paper-mark-highlight')
+      expect(first).not.toHaveClass('paper-paragraph-hot')
+      expect(second).toHaveClass('paper-paragraph-hot')
+      expect(second).not.toHaveClass('paper-mark-highlight')
+
+      fireEvent.mouseMove(first)
+      vi.advanceTimersByTime(PAPER_PARAGRAPH_RETARGET_MS)
+      fireEvent.click(screen.getByRole('button', { name: 'Highlight' }))
+      expect(first).not.toHaveClass('paper-mark-highlight')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the passage selected while the pointer moves to the file header', () => {
+    vi.useFakeTimers()
+    try {
+      const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
+      const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
+      fireEvent.mouseMove(first)
+      const header = document.createElement('div')
+      header.className = 'workspace-editor-editor-toolbar'
+      document.body.append(header)
+      fireEvent.mouseLeave(view.container.querySelector('.paper-passage-view')!, { relatedTarget: header })
+      vi.advanceTimersByTime(PAPER_PARAGRAPH_RETARGET_MS)
+      expect(screen.getByRole('toolbar', { name: 'Paper selection' })).toBeInTheDocument()
+      header.remove()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('underlines only the dragged glyphs and accepts the underline shortcut', () => {
+    const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
+    const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
+    const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!
+    const range = document.createRange()
+    range.setStart(first.firstChild ?? first, 0)
+    range.setEnd(first.firstChild ?? first, first.textContent?.length ?? 0)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    fireEvent.mouseUp(view.container.querySelector('.paper-passage-view')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Underline' }))
+    expect(first).toHaveClass('paper-mark-underline')
+    expect(second).not.toHaveClass('paper-mark-underline')
+
+    fireEvent.keyDown(window, { key: '1', code: 'Digit1', ctrlKey: true, altKey: true })
+    expect(first).toHaveClass('paper-mark-highlight')
+    expect(first).toHaveClass('paper-mark-underline')
+  })
 })
