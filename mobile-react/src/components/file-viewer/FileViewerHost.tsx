@@ -101,7 +101,7 @@ function DeferredViewerLoading({ topInset, onClose }: { topInset: number; onClos
     <SheetCloseButton onPress={onClose} label="Close file viewer" testID="deferred-file-viewer-loading-close" />
     <View style={styles.failedBody}>
       <ActivityIndicator color={colors.blue} />
-      <Text style={[styles.failedMessage, { color: colors.muted }]}>Loading file viewer…</Text>
+      <Text style={[styles.failedMessage, { color: colors.muted }]} localize>Loading file viewer…</Text>
     </View>
   </View>
 }
@@ -115,8 +115,8 @@ function DeferredViewerUnavailable({ topInset, onClose }: { topInset: number; on
   >
     <SheetCloseButton onPress={onClose} label="Close file viewer" testID="deferred-file-viewer-close" />
     <View style={styles.failedBody}>
-      <Text style={[styles.failedTitle, { color: colors.text }]}>File viewer unavailable</Text>
-      <Text style={[styles.failedMessage, { color: colors.muted }]}>Close this viewer and continue using the chat.</Text>
+      <Text style={[styles.failedTitle, { color: colors.text }]} localize>File viewer unavailable</Text>
+      <Text style={[styles.failedMessage, { color: colors.muted }]} localize>Close this viewer and continue using the chat.</Text>
     </View>
   </View>
 }

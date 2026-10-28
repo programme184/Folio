@@ -76,6 +76,9 @@ describe('two-action chat sharing', () => {
     expect(analytics.trackEvent).toHaveBeenCalledWith(
       mode === 'snapshot' ? 'chat_share_snapshot_created' : 'chat_share_interactive_created'
     )
+    expect(analytics.trackEvent).toHaveBeenCalledWith(
+      mode === 'snapshot' ? 'chat_share_snapshot_selected' : 'chat_share_interactive_selected'
+    )
     expect(fixture.copy).not.toHaveBeenCalled()
     const shareURL = screen.getByRole('textbox', { name: 'Share URL' })
     const accessToken = screen.getByRole('textbox', { name: 'Access token' })

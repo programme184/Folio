@@ -2,25 +2,41 @@ import type { Backend, CodexProvider, Health, RuntimeBackendCatalog, RuntimeCata
 import { t } from './i18n'
 
 /** UI identity only: the native runtime remains Codex for both choices. */
-export type ChatBackendChoice = Backend | 'codex-custom' | 'claude-custom' | 'opencode-custom' | 'cursor-custom'
+export type ChatBackendChoice = Backend | 'codex-custom' | 'claude-custom' | 'opencode-custom' | 'cursor-custom' | 'gemini-custom'
 
 export function chatBackendChoice(session: { backend: Backend; codex_provider?: CodexProvider; provider_connection?: CodexProvider }): ChatBackendChoice {
   return (session.backend === 'codex' ? session.codex_provider : session.provider_connection) === 'custom' ? `${session.backend}-custom` as ChatBackendChoice : session.backend
 }
 
 export function chatBackendSelection(choice: ChatBackendChoice): { backend: Backend; codex_provider: CodexProvider; provider_connection: CodexProvider } {
-  return { backend: choice.replace(/-custom$/, '') as Backend, codex_provider: choice === 'codex-custom' ? 'custom' : 'default', provider_connection: ['claude-custom', 'opencode-custom', 'cursor-custom'].includes(choice) ? 'custom' : 'default' }
+  return { backend: choice.replace(/-custom$/, '') as Backend, codex_provider: choice === 'codex-custom' ? 'custom' : 'default', provider_connection: ['claude-custom', 'opencode-custom', 'cursor-custom', 'gemini-custom'].includes(choice) ? 'custom' : 'default' }
 }
 
 export function customProviderAvailable(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined, backend: Backend, customCatalog?: RuntimeBackendCatalog['custom_provider']): boolean {
   if (catalog?.backends?.[backend]?.custom_provider?.configured === false) return false
   if (backend === 'codex') return codexCustomProviderAvailable(health, catalog, customCatalog)
   const custom = customCatalog ?? catalog?.backends?.[backend]?.custom_provider
-  return health?.capabilities?.provider_connections_v1?.per_chat === true && ['claude', 'opencode', 'cursor'].includes(backend) && custom?.configured === true && custom.available === true
+  return health?.capabilities?.provider_connections_v1?.per_chat === true && ['claude', 'opencode', 'cursor', 'gemini'].includes(backend) && custom?.configured === true && custom.available === true
 }
 
+/** Credential discovery is a retry/selection hint, not proof of a valid login. */
 export function nativeProviderConnected(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined, backend: Backend): boolean {
+  // Gemini CLI remains the runtime, but AgentsDock exposes API credentials only.
+  // Also hide cached native-login availability from older preview servers.
+  if (backend === 'gemini') return false
   return catalog?.backends?.[backend]?.native_credentials_present ?? runtimeDiagnosticFor(health, catalog, backend)?.authenticated === true
+}
+
+export type NativeProviderSignInStatus = 'signed-in' | 'unverified' | 'signed-out'
+
+/** My Agents must not let a leftover credential file override a failed login. */
+export function nativeProviderSignInStatus(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined, backend: Backend): NativeProviderSignInStatus {
+  if (backend === 'gemini') return 'signed-out'
+  const diagnostic = runtimeDiagnosticFor(health, catalog, backend)
+  if (diagnostic?.installed === false || diagnostic?.status === 'missing'
+    || diagnostic?.authenticated === false || diagnostic?.status === 'unauthenticated') return 'signed-out'
+  if (diagnostic?.authenticated === true) return 'signed-in'
+  return nativeProviderConnected(health, catalog, backend) ? 'unverified' : 'signed-out'
 }
 
 export function codexCustomProviderSupported(health: Health | null | undefined): boolean {
@@ -105,7 +121,8 @@ export function selectableChatBackends(
   _catalog: RuntimeCatalog | null | undefined
 ): Backend[] {
   return ['claude', 'codex', ...(cursorBackendSupported(health) ? ['cursor' as const] : []),
-    ...(opencodeBackendSupported(health) ? ['opencode' as const] : [])]
+    ...(opencodeBackendSupported(health) ? ['opencode' as const] : []),
+    ...(health?.capabilities?.gemini_backend?.available === true && (health.capabilities.gemini_backend.version ?? 0) >= 1 ? ['gemini' as const] : [])]
 }
 
 /** Server contract support is independent of the optional CLI's readiness. */
@@ -161,7 +178,8 @@ export function runtimeCatalogOptions(
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): RuntimeOption[] {
   const backendCatalog = runtimeBackendCatalogFor(catalog, backend, codexProvider, customCatalog)
-  const available = backendCatalog?.[type] ?? []
+  const replacements = type === 'models' ? backendCatalog?.model_replacements : undefined
+  const available = (backendCatalog?.[type] ?? []).filter(option => !replacements?.[option.value])
   const configuredDefault = type === 'models' ? backendCatalog?.default_model : backendCatalog?.default_effort
   const advertisedDefault = available.find(option => option.value === '')
   const defaultLabel = (codexProvider === 'custom' && type === 'models' && !configuredDefault?.trim() ? t('customModels.choose') : '') || (backend === 'opencode' && type === 'models'
@@ -174,7 +192,7 @@ export function runtimeCatalogOptions(
     ...available.filter(option => option.value !== '')
   ]
   const selected = current?.trim()
-  if (selected && !options.some(option => option.value === selected)) {
+  if (selected && !replacements?.[selected] && !options.some(option => option.value === selected)) {
     options.push({ value: selected, label: selected })
   }
   if (backend === 'codex' && codexProvider === 'custom' && type === 'models') {
@@ -214,6 +232,7 @@ export function runtimeModelLockReason(
 export function runtimeSendAdmissionError(
   health: Health | null | undefined, backend: Backend, connection?: CodexProvider
 ): string | null {
+  if (backend === 'gemini' && connection !== 'custom') return t('gemini.apiOnlyError')
   // Capability mismatches are structural. Cached auth/model readiness is not:
   // the server and real provider request decide that on every send.
   if (connection === 'custom') {
@@ -222,6 +241,7 @@ export function runtimeSendAdmissionError(
   }
   if (backend === 'cursor' && !cursorBackendSupported(health)) return cursorBackendUnavailableReason(health, null)
   if (backend === 'opencode' && !opencodeBackendSupported(health)) return opencodeBackendUnavailableReason(health, null)
+  if (backend === 'gemini' && health?.capabilities?.gemini_backend?.available !== true) return t('codexProvider.update')
   return null
 }
 
@@ -307,7 +327,7 @@ export function runtimeEffortAfterModelChange(
   codexProvider?: CodexProvider,
   customCatalog?: RuntimeBackendCatalog['custom_provider']
 ): string | null {
-  if (backend === 'cursor' || backend === 'opencode') return null
+  if (backend === 'cursor' || backend === 'opencode' || backend === 'gemini') return null
   const selected = current?.trim() || ''
   const scoped = modelEfforts(catalog, backend, model, codexProvider, customCatalog)
   if (scoped === null || !selected) return selected || null

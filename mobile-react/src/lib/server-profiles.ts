@@ -12,6 +12,14 @@ import { parseStoredChatReferences } from './chat-references'
 import { parseStoredTeamReferences } from './team-references'
 import { DEFAULT_SERVER_URL, inferServerConfigured } from './server-setup'
 import { APP_FONT_SCALE_DEFAULT, clampAppFontScale } from './typography'
+import { normalizeConnectionURLs } from './server-connection-link'
+
+function profileAddresses(serverURL: string, identity: string | null, value: unknown): { serverURLs?: string[] } {
+  if (value === undefined || !identity) return {}
+  const urls = normalizeConnectionURLs(value)
+  if (!urls.includes(serverURL)) throw new Error('The selected address must belong to the shared server addresses.')
+  return { serverURLs: urls }
+}
 
 export const PROFILE_SETTINGS_SCHEMA_VERSION = 2 as const
 export const DEFAULT_PROFILE_ID = 'default-profile'
@@ -58,12 +66,10 @@ export function nextCredentialVersion(currentValue: unknown): number {
   return current + 1
 }
 
-export function defaultProfileName(serverURL: string, serverIdentity?: string | null): string {
-  const identity = cleanServerIdentity(serverIdentity)
-  if (identity) return identity
+export function defaultProfileName(serverURL: string): string {
   try {
     const url = new URL(normalizeServerURL(serverURL))
-    return url.hostname || url.host || 'AgentsServer'
+    return url.host || 'AgentsServer'
   } catch {
     return 'AgentsServer'
   }
@@ -108,10 +114,11 @@ export function createStoredServerProfile(
   const serverIdentity = cleanServerIdentity(input.serverIdentity)
   return {
     id: requireProfileId(profileId),
-    name: cleanProfileName(input.name) || defaultProfileName(serverURL, serverIdentity),
+    name: cleanProfileName(input.name) || defaultProfileName(serverURL),
     serverURL,
     serverIdentity,
     serverConfigured: input.serverConfigured ?? Boolean(serverIdentity || inferServerConfigured(serverURL, undefined)),
+    ...profileAddresses(serverURL, serverIdentity, input.serverURLs),
     credentialVersion: DEFAULT_CREDENTIAL_VERSION,
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -135,6 +142,9 @@ export function applyStoredServerProfileUpdate(
     serverURL,
     serverIdentity,
     serverConfigured: patch.serverConfigured ?? current.serverConfigured,
+    serverURLs: undefined,
+    ...profileAddresses(serverURL, serverIdentity, patch.resetServerIdentity ? undefined
+      : patch.serverURLs ?? (serverURL === current.serverURL ? current.serverURLs : undefined)),
     updatedAt: timestamp,
   }
 }
@@ -144,15 +154,15 @@ export function normalizeStoredProfileSettings(value: unknown, timestamp = new D
   if (value.schemaVersion !== PROFILE_SETTINGS_SCHEMA_VERSION) {
     throw new Error(`Unsupported profile settings schema version: ${String(value.schemaVersion)}`)
   }
-  if (!Array.isArray(value.profiles) || value.profiles.length === 0) {
-    throw new Error('Profile settings must contain at least one server profile.')
+  if (!Array.isArray(value.profiles)) {
+    throw new Error('Profile settings must contain a server profile list.')
   }
   const profiles = value.profiles.map((profile, index) => normalizeStoredServerProfile(profile, timestamp, index))
   validateProfiles(profiles)
   const profileIds = new Set(profiles.map(profile => profile.id))
   const activeProfileId = typeof value.activeProfileId === 'string' && profileIds.has(value.activeProfileId.trim())
     ? value.activeProfileId.trim()
-    : profiles[0].id
+    : profiles[0]?.id ?? null
   return {
     schemaVersion: PROFILE_SETTINGS_SCHEMA_VERSION,
     activeProfileId,
@@ -171,7 +181,7 @@ export function migrateLegacyProfileSettings(
   const serverIdentity = cleanServerIdentity(typeof legacy.serverIdentity === 'string' ? legacy.serverIdentity : null)
   const profile: StoredServerProfile = {
     id: requireProfileId(profileId),
-    name: defaultProfileName(serverURL, serverIdentity),
+    name: defaultProfileName(serverURL),
     serverURL,
     serverIdentity,
     serverConfigured: Boolean(serverIdentity) || inferServerConfigured(serverURL, legacy.serverConfigured),
@@ -202,13 +212,15 @@ export function createDefaultProfileSettings(
 
 export const DEFAULT_CHAT_DEFAULTS: ChatDefaults = { backend: 'codex', model: '', effort: '', folder: 'General', cwd: '' }
 
-const CHAT_BACKENDS: Backend[] = ['claude', 'codex', 'cursor']
+const CHAT_BACKENDS: Backend[] = ['claude', 'codex', 'cursor', 'opencode', 'gemini']
 
 function normalizeChatDefaults(value: unknown): ChatDefaults {
   const parsed = isRecord(value) ? value : {}
   const backend = CHAT_BACKENDS.includes(parsed.backend as Backend) ? parsed.backend as Backend : DEFAULT_CHAT_DEFAULTS.backend
   return {
     backend,
+    ...(parsed.codex_provider === 'custom' && backend === 'codex' ? { codex_provider: 'custom' as const } : {}),
+    ...(parsed.provider_connection === 'custom' && backend !== 'codex' ? { provider_connection: 'custom' as const } : {}),
     model: typeof parsed.model === 'string' ? parsed.model : DEFAULT_CHAT_DEFAULTS.model,
     effort: typeof parsed.effort === 'string' ? parsed.effort : DEFAULT_CHAT_DEFAULTS.effort,
     folder: typeof parsed.folder === 'string' && parsed.folder.trim() ? parsed.folder : DEFAULT_CHAT_DEFAULTS.folder,
@@ -261,15 +273,18 @@ function normalizeStoredServerProfile(value: unknown, timestamp: string, index: 
   const id = requireProfileId(typeof value.id === 'string' ? value.id : '')
   const serverURL = normalizeServerURL(typeof value.serverURL === 'string' ? value.serverURL : DEFAULT_SERVER_URL)
   const serverIdentity = cleanServerIdentity(typeof value.serverIdentity === 'string' ? value.serverIdentity : null)
+  const name = cleanProfileName(typeof value.name === 'string' ? value.name : undefined)
   const createdAt = cleanTimestamp(value.createdAt) || timestamp
   return {
     id,
-    name: cleanProfileName(typeof value.name === 'string' ? value.name : undefined) || defaultProfileName(serverURL, serverIdentity),
+    // Earlier versions used the internal identity as the generated display name.
+    name: !name || name === serverIdentity ? defaultProfileName(serverURL) : name,
     serverURL,
     serverIdentity,
     serverConfigured: typeof value.serverConfigured === 'boolean'
       ? value.serverConfigured
       : Boolean(serverIdentity || inferServerConfigured(serverURL, undefined)),
+    ...profileAddresses(serverURL, serverIdentity, value.serverURLs),
     credentialVersion: normalizeCredentialVersion(value.credentialVersion),
     createdAt,
     updatedAt: cleanTimestamp(value.updatedAt) || createdAt,

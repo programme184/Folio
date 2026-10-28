@@ -33,16 +33,17 @@ import { inferredMobileFileContentType, mobileFileViewerKind, mobileFileViewerLa
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { filesNewestFirst, formatBytes } from '../../lib/format'
 import { client, useAppStore } from '../../store/useAppStore'
-import { usePalette } from '../../theme'
+import { radius, usePalette } from '../../theme'
 import type { AgentFile, WorkspaceInfo } from '../../types'
 import { Text } from '../AppText'
 import { EmptyState, IconButton, SheetCloseButton } from '../ui'
 import { FilePreview, type LoadedFileText } from './FilePreview'
 import type { ArtifactFileViewerRequest } from './FileViewerContext'
 import { ArtifactVideoPlayer } from './ArtifactVideoPlayer'
-import { artifactTransferRequest, type FileTransferAction } from '../../lib/file-transfer'
+import { artifactTransferRequest, canSaveToPhotos, type FileTransferAction } from '../../lib/file-transfer'
 import { useFileTransfer } from './useFileTransfer'
 import { FileTransferNotice } from './FileTransferNotice'
+import { DownloadActionSheet } from './DownloadActionSheet'
 
 interface ArtifactConnectionScope {
   readonly client: AgentServerClient
@@ -122,6 +123,7 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
   const removePin = useAppStore(state => state.removePin)
   const [currentId, setCurrentId] = useState<string | null>(request.initialId)
   const [overflowOpen, setOverflowOpen] = useState(false)
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false)
   const [pinBusy, setPinBusy] = useState(false)
   const [error, setError] = useState('')
   const [workspaceInfo, setWorkspaceInfo] = useState<WorkspaceInfo | null>(null)
@@ -183,6 +185,7 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
   }, [currentId, navigation.currentId])
   useEffect(() => {
     setOverflowOpen(false)
+    setDownloadMenuOpen(false)
     setError('')
     navigationInFlightRef.current = false
   }, [file?.id])
@@ -216,6 +219,22 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
     dismissAppKeyboard()
     void fileTransfer.start(artifactTransferRequest(file, request.sessionId, connection.client, action, () => artifactConnectionIsCurrent(connection)))
   }, [connection, file, fileTransfer.start, request.sessionId])
+  const openDownloadMenu = useCallback(() => {
+    if (!file || fileTransfer.busy || !artifactConnectionIsCurrent(connection)) return
+    dismissAppKeyboard()
+    // iOS supplies Save Image/Video, Save to Files and app destinations in its
+    // system share sheet. Android keeps explicit saves alongside its chooser.
+    if (Platform.OS === 'ios') {
+      transfer('share')
+      return
+    }
+    setDownloadMenuOpen(true)
+  }, [connection, file, fileTransfer.busy, transfer])
+  const closeDownloadMenu = useCallback(() => setDownloadMenuOpen(false), [])
+  const selectDownloadAction = useCallback((action: FileTransferAction) => {
+    setDownloadMenuOpen(false)
+    transfer(action)
+  }, [transfer])
   const togglePin = useCallback(async () => {
     if (!file || pinBusy || !artifactConnectionIsCurrent(connection)) return
     setPinBusy(true)
@@ -274,7 +293,7 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
     </View>
   }
 
-  const preview = file.source_path && (kind === 'image' || kind === 'pdf') && !workspaceInfoResolved ? <View style={styles.previewLoading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }}>Resolving workspace file…</Text></View> : <ArtifactPreview
+  const preview = file.source_path && (kind === 'image' || kind === 'pdf') && !workspaceInfoResolved ? <View style={styles.previewLoading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }} localize>Resolving workspace file…</Text></View> : <ArtifactPreview
     key={`${connection.key}:${file.id}`}
     file={file}
     kind={kind}
@@ -285,7 +304,7 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
     loadText={loadText}
     loadPDF={loadPDF}
     registerVideoPause={registerActiveVideoPause}
-    onDownload={() => void transfer('download')}
+    onDownload={openDownloadMenu}
     onClose={closeViewer}
   />
 
@@ -304,7 +323,7 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
       onPrevious={() => navigate(navigation.previousId)}
       onNext={() => navigate(navigation.nextId)}
       onShare={() => void transfer('share')}
-      onDownload={() => void transfer('download')}
+      onDownload={openDownloadMenu}
       onPin={() => void togglePin()}
       onOverflow={() => setOverflowOpen(value => !value)}
     />
@@ -312,8 +331,16 @@ function ScopedArtifactFileViewer({ request, connection, modalPadding, onClose }
       actions={actionLayout.overflow}
       pinned={pinned}
       disabled={fileTransfer.busy || pinBusy}
-      onDownload={() => void transfer('download')}
+      onDownload={openDownloadMenu}
       onPin={() => void togglePin()}
+    /> : null}
+    {downloadMenuOpen ? <DownloadActionSheet
+      key={file.id}
+      filename={file.filename}
+      allowPhotos={canSaveToPhotos(file.filename, file.content_type)}
+      bottomInset={modalPadding.paddingBottom}
+      onSelect={selectDownloadAction}
+      onClose={closeDownloadMenu}
     /> : null}
     <FileTransferNotice state={fileTransfer.state} onCancel={fileTransfer.cancel} onDismiss={fileTransfer.dismiss} />
     {error ? <View style={[styles.inlineError, { backgroundColor: `${colors.red}12`, borderColor: `${colors.red}38` }]}><Text style={[styles.inlineErrorText, { color: colors.red }]}>{error}</Text></View> : null}
@@ -402,8 +429,8 @@ function PhoneOverflowActions({ actions, pinned, disabled, onDownload, onPin }: 
 }) {
   const colors = usePalette()
   return <View style={[styles.phoneOverflow, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-    {actions.includes('download') ? <Pressable accessibilityRole="button" accessibilityLabel="Download file" disabled={disabled} onPress={onDownload} style={({ pressed }) => [styles.phoneAction, { opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Download size={17} color={colors.blue} /><Text style={{ color: colors.text, fontWeight: '700' }}>Download</Text></Pressable> : null}
-    {actions.includes('pin') ? <Pressable accessibilityRole="button" accessibilityLabel={pinned ? 'Unpin file' : 'Pin file'} disabled={disabled} onPress={onPin} style={({ pressed }) => [styles.phoneAction, { opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Pin size={17} color={pinned ? colors.blue : colors.muted} /><Text style={{ color: colors.text, fontWeight: '700' }}>{pinned ? 'Unpin' : 'Pin'}</Text></Pressable> : null}
+    {actions.includes('download') ? <Pressable accessibilityRole="button" accessibilityLabel="Download file" disabled={disabled} onPress={onDownload} style={({ pressed }) => [styles.phoneAction, { opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Download size={17} color={colors.blue} /><Text style={{ color: colors.text, fontWeight: '700' }} localize>Download</Text></Pressable> : null}
+    {actions.includes('pin') ? <Pressable accessibilityRole="button" accessibilityLabel={pinned ? 'Unpin file' : 'Pin file'} disabled={disabled} onPress={onPin} style={({ pressed }) => [styles.phoneAction, { opacity: disabled ? 0.35 : pressed ? 0.65 : 1 }]}><Pin size={17} color={pinned ? colors.blue : colors.muted} /><Text style={{ color: colors.text, fontWeight: '700' }} localize>{pinned ? 'Unpin' : 'Pin'}</Text></Pressable> : null}
   </View>
 }
 
@@ -418,7 +445,7 @@ function PhoneNavigation({ previousId, nextId, current, total, onPrevious, onNex
   const colors = usePalette()
   return <View style={[styles.phoneNavigation, { borderColor: colors.border, backgroundColor: colors.background }]}>
     <IconButton icon={ChevronLeft} touchSize={48} disabled={!previousId} onPress={onPrevious} label="Previous file" />
-    <Text style={[styles.phoneNavigationCount, { color: colors.muted }]}>{current} / {total}</Text>
+    <Text style={[styles.phoneNavigationCount, { color: colors.muted }]} localize>{current} / {total}</Text>
     <IconButton icon={ChevronRight} touchSize={48} disabled={!nextId} onPress={onNext} label="Next file" />
   </View>
 }
@@ -426,7 +453,7 @@ function PhoneNavigation({ previousId, nextId, current, total, onPrevious, onNex
 function ArtifactSidebar({ files, selectedId, onSelect }: { files: AgentFile[]; selectedId: string; onSelect: (id: string) => void }) {
   const colors = usePalette()
   return <View style={[styles.sidebar, { borderColor: colors.border, backgroundColor: colors.surface }]}>
-    <View style={styles.sidebarHeading}><Text style={[styles.sidebarTitle, { color: colors.muted }]}>FILES</Text><Text style={[styles.sidebarCount, { color: colors.muted }]}>{files.length}</Text></View>
+    <View style={styles.sidebarHeading}><Text style={[styles.sidebarTitle, { color: colors.muted }]} localize>FILES</Text><Text style={[styles.sidebarCount, { color: colors.muted }]}>{files.length}</Text></View>
     <FlashList
       data={files}
       keyExtractor={file => file.id}
@@ -505,7 +532,7 @@ function UnavailableArtifactViewer({ reconnecting, sessionChanged, modalPadding,
   return <View onAccessibilityEscape={onClose} style={[styles.root, { backgroundColor: colors.background }, modalPadding]}>
     <View collapsable={false} pointerEvents="auto" style={[styles.header, { borderColor: colors.border, backgroundColor: colors.background }]}>
       <SheetCloseButton onPress={onClose} label="Close file viewer" testID="artifact-file-viewer-close" />
-      <Text style={[styles.headerTitle, { color: colors.text }]}>File viewer</Text>
+      <Text style={[styles.headerTitle, { color: colors.text }]} localize>File viewer</Text>
     </View>
     <EmptyState
       title={sessionChanged ? 'Chat changed' : reconnecting ? 'Verifying file access…' : 'Server unavailable'}
@@ -734,12 +761,12 @@ const styles = StyleSheet.create({
   sidebarTitle: { fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   sidebarCount: { fontSize: 10, fontVariant: ['tabular-nums'] },
   sidebarList: { paddingHorizontal: 7, paddingBottom: 16 },
-  sidebarItem: { minHeight: 58, borderRadius: 7, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  sidebarItem: { minHeight: 58, borderRadius: radius.md, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 9 },
   sidebarIdentity: { flex: 1, minWidth: 0 },
   sidebarName: { fontSize: 12, lineHeight: 16, fontWeight: '700' },
   sidebarMeta: { fontSize: 10, lineHeight: 14, marginTop: 2 },
   phoneOverflow: { minHeight: 52, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
-  phoneAction: { minWidth: 116, minHeight: 44, borderRadius: 7, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  phoneAction: { minWidth: 0, flexShrink: 1, minHeight: 44, borderRadius: radius.md, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   phoneNavigation: { minHeight: 58, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   phoneNavigationCount: { minWidth: 72, fontSize: 11, fontWeight: '700', fontVariant: ['tabular-nums'], textAlign: 'center' },
 })

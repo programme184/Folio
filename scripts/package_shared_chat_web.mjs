@@ -30,9 +30,8 @@ async function visit(path) {
   }
 }
 await visit(resolve(root, 'assets'))
-for (const backend of ['codex', 'claude', 'cursor']) {
-  const name = `backend-${backend}.png`
-  assets[name] = ['image/png', (await readRegular(resolve(root, name))).toString('base64')]
+for (const name of ['backend-codex.png', 'backend-claude.png', 'backend-cursor.png', 'backend-gemini.svg']) {
+  assets[name] = [media[extname(name)], (await readRegular(resolve(root, name))).toString('base64')]
 }
 const html = await readRegular(resolve(root, 'shared-chat.html'), 'utf8')
 const data = Buffer.from(JSON.stringify({ html, assets }))

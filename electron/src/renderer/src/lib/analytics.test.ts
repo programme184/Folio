@@ -39,10 +39,30 @@ describe('analytics privacy configuration', () => {
     expect(payload[0].properties.distinct_id).toBe('existing-install-id')
   })
 
+  it('allowlists provider families only on intended events and drops all other metadata', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', request)
+    const analytics = await loadAnalytics()
+    for (const backend of analytics.ANALYTICS_BACKENDS) {
+      analytics.trackEvent('message_sent', { backend, model: 'secret', path: '/private', title: 'secret' } as never)
+    }
+    analytics.trackEvent('chat_created', { backend: 'custom-private-endpoint' } as never)
+    analytics.trackEvent('file_open_requested', { backend: 'codex', success: false })
+    analytics.trackEvent('private-arbitrary-event' as never)
+    const events = request.mock.calls.map(([, init]) => JSON.parse(init.body)[0])
+    expect(events).toHaveLength(7)
+    expect(events.slice(0, 5).map(event => event.properties.backend)).toEqual(analytics.ANALYTICS_BACKENDS)
+    expect(events[5].properties).not.toHaveProperty('backend')
+    expect(events[6].properties).not.toHaveProperty('backend')
+    for (const event of events) expect(Object.keys(event.properties).every(key => ['token', 'time', 'platform', 'distinct_id', 'success', 'backend'].includes(key))).toBe(true)
+    expect(JSON.stringify(events)).not.toMatch(/secret|private|endpoint/)
+  })
+
   it('keeps the runtime event catalog in parity with the documented catalog', async () => {
     const analytics = await loadAnalytics()
     const documentation = readFileSync(resolve(process.cwd(), '../docs/ANALYTICS_EVENTS.md'), 'utf8')
-    const documented = [...documentation.matchAll(/^\| `([a-z][a-z0-9_]+)` \|/gm)].map(match => match[1]).sort()
+    const desktopCatalog = documentation.split('## Shared-browser events')[0]
+    const documented = [...desktopCatalog.matchAll(/^\| `([a-z][a-z0-9_]+)` \|/gm)].map(match => match[1]).sort()
 
     expect(documented).toEqual([...analytics.ANALYTICS_EVENTS].sort())
     expect(new Set(documented).size).toBe(documented.length)
@@ -76,6 +96,50 @@ describe('analytics privacy configuration', () => {
     expect(analytics.getAnalyticsConsentDecision()).toBe('denied')
     expect(window.localStorage.getItem(ID_KEY)).toBeNull()
     analytics.trackEvent('app_launched')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('blocks desktop events when the shared bridge is installed after imports', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', request)
+    const analytics = await loadAnalytics()
+    expect(analytics.getAnalyticsConsentDecision()).toBe('granted')
+    window.localStorage.setItem(ID_KEY, 'legacy-web-install-id')
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true, value: { native: { analyticsDisabled: true } }
+    })
+    analytics.trackEvent('message_sent')
+    expect(request).not.toHaveBeenCalled()
+    expect(window.localStorage.getItem(ID_KEY)).toBeNull()
+  })
+
+  it('records one operation outcome without exposing its response or changing errors', async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', request)
+    const analytics = await loadAnalytics()
+    const response = { ok: false, api_key: 'private-key', path: '/private/file', message: 'private reply' }
+    const action = vi.fn(async () => response)
+    expect(await analytics.trackOperation('provider_connection_tested', action, value => value.ok)).toBe(response)
+    expect(action).toHaveBeenCalledOnce()
+    const failure = new Error('private server details')
+    await expect(analytics.trackOperation('workspace_file_saved', async () => { throw failure })).rejects.toBe(failure)
+    await analytics.trackOperation('goal_saved', async () => response)
+    const payloads = request.mock.calls.map(([, init]) => JSON.parse(init.body)[0])
+    expect(payloads.map(item => [item.event, item.properties.success])).toEqual([
+      ['provider_connection_tested', false], ['workspace_file_saved', false], ['goal_saved', true]
+    ])
+    for (const item of payloads) {
+      expect(Object.keys(item.properties).sort()).toEqual(['distinct_id', 'platform', 'success', 'time', 'token'])
+      expect(JSON.stringify(item)).not.toContain('private')
+    }
+  })
+
+  it('does not enable shared-browser analytics when recording an operation', async () => {
+    const request = vi.fn()
+    vi.stubGlobal('fetch', request)
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sharedChat: {}, native: { analyticsDisabled: true } } })
+    const analytics = await loadAnalytics()
+    expect(await analytics.trackOperation('attachment_uploaded', async () => 'ok')).toBe('ok')
     expect(request).not.toHaveBeenCalled()
   })
 

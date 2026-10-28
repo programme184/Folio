@@ -168,6 +168,10 @@ const api: AgentsDockAPI = {
     switch: (profileId, force) => ipcRenderer.invoke('servers:switch', profileId, force),
     refresh: (profileId, profileGeneration) => ipcRenderer.invoke('servers:refresh', profileId, profileGeneration),
     testConnection: input => ipcRenderer.invoke('servers:test-connection', input),
+    copyToken: profileId => ipcRenderer.invoke('servers:copy-token', profileId),
+    tokenPreview: profileId => ipcRenderer.invoke('servers:token-preview', profileId),
+    connectionQr: profileId => ipcRenderer.invoke('servers:connection-qr', profileId),
+    saveConnectionQr: (profileId, revision) => ipcRenderer.invoke('servers:save-connection-qr', profileId, revision),
     restartStatus: scope => ipcRenderer.invoke('servers:restart-status', scope),
     restart: (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation
       ? ipcRenderer.invoke('servers:restart', scope, expectedServerInstanceId, forceConfirmation)
@@ -201,6 +205,7 @@ const api: AgentsDockAPI = {
     markRead: (sessionId, seq) => ipcRenderer.invoke('sessions:read', sessionId, seq),
     markUnread: sessionId => ipcRenderer.invoke('sessions:unread', sessionId),
     acknowledgeEmergency: (sessionId, alertId) => ipcRenderer.invoke('sessions:emergency:acknowledge', sessionId, alertId),
+    dismissEmergencyAlerts: (sessionId, throughAlertId) => ipcRenderer.invoke('sessions:emergency:dismiss-all', sessionId, throughAlertId),
     importHistory: (sessionId, force) => ipcRenderer.invoke('sessions:import-history', sessionId, force),
     listLocal: () => ipcRenderer.invoke('sessions:list-local'),
     bulkImport: items => ipcRenderer.invoke('sessions:bulk-import', items)
@@ -246,6 +251,7 @@ const api: AgentsDockAPI = {
     serverGoals: () => ipcRenderer.invoke('codex:server-goals:get'),
     auth: scope => ipcRenderer.invoke('codex:auth:get', scope),
     importAuth: (scope, authFile) => ipcRenderer.invoke('codex:auth:import', scope, authFile),
+    reloadAuth: scope => ipcRenderer.invoke('codex:auth:reload', scope),
     provider: scope => ipcRenderer.invoke('codex:provider:get', scope),
     providerModels: (scope, sessionId) => ipcRenderer.invoke('codex:provider:models', scope, sessionId),
     testProvider: (scope, input) => ipcRenderer.invoke('codex:provider:test', scope, input),
@@ -275,6 +281,10 @@ const api: AgentsDockAPI = {
     cleanBackgroundTerminals: (sessionId, input) => (
       ipcRenderer.invoke('codex:background-terminals:clean', sessionId, input)
     )
+  },
+  gemini: {
+    runtime: sessionId => ipcRenderer.invoke('gemini:runtime', sessionId),
+    resolveInteraction: (sessionId, interactionId, response) => ipcRenderer.invoke('gemini:interaction:resolve', sessionId, interactionId, response)
   },
   claude: {
     runtime: sessionId => ipcRenderer.invoke('claude:runtime', sessionId),
@@ -437,6 +447,7 @@ const api: AgentsDockAPI = {
     setScoped: (scope, key, value) => ipcRenderer.invoke('preferences:set-scoped', scope, key, value)
   },
   native: {
+    issueReportEnvironment: () => ipcRenderer.invoke('native:issue-report-environment'),
     analyticsDisabled: process.env.AGENTSDOCK_DISABLE_ANALYTICS === '1',
     openExternal: url => ipcRenderer.invoke('native:open-external', url),
     showItemInFolder: path => ipcRenderer.invoke('native:show-item', path),

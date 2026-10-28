@@ -1,8 +1,11 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
 import { customModelBackend, customModelInput, type CustomModelBackend, type CustomModelInput } from '../shared/custom-models'
 import { cliAccountBackend, type CLIAccountBackend, connectionRequest, type ConnectionBackend, type ConnectionAction, type ProviderConnectionRequest, type ProviderConnectionReply } from '../shared/provider-connections'
-import { app, BrowserWindow, dialog, nativeImage, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
+import QRCode from 'qrcode'
+import { localOnlyServerUrl, normalizeConnectionURLs, serverConnectionLink, type ServerConnectionQr } from '../shared/server-connection-link'
 import { discoverLocalServers, type DiscoveredLocalServer } from './local-server-discovery'
+import { imagePreviewResponse } from './image-preview'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -23,6 +26,7 @@ import { parseBulletinHintRefresh } from '../shared/team-bulletin-hints'
 import { normalizeProjectWorkspaces, PROJECT_WORKSPACES_PREFERENCE_KEY } from '../shared/project-workspaces'
 import {
   cursorLocalSessionImportSupported,
+  geminiLocalSessionImportSupported,
   localSessionImportBatchLimit,
   localSessionImportListLimit,
   parseBulkImportSessionItems,
@@ -150,8 +154,7 @@ import { agentFileBelongsToSession, isolateSessionEvent } from '../shared/sessio
 import { buildWorkspaceMediaURL, isValidMediaIdentifier } from '../shared/media-url'
 import {
   CacheNamespaceCollisionError,
-  LocalCache,
-  TIMELINE_PAGING_SCHEMA_VERSION
+  LocalCache
 } from './persistence'
 import {
   AgentServerClient,
@@ -173,6 +176,7 @@ import { SubagentEventProjector } from './subagent-projection'
 import { mergeTimelineSearchResults } from './search'
 import type { TeamHubConfigureServerRoleInput, TeamHubDiscovery, TeamHubScope, TeamHubServerScope } from '../shared/team-hub'
 import type { TeamHubBootstrapProof, TeamHubBootstrapProofInput } from './team-hub-service'
+import { TeamHubStoppedHostingError } from './team-hub-role-change'
 import type {
   SecurePeerActivateInput,
   SecurePeerApproveInput,
@@ -207,7 +211,6 @@ import {
 } from './secure-peer-contract'
 
 const INITIAL_SEMANTIC_ITEM_LIMIT = 48
-const DELTA_EVENT_LIMIT = 480
 const HISTORY_PAGE_SEMANTIC_ITEM_LIMIT = 120
 const LEGACY_TIMELINE_EVENT_LIMIT = 480
 const LEGACY_BOUNDARY_BACKFILL_EVENT_LIMIT = 1_000
@@ -225,7 +228,9 @@ const FILE_PAGE_LIMIT = 60
 const MAX_AGENT_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024
 const AGENT_TEXT_FILE_TIMEOUT_MS = 30_000
 const WORKSPACE_PREVIEW_PROBE_TIMEOUT_MS = 30_000
-const RUNTIME_CATALOG_CACHE_KEY = 'runtimeCatalog:v1'
+// v2 discards pre-retirement-policy catalogs so an app upgrade does not keep
+// an obsolete default/selectable model for the disk cache's full lifetime.
+const RUNTIME_CATALOG_CACHE_KEY = 'runtimeCatalog:v2'
 const SERVER_VERSION_CACHE_KEY = 'serverVersion:v1'
 const SEMANTIC_TIMELINE_CAPABILITY_CACHE_KEY = 'semanticTimelineCapability:v1'
 const RUNTIME_CATALOG_RETRY_MS = 30_000
@@ -246,7 +251,6 @@ const REMOTE_AGENT_ROUTE_UNAVAILABLE = 'Remote agent routes cannot be used from 
 const SERVER_RESTART_RECONNECT_TIMEOUT_MS = 45_000
 const SERVER_RESTART_POLL_DELAY_MS = 500
 const SERVER_RESTART_HEALTH_TIMEOUT_MS = 3_000
-const MAX_TIMELINE_SUBSCRIPTIONS = 2
 const TRACE_DETAIL_EVENT_TYPES = new Set([
   'reasoning_summary',
   'reasoning_text',
@@ -329,6 +333,7 @@ interface TimelineSubscription {
   stop: (() => void) | null
   connected: boolean
   initializing: boolean
+  catchingUp?: boolean
 }
 
 interface StagedClipboardFile {
@@ -411,6 +416,7 @@ export class AppService {
   private rendererReadyWindows = new WeakSet<BrowserWindow>()
   private rendererGrantEpochs = new Map<number, number>()
   private rendererFileOperations = new Map<number, Set<AbortController>>()
+  private pendingHistoryProjectionRefresh = new Set<string>()
   private stagedClipboardFiles = new Map<string, StagedClipboardFile>()
   private clipboardStagingDirectory: string | null = null
   private clipboardStagingScavenged = false
@@ -495,7 +501,15 @@ export class AppService {
     this.clipboardTempRoot = options.clipboardTempRoot ?? app.getPath('temp')
     this.portTunnels.setChangeListener?.(ports => this.emitForwardedPorts(ports))
     appLog('startup', 'local cache ready')
-    this.clientFactory = options.clientFactory ?? ((serverUrl, accessToken) => new AgentServerClient(serverUrl, accessToken))
+    this.clientFactory = options.clientFactory ?? ((serverUrl, accessToken) => {
+      // One durable identity per desktop data directory, shared by server aliases.
+      let id = this.cache.preference<string>('desktop', 'emptyChatClientId:v1', '')
+      if (!id) {
+        id = randomUUID()
+        this.cache.putPreference('desktop', 'emptyChatClientId:v1', id)
+      }
+      return new AgentServerClient(serverUrl, accessToken, { placeholderClientId: id })
+    })
     this.onServerReachable = options.onServerReachable
     this.onServerUnavailable = options.onServerUnavailable
     this.serverRestartReconnectTimeoutMs = options.serverRestartReconnectTimeoutMs ?? SERVER_RESTART_RECONNECT_TIMEOUT_MS
@@ -872,47 +886,71 @@ export class AppService {
       ...(input.renameOnly === true ? { require_existing_host: true as const } : {}),
       ...(networkName === undefined ? {} : { network_name: networkName })
     }
-    const receipt = input.role === 'host'
-      ? await context.scope.client.enableTeamHubHost(request)
-      : await context.scope.client.disableTeamHubHost(request)
-    this.requireSecurePeerControlContext(context)
-    requireExactTeamHubServerRoleReceipt(receipt, {
-      requestId,
-      serverIdentity: context.expected.serverIdentity,
-      serverInstanceId: context.serverInstanceId,
-      serverName,
-      role: input.role
-    })
-    if (input.renameOnly === true && !['rename', 'already_host'].includes(receipt.operation)) {
-      throw new Error('AgentsServer did not confirm an existing Host rename.')
-    }
+    try {
+      const receipt = input.role === 'host'
+        ? await context.scope.client.enableTeamHubHost(request)
+        : await context.scope.client.disableTeamHubHost(request)
+      this.requireSecurePeerControlContext(context)
+      requireExactTeamHubServerRoleReceipt(receipt, {
+        requestId,
+        serverIdentity: context.expected.serverIdentity,
+        serverInstanceId: context.serverInstanceId,
+        serverName,
+        role: input.role
+      })
+      if (input.renameOnly === true && !['rename', 'already_host'].includes(receipt.operation)) {
+        throw new Error('AgentsServer did not confirm an existing Host rename.')
+      }
 
-    const health = await this.readActivityHealth(context.scope, () => context.scope.client.health())
-    this.assertCurrentScope(context.scope)
-    const current = this.teamHubServerScope()
-    if (
-      current.profileId !== context.expected.profileId
-      || current.profileGeneration !== context.expected.profileGeneration
-      || current.serverIdentity !== context.expected.serverIdentity
-      || health.ok !== true
-      || health.server_identity !== context.expected.serverIdentity
-      || health.server_instance_id !== context.serverInstanceId
-    ) throw staleProfileError()
-    const enabledCapability = requireTeamHubHostControlCapability(
-      health.capabilities?.team_hub_host_control_v1
-    )
-    if (!enabledCapability.available || enabledCapability.enabled !== (input.role === 'host')) {
-      throw new Error(enabledCapability.message || 'AgentsServer did not apply the Team Network role.')
+      const health = await this.readActivityHealth(context.scope, () => context.scope.client.health())
+      this.assertCurrentScope(context.scope)
+      const current = this.teamHubServerScope()
+      if (
+        current.profileId !== context.expected.profileId
+        || current.profileGeneration !== context.expected.profileGeneration
+        || current.serverIdentity !== context.expected.serverIdentity
+        || health.ok !== true
+        || health.server_identity !== context.expected.serverIdentity
+        || health.server_instance_id !== context.serverInstanceId
+      ) throw staleProfileError()
+      const enabledCapability = requireTeamHubHostControlCapability(
+        health.capabilities?.team_hub_host_control_v1
+      )
+      if (!enabledCapability.available || enabledCapability.enabled !== (input.role === 'host')) {
+        throw new Error(enabledCapability.message || 'AgentsServer did not apply the Team Network role.')
+      }
+      const discovery = parseTeamHubDiscovery(
+        health.capabilities?.team_hub_v1,
+        context.expected.serverIdentity
+      )
+      if (discovery.designatedHost !== (input.role === 'host')) {
+        throw new Error('AgentsServer did not apply the requested Team Network role.')
+      }
+      this.adoptHealth(context.scope, health)
+      return discovery
+    } catch (error) {
+      let stopped = false
+      if (input.role === 'member') {
+        // Demotion may commit before its response, follow-up health read, or
+        // previous-member recovery fails. Confirm the explicit role once;
+        // absent capabilities or cached discovery do not prove a transition.
+        try {
+          this.requireSecurePeerControlContext(context)
+          const health = await this.readActivityHealth(context.scope, () => context.scope.client.health())
+          this.requireSecurePeerControlContext(context)
+          const hostControl = requireTeamHubHostControlCapability(health.capabilities?.team_hub_host_control_v1)
+          const hub = health.capabilities?.team_hub_v1
+          if (health.ok === true && health.server_identity === context.expected.serverIdentity
+            && health.server_instance_id === context.serverInstanceId && hostControl.available
+            && hostControl.enabled === false && hub?.designated_host === false) {
+            parseTeamHubDiscovery(hub, context.expected.serverIdentity)
+            this.adoptHealth(context.scope, health)
+            stopped = true
+          }
+        } catch { /* Preserve the mutation error when the actual role is unknown. */ }
+      }
+      throw stopped ? new TeamHubStoppedHostingError(error) : error
     }
-    const discovery = parseTeamHubDiscovery(
-      health.capabilities?.team_hub_v1,
-      context.expected.serverIdentity
-    )
-    if (discovery.designatedHost !== (input.role === 'host')) {
-      throw new Error('AgentsServer did not apply the requested Team Network role.')
-    }
-    this.adoptHealth(context.scope, health)
-    return discovery
   }
 
   /**
@@ -1816,6 +1854,82 @@ export class AppService {
     return this.loadCachedBootstrap(this.requireProfileScope(profileId, profileGeneration))
   }
 
+  async copyServerToken(profileId: string): Promise<void> {
+    const { token, assertCurrent } = await this.serverCredentialForSharing(profileId)
+    assertCurrent()
+    // Keep the credential in the main process; IPC returns no secret to the renderer.
+    clipboard.writeText(token)
+  }
+
+  async serverTokenPreview(profileId: string): Promise<string> {
+    const { token, assertCurrent } = await this.serverCredentialForSharing(profileId)
+    assertCurrent()
+    // Mask before crossing IPC. Never reveal a whole short credential or its length.
+    const prefixLength = token.length > 8 ? 4 : 0
+    return `${token.slice(0, prefixLength)}••••••••`
+  }
+
+  private async serverCredentialForSharing(profileId: string) {
+    if (typeof profileId !== 'string' || !profileId.trim()) throw new Error('Choose a saved server first.')
+    this.requireProfileNotRemoving(profileId)
+    const shutdownEpoch = this.shutdownEpoch
+    const revision = this.settings.connectionRevision(profileId)
+    const profile = this.settings.getProfile(profileId)!
+    const assertCurrent = () => {
+      this.requireProfileNotRemoving(profileId)
+      if (this.shutdownEpoch !== shutdownEpoch || this.settings.connectionRevision(profileId) !== revision) throw staleProfileError()
+    }
+    const token = await this.settings.accessTokenForConnectionAsync(profileId)
+    assertCurrent()
+    if (!token) throw new Error('This server has no saved access token.')
+    return { token, profile, revision, assertCurrent }
+  }
+
+  async serverConnectionQr(profileId: string): Promise<ServerConnectionQr> {
+    const { token, profile, revision, assertCurrent } = await this.serverCredentialForSharing(profileId)
+    let serverUrls: string[] | undefined
+    let identity = profile.serverIdentity ?? null
+    const probe = this.clientFactory(profile.serverUrl, token)
+    try {
+      let advertised: Awaited<ReturnType<AgentServerClient['connectionAddresses']>> | null = null
+      try { advertised = await probe.connectionAddresses() } catch { /* Offline/older servers retain their saved single address. */ }
+      assertCurrent()
+      if (advertised) {
+        if (advertised.version !== 1 || typeof advertised.server_identity !== 'string' || !advertised.server_identity.trim() || !Array.isArray(advertised.urls)) throw new Error('Invalid server connection addresses.')
+        if (identity && advertised.server_identity !== identity) throw new Error('Server identity mismatch. Check this saved connection before sharing.')
+        identity = advertised.server_identity
+        const urls = advertised.urls.length ? normalizeConnectionURLs(advertised.urls) : []
+        // The remote server supplies its addresses; never use this desktop's interfaces.
+        const primary = localOnlyServerUrl(profile.serverUrl) && urls.length ? [] : [profile.serverUrl]
+        serverUrls = normalizeConnectionURLs([...new Set([...primary, ...urls])].slice(0, 6))
+        if (serverUrls.length < 2 && serverUrls[0] === profile.serverUrl) serverUrls = undefined
+      }
+    } finally { probe.dispose() }
+    const serverUrl = serverUrls?.[0] ?? profile.serverUrl
+    const dataUrl = await QRCode.toDataURL(serverConnectionLink({ serverUrl, ...(serverUrls ? { serverUrls } : {}), accessToken: token,
+      name: profile.name, serverIdentity: identity }), { width: 512, margin: 4, errorCorrectionLevel: 'M' })
+    assertCurrent()
+    return { dataUrl, serverUrl, revision, localOnly: localOnlyServerUrl(serverUrl) }
+  }
+
+  async saveServerConnectionQr(profileId: string, revision: number): Promise<boolean> {
+    const epoch = this.shutdownEpoch
+    const assertCurrent = () => {
+      this.requireProfileNotRemoving(profileId)
+      if (this.shutdownEpoch !== epoch || this.settings.connectionRevision(profileId) !== revision) throw staleProfileError()
+    }
+    assertCurrent()
+    const image = await this.serverConnectionQr(profileId)
+    assertCurrent()
+    const result = await dialog.showSaveDialog({ defaultPath: 'AgentsDock-server-connection.png',
+      filters: [{ name: 'PNG', extensions: ['png'] }] })
+    if (result.canceled || !result.filePath) return false
+    assertCurrent()
+    // The image contains a credential. Never log it or the payload, and restrict new files.
+    await writeFile(result.filePath, Buffer.from(image.dataUrl.split(',')[1], 'base64'), { mode: 0o600 })
+    return true
+  }
+
   async testServerConnection(input: TestServerConnectionInput): Promise<Health> {
     const shutdownEpoch = this.shutdownEpoch
     const profile = input.profileId ? this.settings.getProfile(input.profileId) : null
@@ -2286,11 +2400,11 @@ export class AppService {
     this.emitRuntime(scope, catalog)
   }
 
-  async codexAuth(expected: CodexServerSettingsScope): Promise<CodexAuthStatus> {
+  async codexAuth(expected: CodexServerSettingsScope, reloadLogin = false): Promise<CodexAuthStatus> {
     const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
-    const result = await scope.client.codexAuth()
+    const result = reloadLogin ? await scope.client.codexAuth(true) : await scope.client.codexAuth()
     this.assertCurrentScope(scope)
     return result
   }
@@ -2531,7 +2645,9 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const capability = requireLocalSessionImportCapability(this.health)
-    const candidates = cursorLocalSessionImportSupported(this.health)
+    const candidates = geminiLocalSessionImportSupported(this.health)
+      ? await scope.client.listLocalSessions(localSessionImportListLimit(capability), cursorLocalSessionImportSupported(this.health), true)
+      : cursorLocalSessionImportSupported(this.health)
       ? await scope.client.listLocalSessions(localSessionImportListLimit(capability), true)
       : await scope.client.listLocalSessions(localSessionImportListLimit(capability))
     this.assertCurrentScope(scope)
@@ -2545,6 +2661,9 @@ export class AppService {
     const normalized = parseBulkImportSessionItems(items, localSessionImportListLimit(capability))
     if (normalized.some(item => item.backend === 'cursor') && !cursorLocalSessionImportSupported(this.health)) {
       throw new Error('Cursor Import Chat requires a server with Cursor local import support.')
+    }
+    if (normalized.some(item => item.backend === 'gemini') && !geminiLocalSessionImportSupported(this.health)) {
+      throw new Error('Gemini Import Chat requires a server with Gemini local import support.')
     }
     const batchLimit = localSessionImportBatchLimit(capability)
     const results: BulkImportSessionResult[] = []
@@ -2729,8 +2848,15 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const session = await scope.client.acknowledgeEmergency(sessionId, alertId)
     this.assertCurrentScope(scope)
-    this.upsertSession(scope, session)
-    return session
+    return this.applyEmergencyReceipt(scope, session)
+  }
+
+  async dismissEmergencyAlerts(sessionId: string, throughAlertId: string): Promise<Session> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const session = await scope.client.dismissEmergencyAlerts(sessionId, throughAlertId)
+    this.assertCurrentScope(scope)
+    return this.applyEmergencyReceipt(scope, session)
   }
 
   async importHistory(sessionId: string, force = false): Promise<TimelinePage> {
@@ -2757,9 +2883,8 @@ export class AppService {
     const lease = this.beginTimelineSubscription(scope, sessionId)
     this.emitSync(scope, sessionId, 'syncing')
     const cached = this.cache.snapshot(scope.namespace, sessionId)
-    const cachedLast = this.cache.latestEventSequence(scope.namespace, sessionId)
     if (cached && !forceRemote) {
-      queueMicrotask(() => void this.reconcileTimelineAndStream(scope, sessionId, cachedLast, lease))
+      queueMicrotask(() => void this.reconcileTimelineAndStream(scope, sessionId, lease))
       return cached
     }
     try {
@@ -2813,15 +2938,6 @@ export class AppService {
       SEMANTIC_TIMELINE_CAPABILITY_CACHE_KEY,
       { serverVersion: this.serverVersionForScope(scope), supported }
     )
-  }
-
-  private semanticTimelineCapabilityChanged(scope: ConnectionScope): boolean {
-    const capability = this.cache.preference<SemanticTimelineCapability | null>(
-      scope.namespace,
-      SEMANTIC_TIMELINE_CAPABILITY_CACHE_KEY,
-      null
-    )
-    return !capability || capability.serverVersion !== this.serverVersionForScope(scope)
   }
 
   private async restoreLegacyTurnBoundary(
@@ -3412,29 +3528,41 @@ export class AppService {
     if (firstError) throw firstError
   }
 
-  async subscribeTimeline(sessionId: string, after: number): Promise<void> {
+  async subscribeTimeline(sessionId: string, _after: number): Promise<void> {
     const scope = this.captureScope()
     const lease = this.beginTimelineSubscription(scope, sessionId)
     this.emitSync(scope, sessionId, 'syncing')
-    queueMicrotask(() => void this.reconcileTimelineAndStream(scope, sessionId, after, lease))
+    queueMicrotask(() => void this.reconcileTimelineAndStream(scope, sessionId, lease))
+  }
+
+  resumeLiveUpdates(): void {
+    if (!this.running || !this.clientAvailable) return
+    const scope = this.captureScope()
+    this.flushEventCache()
+    // Sleeping can leave an apparently open transport behind. Renew only the
+    // bounded set of open timelines; never resend prompts or restart providers.
+    for (const sessionId of this.timelineSubscriptions.keys()) {
+      const lease = this.renewTimelineSubscription(sessionId)
+      if (lease === null) continue
+      this.emitSync(scope, sessionId, 'syncing')
+      void this.reconcileTimelineAndStream(scope, sessionId, lease)
+    }
+    if (!this.isValidatedScope(scope)) void this.runBackgroundRefresh(false, scope)
   }
 
   private beginTimelineSubscription(scope: ConnectionScope, sessionId: string): number {
     this.assertCurrentScope(scope)
     this.stopTimelineSubscription(sessionId)
-    if (this.timelineSubscriptions.size >= MAX_TIMELINE_SUBSCRIPTIONS) {
-      const oldestSessionId = this.timelineSubscriptions.keys().next().value as string | undefined
-      if (oldestSessionId) {
-        this.stopTimelineSubscription(oldestSessionId)
-        this.emitSync(scope, oldestSessionId, 'idle')
-      }
-    }
+    this.flushEventCache()
+    // The renderer owns the visible pane set and explicitly unsubscribes hidden
+    // chats. Opening another pane must not retire a still-visible chat's lease,
+    // including while a workspace switch briefly overlaps old and new panes.
     const lease = ++this.timelineLeaseSequence
     this.timelineSubscriptions.set(sessionId, { lease, stop: null, connected: false, initializing: true })
     return lease
   }
 
-  private activateTimelineStream(scope: ConnectionScope, sessionId: string, after: number, lease: number, acceptReconcileEvent?: (event: Event) => boolean): void {
+  private activateTimelineStream(scope: ConnectionScope, sessionId: string, after: number, lease: number): void {
     if (!this.isCurrentTimeline(scope, sessionId, lease)) return
     const subscription = this.timelineSubscriptions.get(sessionId)
     if (!subscription) return
@@ -3448,23 +3576,25 @@ export class AppService {
       const subagentState = this.subagentProjector.project(event)
       if (event.type === 'raw_event') {
         if (subagentState) {
-          if (acceptReconcileEvent && !acceptReconcileEvent(subagentState)) return
           this.emitAgentEvent(scope, subagentState)
           this.enqueueEventCache(scope, subagentState)
         }
         return
       }
-      if (acceptReconcileEvent && !acceptReconcileEvent(event)) return
       this.emitAgentEvent(scope, event)
       this.enqueueEventCache(scope, event)
       if (JOB_REFRESH_EVENT_TYPES.has(event.type) && !isImportedProviderControlMetadata(event)) void this.refreshJobs(scope)
-    }, (connected, error) => {
+    }, (connected, error, phase) => {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       const current = this.timelineSubscriptions.get(sessionId)
       if (!current) return
       current.connected = connected
+      current.catchingUp = phase === 'catching-up'
+      if (!connected && error) appLog('sync', 'timeline transport interrupted', {
+        sessionId, profileId: scope.profileId, generation: scope.generation, error
+      })
       if (!connected && !this.isValidatedScope(scope)) this.suspendTimelineSubscriptions(true)
-      this.emitSync(scope, sessionId, connected ? 'live' : 'reconnecting', error)
+      this.emitSync(scope, sessionId, connected ? 'live' : phase === 'catching-up' ? 'syncing' : 'reconnecting', error)
       if (connected) void this.refreshPinsFromNotice(scope, sessionId)
     }, event => {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
@@ -3487,6 +3617,14 @@ export class AppService {
       if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       this.emit('provider-usage:changed', { profileId: scope.profileId, profileGeneration: scope.generation, sessionId, backend,
         serverIdentity: this.settings.getProfile(scope.profileId)?.serverIdentity ?? null })
+    }, () => {
+      if (!this.isCurrentTimeline(scope, sessionId, lease)) return
+      // Metadata proof can finish after initial display. Fetch the bounded
+      // semantic tail once when its projection changes; never poll or replay
+      // the entire chat just to discover a repaired historical row.
+      const key = `${scope.generation}:${sessionId}:${lease}`
+      if (this.timelineReconcileInFlight.has(key)) this.pendingHistoryProjectionRefresh.add(key)
+      else void this.reconcileTimelineAndStream(scope, sessionId, lease)
     })
     const current = this.timelineSubscriptions.get(sessionId)
     if (current?.lease === lease) current.stop = stop
@@ -3624,6 +3762,13 @@ export class AppService {
     assertLocalAgentChatReferences(input.chatReferences)
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
+    // Commit the identity before transport, in the selected server's durable
+    // cache. Lost responses and renderer/app restarts reuse the same request.
+    const receiptKey = `turnReceipt:${input.sessionId}`
+    const fingerprint = createHash('sha256').update(JSON.stringify(input)).digest('hex')
+    const previous = this.cache.preference<{ fingerprint: string; id: string } | null>(scope.namespace, receiptKey, null)
+    const requestId = input.clientRequestId ?? (previous?.fingerprint === fingerprint ? previous.id : randomUUID())
+    this.cache.putPreference(scope.namespace, receiptKey, { fingerprint, id: requestId })
     const response = await scope.client.sendTurn(
       input.sessionId,
       input.prompt,
@@ -3633,8 +3778,12 @@ export class AppService {
       input.clientCapabilities ?? ['codex_interactive_v1'],
       input.chatReferences ?? [],
       input.teamReferences ?? [],
-      input.skillSelection
+      input.skillSelection,
+      requestId
     )
+    // Acceptance wins even if local cleanup fails. Keep the receipt in that
+    // case, so a retry can only replay the accepted result.
+    try { this.cache.putPreference(scope.namespace, receiptKey, null) } catch { /* storage health reports the failure */ }
     this.assertCurrentScope(scope)
     this.upsertSession(scope, response.session)
     if (response.event) {
@@ -3671,6 +3820,8 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const result = await scope.client.stopTurn(sessionId)
     this.assertCurrentScope(scope)
+    const subscription = this.timelineSubscriptions.get(sessionId)
+    if (subscription) this.scheduleSubagentSnapshotRefresh(scope, sessionId, subscription.lease)
     return result
   }
 
@@ -3716,6 +3867,14 @@ export class AppService {
 
   async claudeRuntime(sessionId: string): Promise<ClaudeRuntimeSnapshot> {
     return this.providerRequest(scope => scope.client.claudeRuntime(sessionId))
+  }
+
+  async geminiRuntime(sessionId: string) {
+    return this.providerRequest(scope => scope.client.geminiRuntime(sessionId))
+  }
+
+  async resolveGeminiInteraction(sessionId: string, interactionId: string, response: Record<string, JsonValue>) {
+    return this.providerRequest(scope => scope.client.resolveGeminiInteraction(sessionId, interactionId, response))
   }
 
   async setClaudeGoal(sessionId: string, condition: string): Promise<ClaudeRuntimeSnapshot> {
@@ -4058,7 +4217,7 @@ export class AppService {
     this.assertCurrentScope(scope)
     const turns = result.deferred === true
       ? refreshed
-      : refreshed.filter(turn => turn.queued_id !== queuedId || turn.promoted === true)
+      : refreshed.filter(turn => turn.queued_id !== queuedId || turn.promoted === true || turn.paused === true)
     this.cache.putQueuedTurns(scope.namespace, sessionId, turns)
     return result
   }
@@ -4974,7 +5133,12 @@ export class AppService {
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
-    const response = await scope.client.fileRequest(sessionId, fileId, request)
+    const response = await imagePreviewResponse(request, async mediaRequest => {
+      this.assertCurrentScope(scope)
+      const original = await scope.client.fileRequest(sessionId, fileId, mediaRequest)
+      this.assertCurrentScope(scope)
+      return original
+    })
     this.assertCurrentScope(scope)
     return response
   }
@@ -4990,7 +5154,12 @@ export class AppService {
     if (scope.profileId !== profileId || scope.generation !== profileGeneration) throw staleProfileError()
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
-    const response = await scope.client.workspacePreviewRequest(sessionId, path, request)
+    const response = await imagePreviewResponse(request, async mediaRequest => {
+      this.assertCurrentScope(scope)
+      const original = await scope.client.workspacePreviewRequest(sessionId, path, mediaRequest)
+      this.assertCurrentScope(scope)
+      return original
+    }, path)
     this.assertCurrentScope(scope)
     return response
   }
@@ -5342,11 +5511,10 @@ export class AppService {
     // even while background session/job metadata waits for an input pause.
     if (!namespaceWasAdopted) {
       for (const [sessionId, subscription] of [...this.timelineSubscriptions]) {
-        if (subscription.connected || subscription.initializing) continue
+        if (subscription.connected || subscription.initializing || subscription.catchingUp) continue
         const lease = this.renewTimelineSubscription(sessionId)
         if (lease == null) continue
-        const cachedLast = this.cache.latestEventSequence(activeScope.namespace, sessionId)
-        queueMicrotask(() => void this.reconcileTimelineAndStream(activeScope, sessionId, cachedLast, lease))
+        queueMicrotask(() => void this.reconcileTimelineAndStream(activeScope, sessionId, lease))
       }
     }
     const [sessions, jobs] = await metadataResults
@@ -5612,7 +5780,7 @@ export class AppService {
     return health
   }
 
-  private async reconcileTimelineAndStream(scope: ConnectionScope, sessionId: string, cachedLast: number, lease: number): Promise<void> {
+  private async reconcileTimelineAndStream(scope: ConnectionScope, sessionId: string, lease: number): Promise<void> {
     if (!this.isValidatedScope(scope)) {
       this.finishTimelineInitialization(sessionId, lease)
       return
@@ -5620,187 +5788,41 @@ export class AppService {
     const reconcileKey = `${scope.generation}:${sessionId}:${lease}`
     if (this.timelineReconcileInFlight.has(reconcileKey)) return
     this.timelineReconcileInFlight.add(reconcileKey)
-    let liveDuringReconcile: Event[] | null = []
-    let streamStarted = false
-    let reconciledThrough: number | null = null
     try {
-      const before = this.cache.snapshot(scope.namespace, sessionId)
-      const timelineState = this.cache.timelineState(scope.namespace, sessionId)
-      const initialRequestIsSemantic = cachedLast <= 0
-      const needsCompletenessAudit = Boolean(
-        before
-        && cachedLast > 0
-        && (
-          timelineState?.pagingSchemaVersion !== TIMELINE_PAGING_SCHEMA_VERSION
-          || (
-            timelineState.semanticPaging === false
-            && this.semanticTimelineCapabilityChanged(scope)
-          )
-        )
-      )
-      // Cached chats can receive replay and new output immediately. Keep HTTP
-      // for imports, metadata, queues and cache-schema repairs. Empty first
-      // opens still wait for their authoritative page.
-      if (before?.events.length && cachedLast > 0) {
-        this.activateTimelineStream(scope, sessionId, cachedLast, lease, event => {
-          // Once HTTP has supplied this range, a slower socket replay must not
-          // reapply old queue mutations over its newer authoritative snapshot.
-          if (reconciledThrough !== null && event.seq <= reconciledThrough) return false
-          liveDuringReconcile?.push(event)
-          return true
+      // A cached cursor can be days behind. Fetch the authoritative latest
+      // window FIRST, then subscribe at its boundary. The server catches up
+      // only writes that raced this request, not the entire offline backlog.
+      await this.fetchTimeline(scope, sessionId, lease, snapshot => {
+        this.emit('server:timeline', {
+          sessionId, snapshot, source: 'server', mode: 'replace', authoritativeTail: true,
+          profileId: scope.profileId, profileGeneration: scope.generation
         })
-        streamStarted = true
-      }
-      const pageRequest = cachedLast > 0
-        ? scope.client.sessionPage(sessionId, { after: cachedLast, limit: DELTA_EVENT_LIMIT, tail: false, visible: true })
-        : this.semanticTimelinePage(scope, sessionId, {
-          limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
-        })
-      const [deltaPage, auditPage] = await Promise.all([
-        pageRequest,
-        needsCompletenessAudit
-          ? this.semanticTimelinePage(scope, sessionId, {
-            limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
-          })
-          : Promise.resolve(null)
-      ])
-      let page = deltaPage
-      let pageWasSemanticAttempt = initialRequestIsSemantic
-      if (!this.isCurrentTimeline(scope, sessionId, lease)) return
-
-      let mode: 'merge' | 'replace' = initialRequestIsSemantic ? 'replace' : 'merge'
-      if (auditPage) {
-        pageWasSemanticAttempt = true
-        const auditSucceeded = semanticAttemptSucceeded(auditPage)
-        page = auditSucceeded ? auditPage : {
-          ...auditPage,
-          session: deltaPage.session,
-          events: mergeEventsBySequence(auditPage.events, deltaPage.events),
-          queued_turns: deltaPage.queued_turns ?? auditPage.queued_turns,
-          latest_seq: Math.max(auditPage.latest_seq ?? 0, deltaPage.latest_seq ?? 0) || null
-        }
-        mode = auditSucceeded ? 'replace' : 'merge'
-        appLog('timeline', auditSucceeded
-          ? 'replacing unverified legacy cache from semantic audit'
-          : 'merging repaired legacy tail after semantic audit fallback', {
-          sessionId,
-          semanticItems: auditPage.semantic_item_count,
-          tailEvents: auditPage.events.length
-        })
-      } else if ((page.events_omitted_after ?? 0) > 0 || (page.latest_seq ?? cachedLast) < cachedLast) {
-        page = await this.semanticTimelinePage(scope, sessionId, {
-          limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
-        })
-        pageWasSemanticAttempt = true
-        if (!this.isCurrentTimeline(scope, sessionId, lease)) return
-        mode = 'replace'
-      }
-      // Settle old socket writes before either a refresh or a log reset. A
-      // delayed cache batch must not reinsert the retired log after replacement.
-      if (streamStarted) this.flushEventCache()
-      // A replaced/truncated server log needs a socket with its new cursor.
-      if (streamStarted && (page.latest_seq ?? cachedLast) < cachedLast) streamStarted = false
-      if (streamStarted) {
-        // A delayed HTTP snapshot can predate messages or queue changes already
-        // delivered by the socket. Retain that newer tail in either merge or
-        // replacement mode.
-        const pageThrough = page.latest_seq ?? page.events.at(-1)?.seq ?? cachedLast
-        reconciledThrough = pageThrough
-        const newerLive = liveDuringReconcile!.filter(event => event.seq > pageThrough)
-        if (newerLive.length) page = {
-          ...page,
-          events: mergeEventsBySequence(page.events, newerLive),
-          queued_turns: newerLive.reduce(updateQueuedTurns, page.queued_turns ?? []),
-          latest_seq: Math.max(pageThrough, ...newerLive.map(event => event.seq))
-        }
-      }
-      this.cache.putSession(scope.namespace, page.session)
-      this.rememberSessionDetail(scope, page.session)
-      if (mode === 'replace') this.cache.replaceEvents(scope.namespace, sessionId, page.events)
-      else this.cache.putEvents(scope.namespace, sessionId, page.events, cachedLast)
-      this.cache.putQueuedTurns(scope.namespace, sessionId, page.queued_turns ?? [])
-      const hasMoreEvents = mode === 'replace'
-        ? Boolean(page.has_more)
-        : cachedLast === 0 ? Boolean(page.has_more || auditPage?.has_more) : Boolean(before?.hasMoreEvents || page.has_more || auditPage?.has_more)
-      const verifiedLatestSeq = mode === 'replace' ? page.latest_seq : auditPage?.latest_seq
-      const knownTotal = mode === 'replace' ? page.total : auditPage?.total
-      const nextTimelineBefore = mode === 'replace'
-        ? timelinePageNextBefore(page)
-        : auditPage && semanticAttemptSucceeded(auditPage)
-          ? timelinePageNextBefore(auditPage)
-          : undefined
-      this.cache.putTimelineState(
-        scope.namespace,
-        sessionId,
-        hasMoreEvents,
-        verifiedLatestSeq,
-        knownTotal,
-        nextTimelineBefore,
-        pageWasSemanticAttempt ? semanticAttemptSucceeded(page) : undefined
-      )
-      const semanticPaging = pageWasSemanticAttempt
-        ? semanticAttemptSucceeded(page)
-        : before?.semanticPaging ?? null
-      const snapshot: SessionSnapshot = mode === 'replace' ? { ...(this.cache.snapshot(scope.namespace, sessionId) ?? {
-        session: page.session,
-        events: page.events,
-        queuedTurns: page.queued_turns ?? [],
-        files: before?.files ?? [],
-        hasMoreEvents,
-        eventsTotal: knownTotal ?? before?.eventsTotal ?? null,
-        nextTimelineBefore: nextTimelineBefore !== undefined
-          ? nextTimelineBefore
-          : before?.nextTimelineBefore ?? null,
-        semanticPaging,
-        filesTotal: before?.filesTotal ?? 0,
-        cachedAt: Date.now()
-      }), historyVerified: true } : {
-        session: page.session,
-        events: page.events,
-        queuedTurns: page.queued_turns ?? [],
-        files: [],
-        hasMoreEvents,
-        historyVerified: true,
-        eventsTotal: before?.eventsTotal ?? auditPage?.total ?? null,
-        nextTimelineBefore: nextTimelineBefore !== undefined
-          ? nextTimelineBefore
-          : before?.nextTimelineBefore ?? null,
-        semanticPaging,
-        filesTotal: before?.filesTotal ?? 0,
-        cachedAt: Date.now(),
-        viewState: before?.viewState
-      }
-      const changed = page.events.length > 0
-        || before?.hasMoreEvents !== snapshot.hasMoreEvents
-        || before?.eventsTotal !== snapshot.eventsTotal
-        || before?.nextTimelineBefore !== snapshot.nextTimelineBefore
-        || before?.semanticPaging !== snapshot.semanticPaging
-        || !jsonEqual(before?.queuedTurns ?? [], snapshot.queuedTurns)
-        || !jsonEqual(before?.session, snapshot.session)
-      if (changed) this.emit('server:timeline', {
-        sessionId, snapshot, source: 'server', mode, profileId: scope.profileId, profileGeneration: scope.generation
       })
-      const streamAfter = page.latest_seq ?? page.events.at(-1)?.seq ?? cachedLast
-      if (!streamStarted) this.activateTimelineStream(scope, sessionId, streamAfter, lease)
-      this.scheduleSubagentSnapshotRefresh(scope, sessionId, lease)
-      queueMicrotask(() => void this.refreshTimelineFiles(scope, sessionId))
     } catch (error) {
+      if (!this.isCurrentTimeline(scope, sessionId, lease)) return
       reportStorageError(error)
-      appLog('timeline', 'tail refresh failed; keeping cached transcript', { sessionId, error: errorText(error) })
-      if (!streamStarted && this.isCurrentTimeline(scope, sessionId, lease)) this.activateTimelineStream(scope, sessionId, cachedLast, lease)
+      appLog('timeline', 'latest page refresh failed; keeping cached transcript', { sessionId, error: errorText(error) })
+      // Keep cached content and let the existing connection refresh recover.
+      // Falling back to a socket at the old cursor reintroduces an unbounded
+      // replay precisely when the connection is already struggling.
+      this.emitSync(scope, sessionId, 'reconnecting', errorText(error))
     } finally {
-      liveDuringReconcile = null
       this.finishTimelineInitialization(sessionId, lease)
       this.timelineReconcileInFlight.delete(reconcileKey)
+      if (this.pendingHistoryProjectionRefresh?.delete(reconcileKey) && this.isCurrentTimeline(scope, sessionId, lease)) {
+        queueMicrotask(() => void this.reconcileTimelineAndStream(scope, sessionId, lease))
+      }
     }
   }
 
-  private async fetchTimeline(scope: ConnectionScope, sessionId: string, lease: number): Promise<SessionSnapshot> {
+  private async fetchTimeline(scope: ConnectionScope, sessionId: string, lease: number, beforeStream?: (snapshot: SessionSnapshot) => void): Promise<SessionSnapshot> {
     await this.ensureValidatedScope(scope)
     const page = await this.semanticTimelinePage(scope, sessionId, {
       limit: INITIAL_SEMANTIC_ITEM_LIMIT, tail: true, visible: true
     })
     if (!this.isCurrentTimeline(scope, sessionId, lease)) throw new Error('Timeline selection superseded')
+    // Flush accepted writes from the retired lease before replacing its window.
+    this.flushEventCache()
     this.cache.putSession(scope.namespace, page.session)
     this.rememberSessionDetail(scope, page.session)
     this.cache.replaceEvents(scope.namespace, sessionId, page.events)
@@ -5818,10 +5840,7 @@ export class AppService {
     )
     const cached = this.cache.snapshot(scope.namespace, sessionId)
     if (!this.isCurrentTimeline(scope, sessionId, lease)) throw new Error('Timeline selection superseded')
-    this.activateTimelineStream(scope, sessionId, page.latest_seq ?? page.events.at(-1)?.seq ?? 0, lease)
-    this.scheduleSubagentSnapshotRefresh(scope, sessionId, lease)
-    queueMicrotask(() => void this.refreshTimelineFiles(scope, sessionId, true))
-    return cached ? {
+    const snapshot: SessionSnapshot = cached ? {
       ...cached,
       session: page.session,
       queuedTurns: page.queued_turns ?? [],
@@ -5844,6 +5863,12 @@ export class AppService {
       filesTotal: 0,
       cachedAt: Date.now()
     }
+    // Publish the snapshot before any catch-up or live event from its boundary.
+    beforeStream?.(snapshot)
+    this.activateTimelineStream(scope, sessionId, page.latest_seq ?? page.events.at(-1)?.seq ?? 0, lease)
+    this.scheduleSubagentSnapshotRefresh(scope, sessionId, lease)
+    queueMicrotask(() => void this.refreshTimelineFiles(scope, sessionId, true))
+    return snapshot
   }
 
   private async fetchSubagentSnapshot(
@@ -6564,6 +6589,10 @@ export class AppService {
       folderOrder: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'folderOrder', [] as string[]), []),
       collapsedFolders: resetPending ? [] : cacheValue(() => this.cache.preference(scope.namespace, 'collapsedFolders', [] as string[]), []),
       projectWorkspaces: resetPending ? {} : cacheValue(() => normalizeProjectWorkspaces(this.cache.preference(scope.namespace, PROJECT_WORKSPACES_PREFERENCE_KEY, {})), {}),
+      pinnedCollapsed: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'pinnedCollapsed', false), false),
+      groupUnreadChats: resetPending || cacheValue(() => this.cache.preference<boolean>(scope.namespace, 'groupUnreadChats', true) !== false, true),
+      includeCronInUnread: !resetPending && cacheValue(() => this.cache.preference<boolean>(scope.namespace, 'includeCronInUnread', false) === true, false),
+      groupRunningChats: resetPending || cacheValue(() => this.cache.preference<boolean>(scope.namespace, 'groupRunningChats', true) !== false, true),
       archivedCollapsed: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'archivedCollapsed', false), false),
       inspectorVisible: resetPending ? false : cacheValue(() => this.cache.preference(scope.namespace, 'inspectorVisible', false), false),
       activeProfileId: scope.profileId,
@@ -6927,6 +6956,16 @@ export class AppService {
     return merged
   }
 
+  private applyEmergencyReceipt(scope: ConnectionScope, receipt: Session): Session {
+    // An emergency stream can deliver a later raise before this HTTP reply.
+    // Keep that newer state instead of clearing an alert outside the request.
+    const current = this.sessions.find(session => session.id === receipt.id)
+    const session = current && (current.latest_event_seq ?? 0) > (receipt.latest_event_seq ?? 0)
+      ? current : receipt
+    this.upsertSession(scope, session)
+    return session
+  }
+
   private upsertSession(scope: ConnectionScope, session: Session): void {
     this.assertCurrentScope(scope)
     const index = this.sessions.findIndex(candidate => candidate.id === session.id)
@@ -7283,10 +7322,13 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 function connectionStateForHealth(health: Health): ServerConnectionState {
-  return health.capabilities?.tmux?.available === false ? 'degraded' : 'online'
+  return health.chat_readiness?.ready === false || health.capabilities?.tmux?.available === false ? 'degraded' : 'online'
 }
 
 function connectionWarningForHealth(health: Health): string | null {
+  if (health.chat_readiness?.ready === false) {
+    return health.chat_readiness.message || 'Chat recovery is incomplete. Check the server before sending more messages.'
+  }
   const tmux = health.capabilities?.tmux
   if (tmux?.available !== false) return null
   return tmux.message?.trim() || 'tmux is not available; terminal sessions and detached server updates are disabled.'
@@ -7920,16 +7962,25 @@ export function mergeSessionSummaries(previous: Session[], incoming: Session[]):
     const existing = previousById.get(summary.id)
     if (!existing) return summary
     const merged = preserveCustomProviderModels(existing, { ...existing, ...summary })
+    // Full summaries from older servers cannot retain a newer server's cursor.
+    // Partial metadata without an agent cursor leaves the known value intact.
+    if (Object.prototype.hasOwnProperty.call(summary, 'latest_agent_event_seq')
+      && summary.latest_non_job_agent_event_seq === undefined) {
+      merged.latest_non_job_agent_event_seq = null
+    }
     return jsonEqual(existing, merged) ? existing : merged
   })
 }
 
 function preserveCustomProviderModels(previous: Session, incoming: Session): Session {
-  const saved = previous.codex_provider_catalog
-  const summary = incoming.codex_provider_catalog
-  if (incoming.codex_provider !== 'custom' || previous.codex_provider !== 'custom' || !saved || !summary
+  const codex = incoming.backend === 'codex'
+  const field = codex ? 'codex_provider_catalog' : 'provider_connection_catalog'
+  const choice = codex ? 'codex_provider' : 'provider_connection'
+  const saved = previous[field]
+  const summary = incoming[field]
+  if (incoming.backend !== previous.backend || incoming[choice] !== 'custom' || previous[choice] !== 'custom' || !saved || !summary
     || !summary.configured || saved.base_url !== summary.base_url || summary.models !== undefined) return incoming
-  return { ...incoming, codex_provider_catalog: {
+  return { ...incoming, [field]: {
     ...summary,
     ...(saved.models !== undefined ? { models: saved.models } : {}),
     ...(saved.model_efforts !== undefined ? { model_efforts: saved.model_efforts } : {}),
@@ -7940,6 +7991,7 @@ function preserveCustomProviderModels(previous: Session, incoming: Session): Ses
 export function mergePolledSessionSummaries(previous: Session[], incoming: Session[]): Session[] {
   return mergeSessionSummaries(previous, incoming.map(summary => ({
     ...summary,
+    latest_non_job_agent_event_seq: summary.latest_non_job_agent_event_seq ?? null,
     emergency_alert: summary.emergency_alert ?? null,
     unacknowledged_emergency_count: summary.unacknowledged_emergency_count
       ?? (summary.emergency_alert ? 1 : 0)

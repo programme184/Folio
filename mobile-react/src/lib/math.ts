@@ -98,6 +98,15 @@ export function foldMarkdownSource(source: string, limit: number, limits: Partia
   return { visible: source.slice(0, cutIndex), cutIndex, folded: true }
 }
 
+/** Keep long messages visibly previewable when their first protected block exceeds the preview limit. */
+export function visibleMarkdownPreview(source: string, fold: MarkdownFoldResult, limit: number): string {
+  if (!fold.folded) return source
+  const cutIndex = fold.cutIndex > 0
+    ? fold.cutIndex
+    : safeCodeUnitBoundary(source, clampInteger(limit, 0, source.length))
+  return `${source.slice(0, cutIndex).trimEnd()}\n\n…`
+}
+
 function attemptMathAt(source: string, start: number, limits: MathScanLimits): MatchAttempt {
   const definition = delimiterAt(source, start)
   if (!definition) return { match: null, limited: false }

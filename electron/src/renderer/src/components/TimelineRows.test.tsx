@@ -110,6 +110,16 @@ describe('timeline pin state', () => {
     expect(loadHandoff).not.toHaveBeenCalled()
   })
 
+  it('copies complete error commands from a timeline error card', async () => {
+    const text = 'Diagnostic '.repeat(70) + 'Run `codex unarchive synthetic-thread` to unarchive it first.'
+    const event: Event = { id: 'copy-error', session_id: 'chat-1', seq: 1, type: 'error', backend: 'codex', message: text, ts: '' }
+    const item: SystemItem = { kind: 'system', id: event.id, key: event.id, seq: 1, event }
+    render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy error details' }))
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledWith(text))
+    expect(screen.getByRole('button', { name: 'Error details copied' })).toBeInTheDocument()
+  })
+
   it('updates memoized message controls when language changes and preserves authored text', () => {
     const event: Event = {
       id: 'locale-message', session_id: 'chat-1', seq: 1, type: 'assistant_text',
@@ -776,11 +786,15 @@ describe('timeline pin state', () => {
     const original = structuredClone(event)
     const item = renderTimelineItems(projectTimeline([event], []))[0]
     const view = render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
-    expect(screen.getByText(`${verb} approved chat route to ${targetTitle}.`)).toBeInTheDocument()
+    const receipt = (title: string) => action === 'created'
+      ? `Allowed communication with ${title}. Granting access does not send a message.`
+      : `${verb} approved chat route to ${title}.`
+    expect(screen.getByText(receipt(targetTitle))).toBeInTheDocument()
+    expect(view.container.querySelector('.cross-chat-message')).toBeNull()
     expect(view.container.textContent).not.toContain('@chat1')
     expect(view.container.querySelector('em, a')).toBeNull()
     act(() => useAppStore.setState({ sessions: [{ id: 'chat-2', title: 'Renamed target', backend: 'claude' }] }))
-    expect(screen.getByText(`${verb} approved chat route to Renamed target.`)).toBeInTheDocument()
+    expect(screen.getByText(receipt('Renamed target'))).toBeInTheDocument()
     expect(event).toEqual(original)
     expect(loadHandoff).not.toHaveBeenCalled()
     expect(loadExchange).not.toHaveBeenCalled()
@@ -797,11 +811,11 @@ describe('timeline pin state', () => {
     }
     const item: SystemItem = { kind: 'system', id: event.id, key: event.id, seq: event.seq, event }
     const view = render(<TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
-    expect(screen.getByText('Created approved chat route to Saved target.')).toBeInTheDocument()
+    expect(screen.getByText('Allowed communication with Saved target. Granting access does not send a message.')).toBeInTheDocument()
     act(() => setLocale('zh-CN'))
-    expect(screen.getByText('已创建通往 Saved target 的授权会话访问。')).toBeInTheDocument()
+    expect(screen.getByText('已允许与 Saved target 通信。此授权操作不会发送消息。')).toBeInTheDocument()
     view.rerender(<TimelineRowView item={{ ...item, event: { ...event, target_title: null } }} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />)
-    expect(screen.getByText('已创建通往 其他会话 的授权会话访问。')).toBeInTheDocument()
+    expect(screen.getByText('已允许与 其他会话 通信。此授权操作不会发送消息。')).toBeInTheDocument()
     expect(view.container.textContent).not.toContain('@chat1')
     expect(view.container.textContent).not.toContain('Wrong workspace name')
   })

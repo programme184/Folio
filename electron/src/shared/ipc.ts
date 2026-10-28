@@ -1,5 +1,6 @@
 import type { PaperMark } from './paper-passages'
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from './provider-usage'
+import type { IssueReportEnvironment } from './issue-report'
 import type {
   AgentFile,
   AgentCrossChatRoute,
@@ -355,6 +356,10 @@ export interface AgentsDockAPI {
     switch(profileId: string, force?: boolean): Promise<ProfileBootstrapPayload>
     refresh(profileId: string, profileGeneration: number): Promise<ProfileBootstrapPayload>
     testConnection(input: TestServerConnectionInput): Promise<Health>
+    copyToken(profileId: string): Promise<void>
+    tokenPreview(profileId: string): Promise<string>
+    connectionQr(profileId: string): Promise<import('./server-connection-link').ServerConnectionQr>
+    saveConnectionQr(profileId: string, revision: number): Promise<boolean>
     restartStatus(scope: WorkspaceProfileScope): Promise<ServerRestartStatus>
     restart(
       scope: WorkspaceProfileScope,
@@ -390,6 +395,7 @@ export interface AgentsDockAPI {
     markRead(sessionId: string, seq?: number | null): Promise<Session>
     markUnread(sessionId: string): Promise<Session>
     acknowledgeEmergency(sessionId: string, alertId: string): Promise<Session>
+    dismissEmergencyAlerts(sessionId: string, throughAlertId: string): Promise<Session>
     importHistory(sessionId: string, force?: boolean): Promise<TimelinePage>
     listLocal(): Promise<LocalSessionCandidate[]>
     bulkImport(items: BulkImportSessionItem[]): Promise<BulkImportSessionResult[]>
@@ -435,6 +441,7 @@ export interface AgentsDockAPI {
   codex: {
     auth(scope: CodexServerSettingsScope): Promise<CodexAuthStatus>
     importAuth(scope: CodexServerSettingsScope, authFile: string): Promise<CodexAuthStatus>
+    reloadAuth(scope: CodexServerSettingsScope): Promise<CodexAuthStatus>
     provider(scope: CodexServerSettingsScope): Promise<CodexProviderConfiguration>
     providerModels(scope: CodexServerSettingsScope, sessionId?: string): Promise<CodexProviderModels>
     testProvider(scope: CodexServerSettingsScope, input: CodexProviderInput): Promise<CodexProviderTestResult>
@@ -469,6 +476,10 @@ export interface AgentsDockAPI {
       sessionId: string,
       input: CodexBackgroundTerminalsCleanInput
     ): Promise<boolean>
+  }
+  gemini?: {
+    runtime(sessionId: string): Promise<import('./types').GeminiRuntimeSnapshot>
+    resolveInteraction(sessionId: string, interactionId: string, response: Record<string, JsonValue>): Promise<CodexPendingInteraction>
   }
   claude: {
     runtime(sessionId: string): Promise<ClaudeRuntimeSnapshot>
@@ -635,6 +646,7 @@ export interface AgentsDockAPI {
     setScoped<T>(scope: WorkspaceProfileScope, key: string, value: T): Promise<void>
   }
   native: {
+    issueReportEnvironment(): Promise<IssueReportEnvironment>
     // True only when AGENTSDOCK_DISABLE_ANALYTICS=1 is set in the process
     // environment - used by CI's packaged-app smoke-test launches (which run
     // the real binary with a fresh, disposable user-data directory) so they

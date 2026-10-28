@@ -22,6 +22,16 @@ vi.mock('./logger', () => ({ appLog: vi.fn() }))
 describe('AgentServerClient network diagnostics', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.mocked(appLog).mockClear() })
 
+  it('keeps a send receipt ID on the wire and treats pending acceptance as unresolved', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ acceptance: 'pending' }), { status: 202 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'test-token')
+    await expect(client.sendTurn('chat', 'hello', [], null, null, [], [], [], undefined, 'request_test'))
+      .rejects.toThrow('still accepting this message')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).client_request_id).toBe('request_test')
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
   it('records nested socket codes without secrets and preserves the original failure without retrying', async () => {
     const socket = Object.assign(new Error('secret token and request body'), { code: 'ECONNRESET', syscall: 'read' })
     const cause = Object.assign(new AggregateError([socket], 'private query'), { code: 'UND_ERR_SOCKET' })
@@ -99,6 +109,20 @@ class FakeWebSocket {
 }
 
 describe('Team Mail metadata websocket', () => {
+  it('delivers a matching history projection notice without advancing the event cursor', () => {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test', 'test-token')
+    const event = vi.fn(), changed = vi.fn()
+    const stop = client.stream('chat', 5, event, vi.fn(), undefined, undefined, undefined, undefined, undefined, changed)
+    const socket = FakeWebSocket.instances.at(-1)!
+    socket.emit('message', JSON.stringify({ type: 'history_projection_changed', session_id: 'other', revision: 'instance:1' }))
+    socket.emit('message', JSON.stringify({ type: 'history_projection_changed', session_id: 'chat', revision: 'instance:1' }))
+    socket.emit('message', JSON.stringify({ type: 'history_projection_changed', session_id: 'chat', revision: 'instance:1' }))
+    socket.emit('message', JSON.stringify({ type: 'assistant_text', session_id: 'chat', seq: 6, text: 'hello' }))
+    expect(changed).toHaveBeenCalledOnce()
+    expect(event).toHaveBeenCalledOnce()
+    stop()
+  })
   const mailbox = { hub_id: 'hub-a', team_id: 'team-a', recipient_server_id: null }
   const cursor = { version: 1 as const, team_id: 'team-a', recipient_server_id: 'node-a',
     through_sequence: 3, arrival_id: `tmsg_${'a'.repeat(32)}` }
@@ -246,6 +270,20 @@ describe('Team Mail metadata websocket', () => {
 
 describe('AgentServerClient Claude session policy', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+  it('preserves Gemini custom API selection when creating a chat', async () => {
+    const request = vi.fn(async (_input: unknown, init: RequestInit = {}) => {
+      expect(JSON.parse(String(init.body))).toMatchObject({ backend: 'gemini', provider_connection: 'custom' })
+      return new Response(JSON.stringify({ session: { id: 'gemini-chat', title: 'Gemini', folder: 'General', cwd: '/work', backend: 'gemini', provider_connection: 'custom' } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', request)
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+    try {
+      expect((await client.createSession({ backend: 'gemini', provider_connection: 'custom', cwd: '/work', title: 'Gemini', folder: 'General' })).backend).toBe('gemini')
+      expect(request).toHaveBeenCalledOnce()
+    } finally { client.dispose() }
+  })
 
   it('includes the additive Claude permission mode when creating a chat', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
@@ -1272,6 +1310,17 @@ describe('AgentServerClient provider reload', () => {
 describe('AgentServerClient stop acknowledgement', () => {
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+  it('retains child results even when an older server reports parent success', async () => {
+    const response = { ok: true, stopped: true, subagents: {
+      pending: ['child'], errors: ['Native interrupt not confirmed'], interrupted: ['sibling']
+    } }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(response), {
+      status: 200, headers: { 'Content-Type': 'application/json' }
+    })))
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+    await expect(client.stopTurn('chat-1')).resolves.toEqual(response)
+  })
+
   it('preserves a retryable pending Stop response', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       ok: true,
@@ -1372,6 +1421,37 @@ describe('AgentServerClient server-wide Codex goals', () => {
       expect(call.headers.cookie).toBeUndefined()
       expect(call.headers['sec-fetch-mode']).toBeUndefined()
       expect(call.headers.authorization).toBeUndefined()
+    }
+  })
+})
+
+describe('AgentServerClient QR address discovery', () => {
+  it('uses the exact native authenticated prefixed route without browser headers or redirects', async () => {
+    const requests: IncomingMessage[] = []
+    await withLocalHTTPServer(async (request, response) => {
+      requests.push(request)
+      if (requests.length === 2) {
+        response.writeHead(302, { Location: '/must-not-follow' })
+        response.end()
+      } else {
+        response.setHeader('Content-Type', 'application/json')
+        response.end(JSON.stringify({ version: 1, server_identity: 'fixture', urls: ['http://192.168.1.2:7852'] }))
+      }
+    }, async baseURL => {
+      const client = new AgentServerClient(`${baseURL}/mounted`, 'fixture-token')
+      try {
+        await expect(client.connectionAddresses()).resolves.toMatchObject({ server_identity: 'fixture' })
+        await expect(client.connectionAddresses()).rejects.toThrow()
+      } finally { client.dispose() }
+    })
+    expect(requests).toHaveLength(2)
+    for (const request of requests) {
+      expect(request.method).toBe('GET')
+      expect(request.url).toBe('/mounted/api/connection-addresses')
+      expect(request.headers['x-agentsdock-token']).toBe('fixture-token')
+      expect(request.headers['sec-fetch-mode']).toBeUndefined()
+      expect(request.headers.origin).toBeUndefined()
+      expect(request.headers.authorization).toBeUndefined()
     }
   })
 })
@@ -1590,6 +1670,135 @@ describe('AgentServerClient pinned items', () => {
 
 describe('AgentServerClient live stream', () => {
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); FakeWebSocket.instances = [] })
+
+  async function livenessClient() {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true, capabilities: { event_stream_liveness_v1: { available: true, version: 1 } }
+    }), { status: 200 })))
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+    await client.health()
+    return client
+  }
+
+  it('retries a failed consumer from the last applied event, ignoring the failed socket tail', () => {
+    vi.useFakeTimers()
+    vi.spyOn(Math, 'random').mockReturnValue(0)
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const applied: number[] = []
+    let fail = true
+    const consume = (event: Event) => {
+      if (fail) throw new Error('consumer unavailable')
+      applied.push(event.seq)
+    }
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+    const state = vi.fn()
+    const stop = client.stream('chat', 5, consume, state)
+    const first = FakeWebSocket.instances[0]
+    const packet = (seq: number) => JSON.stringify({ id: `e${seq}`, session_id: 'chat', seq, type: 'assistant_text', ts: 'now' })
+    first.emit('open')
+    first.emit('message', packet(6))
+    first.emit('message', packet(7))
+    expect(first.closed).toBe(true)
+    expect(state).toHaveBeenLastCalledWith(false, 'Live updates could not be applied; reconnecting')
+    vi.advanceTimersByTime(500)
+    const second = FakeWebSocket.instances[1]
+    expect(second.url.searchParams.get('after')).toBe('5')
+    fail = false
+    second.emit('message', packet(6))
+    second.emit('message', packet(7))
+    expect(applied).toEqual([6, 7])
+    stop()
+  })
+
+  it('waits for catch-up confirmation, then recovers a half-open connection without resending a turn', async () => {
+    const client = await livenessClient()
+    const state = vi.fn(), event = vi.fn()
+    const stop = client.stream('chat', 5, event, state)
+    const first = FakeWebSocket.instances[0]
+    expect(first.url.searchParams.get('liveness')).toBe('true')
+    first.emit('open')
+    expect(state).not.toHaveBeenCalledWith(true)
+    const status = { type: 'event_stream_status', session_id: 'chat', version: 1, phase: 'ready' }
+    first.emit('message', JSON.stringify({ ...status, session_id: 'other' }))
+    expect(state).not.toHaveBeenCalledWith(true)
+    first.emit('message', JSON.stringify(status))
+    expect(state).toHaveBeenLastCalledWith(true)
+    vi.advanceTimersByTime(30_000)
+    first.emit('message', JSON.stringify({ ...status, phase: 'heartbeat', seq: 9999 }))
+    vi.advanceTimersByTime(30_000)
+    expect(first.closed).toBe(false)
+    vi.advanceTimersByTime(15_000)
+    expect(first.closed).toBe(true)
+    expect(state).toHaveBeenLastCalledWith(false, 'Live updates stalled; reconnecting')
+    vi.advanceTimersByTime(500)
+    expect(FakeWebSocket.instances[1].url.searchParams.get('after')).toBe('5')
+    expect(event).not.toHaveBeenCalled()
+    stop()
+    vi.advanceTimersByTime(120_000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('allows a long progressing catch-up without declaring live before ready', async () => {
+    const client = await livenessClient()
+    const state = vi.fn(), received: number[] = []
+    const stop = client.stream('chat', 0, e => received.push(e.seq), state)
+    const socket = FakeWebSocket.instances[0]
+    socket.emit('open')
+    for (let seq = 1; seq <= 6000; seq++) {
+      vi.advanceTimersByTime(20)
+      socket.emit('message', JSON.stringify({ id: `e${seq}`, session_id: 'chat', seq, type: 'assistant_text', ts: 'now' }))
+    }
+    expect(received).toHaveLength(6000)
+    expect(socket.closed).toBe(false)
+    expect(state).not.toHaveBeenCalledWith(true)
+    socket.emit('message', JSON.stringify({ type: 'event_stream_status', version: 1, session_id: 'chat', phase: 'ready' }))
+    expect(state).toHaveBeenLastCalledWith(true)
+    stop()
+  })
+
+  it('keeps projection refresh separate from catch-up readiness and reconnect cursors', async () => {
+    const client = await livenessClient()
+    const state = vi.fn(), event = vi.fn(), changed = vi.fn()
+    const stop = client.stream('chat', 5, event, state, undefined, undefined, undefined, undefined, undefined, changed)
+    const first = FakeWebSocket.instances[0]
+    expect(first.url.searchParams.get('history_projection')).toBe('true')
+    expect(first.url.searchParams.get('liveness')).toBe('true')
+    first.emit('open')
+    const projection = { type: 'history_projection_changed', session_id: 'chat', revision: 'instance:7', seq: 9999 }
+    first.emit('message', JSON.stringify(projection))
+    expect(changed).toHaveBeenCalledOnce()
+    expect(state).not.toHaveBeenCalledWith(true)
+    first.emit('message', JSON.stringify({ type: 'event_stream_status', session_id: 'chat', version: 1, phase: 'ready' }))
+    expect(state).toHaveBeenLastCalledWith(true)
+    first.emit('message', JSON.stringify({ id: 'e6', session_id: 'chat', seq: 6, type: 'assistant_text', ts: 'now' }))
+    first.emit('close')
+    vi.advanceTimersByTime(500)
+    const second = FakeWebSocket.instances[1]
+    expect(second.url.searchParams.get('after')).toBe('6')
+    second.emit('message', JSON.stringify(projection))
+    expect(changed).toHaveBeenCalledOnce()
+    expect(event).toHaveBeenCalledOnce()
+    stop()
+  })
+
+  it('preserves the legacy server protocol without a heartbeat reconnect loop', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+    const state = vi.fn()
+    const stop = client.stream('chat', 5, vi.fn(), state)
+    const socket = FakeWebSocket.instances[0]
+    expect(socket.url.searchParams.has('liveness')).toBe(false)
+    socket.emit('open')
+    vi.advanceTimersByTime(300_000)
+    expect(state).toHaveBeenCalledExactlyOnceWith(true)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(socket.closed).toBe(false)
+    stop()
+  })
 
   it('reconnects after the newest received sequence instead of replaying the stream', () => {
     vi.useFakeTimers()
@@ -3668,7 +3877,7 @@ describe('AgentServerClient emergency contact bridge', () => {
     FakeWebSocket.instances = []
   })
 
-  it('acknowledges the exact alert through the encoded authenticated session route', async () => {
+  it.each([['acknowledgeEmergency', 'expected_alert_id'], ['dismissEmergencyAlerts', 'through_alert_id']] as const)('%s sends the captured alert boundary through the authenticated chat route', async (method, field) => {
     const alertId = `emergency_${'a'.repeat(32)}`
     const session: Session = {
       id: 'chat /?', title: 'Emergency chat', backend: 'codex',
@@ -3681,17 +3890,17 @@ describe('AgentServerClient emergency contact bridge', () => {
     vi.stubGlobal('fetch', fetchMock)
     const client = new AgentServerClient('http://example.test:7850', 'secret')
 
-    await expect(client.acknowledgeEmergency('chat /?', alertId)).resolves.toEqual(session)
+    await expect(client[method]('chat /?', alertId)).resolves.toEqual(session)
 
     expect(fetchMock).toHaveBeenCalledOnce()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('http://example.test:7850/api/sessions/chat%20%2F%3F/emergency/acknowledge')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(String(init.body))).toEqual({ expected_alert_id: alertId })
+    expect(JSON.parse(String(init.body))).toEqual({ [field]: alertId })
     expect(new Headers(init.headers).get('X-AgentsDock-Token')).toBe('secret')
   })
 
-  it('rejects an acknowledgement response for a different chat', async () => {
+  it.each(['acknowledgeEmergency', 'dismissEmergencyAlerts'] as const)('%s rejects a response for a different chat', async method => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
       session: {
         id: 'different-chat', title: 'Wrong chat', backend: 'codex',
@@ -3700,10 +3909,30 @@ describe('AgentServerClient emergency contact bridge', () => {
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
     const client = new AgentServerClient('http://example.test:7850', 'secret')
 
-    await expect(client.acknowledgeEmergency(
+    await expect(client[method](
       'expected-chat',
       `emergency_${'a'.repeat(32)}`
     )).rejects.toThrow('invalid emergency acknowledgement')
+  })
+
+  it('explains only the legacy dismiss-all validation rejection without retrying', async () => {
+    const detail = [
+      { type: 'missing', loc: ['body', 'expected_alert_id'], msg: 'Field required' },
+      { type: 'extra_forbidden', loc: ['body', 'through_alert_id'], msg: 'Extra inputs are not permitted' }
+    ]
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status: 422 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    await expect(client.dismissEmergencyAlerts('chat', `emergency_${'a'.repeat(32)}`))
+      .rejects.toThrow('Update AgentsServer to dismiss all alerts in this chat.')
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('preserves unrelated dismiss-all validation errors', async () => {
+    const detail = [{ type: 'string_pattern_mismatch', loc: ['body', 'through_alert_id'], msg: 'Invalid alert boundary' }]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail }), { status: 422 })))
+    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    await expect(client.dismissEmergencyAlerts('chat', 'bad')).rejects.toMatchObject({ status: 422, detail })
   })
 
   it('delivers validated global snapshots and changes while rejecting malformed alert packets', () => {
@@ -3822,5 +4051,45 @@ describe('AgentServerClient emergency contact bridge', () => {
     expect(socket.closed).toBe(true)
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(states).toEqual([{ connected: false, error }])
+  })
+})
+
+
+describe('recoverable empty chat transport', () => {
+  it('uses the same desktop identity for listing and dismissal without ordinary Delete', async () => {
+    const calls: Array<{ method: string; path: string }> = []
+    await withLocalHTTPServer((request, response) => {
+      calls.push({ method: request.method!, path: request.url! })
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify(request.method === 'GET' ? { sessions: [] } : { dismissed: true }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'test-token', { placeholderClientId: 'desktop-client-one' })
+      await client.sessions()
+      expect(await client.discardEmptySession('empty', 'revision')).toBe(true)
+      client.dispose()
+    })
+    expect(calls).toEqual([
+      { method: 'GET', path: '/api/sessions?summary=true&placeholder_client_id=desktop-client-one' },
+      { method: 'POST', path: '/api/sessions/empty/dismiss-empty?expected_updated_at=revision&placeholder_client_id=desktop-client-one' }
+    ])
+  })
+  it('preserves the chat when no durable desktop identity is available', async () => {
+    const client = new AgentServerClient('http://unused.invalid', '')
+    expect(await client.discardEmptySession('empty', 'revision')).toBe(false)
+    client.dispose()
+  })
+  it('does not fall back to destructive cleanup on an older server', async () => {
+    const paths: string[] = []
+    await withLocalHTTPServer((request, response) => {
+      paths.push(request.url!)
+      response.writeHead(404, { 'Content-Type': 'application/json' })
+      response.end(JSON.stringify({ detail: 'Not Found' }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'test-token', { placeholderClientId: 'desktop-client-one' })
+      await expect(client.discardEmptySession('empty', 'revision')).rejects.toMatchObject({ status: 404 })
+      client.dispose()
+    })
+    expect(paths).toHaveLength(1)
+    expect(paths[0]).toContain('/dismiss-empty?')
   })
 })

@@ -80,7 +80,7 @@ test('mobile preserves structured Stop and provider reload contracts', () => {
   assert.match(api, /async stopTurn\(sessionId: string\): Promise<TurnStopResult>/)
   assert.match(api, /stopped: response\.stopped \?\? response\.ok \?\? true/)
   assert.match(api, /async reloadProvider\(sessionId: string\): Promise<ProviderReloadResult>/)
-  assert.match(composer, /title: `Reload \$\{providerName\}`/)
+  assert.match(composer, /onReload=\{providerReloadDisabled \? undefined : \(\) => void reloadChatAgent\(\)\}/)
   assert.match(store, /if \(!result\.stopped\)/)
   assert.match(store, /result\.pending \|\| result\.deferred/)
 })
@@ -336,12 +336,14 @@ test('time-budget exhaustion is visible before a blocked goal turn', () => {
   assert.match(goalBar, /view\.timeBudgetExhausted \|\| view\.tokenBudgetExhausted/)
 })
 
-test('mobile persistent goal controls are visible, directly editable, and touch accessible', () => {
-  assert.match(composer, /<CodexGoalBar \/>/)
+test('mobile persistent goal controls collapse to one row with touch-accessible actions', () => {
+  assert.match(composer, /<CodexGoalBar keyboardVisible=\{keyboardVisible\} \/>/)
   assert.match(controls, /<CodexGoalEditor key=\{scopeKey\} \/>/)
   assert.match(controls, /useEffect\(\(\) => \{ if \(visible\) void refresh\(\)/)
   assert.match(goalBar, /accessibilityLabel="Persistent Codex goal"/)
-  assert.match(goalBar, /accessibilityLabel="Edit goal"/)
+  assert.match(goalBar, /accessibilityLabel=\{t\('More goal actions'\)\}/)
+  assert.match(goalBar, /id: 'edit'[^\n]*title: t\('Edit'\)/)
+  assert.match(goalBar, /id: 'clear'[^\n]*title: t\('Clear goal'\)/)
   assert.match(goalBar, /accessibilityLabel=\{view\.canPause \? 'Pause goal' : 'Resume goal'\}/)
   assert.match(goalBar, /action: \{ minHeight: 44, minWidth: 44/)
   assert.match(goalBar, /Alert\.alert\('Clear persistent goal\?'/)

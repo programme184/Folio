@@ -1,5 +1,10 @@
 import { createElement } from 'react'
 export * from './component-mocks/react-native'
+export const Appearance = { getColorScheme: () => 'dark', setColorScheme() {} }
+export const getLocales = () => [{ languageTag: 'en-US' }]
+export const Platform = { OS: 'ios', Version: 26, select: (options: any) => options[Platform.OS] ?? options.default }
+export const Linking = { openSettings: async () => { nativeTransfer.settingsOpened += 1 } }
+export default { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} }
 export const KeyboardAvoidingView = 'KeyboardAvoidingView'
 export const ActionSheetIOS = { showActionSheetWithOptions() {} }
 export let testWidth = 390
@@ -14,6 +19,12 @@ export const nativeTransfer = {
   pickerCalls: 0,
   downloads: [] as Array<{ url: string; file: File; options: { headers?: Record<string, string>; signal?: AbortSignal; onProgress?: (progress: { bytesWritten: number; totalBytes: number }) => void } }>,
   shares: [] as string[],
+  photoSaves: [] as string[],
+  photoPermissionCalls: [] as unknown[][],
+  settingsOpened: 0,
+  photoPermission: { granted: true, canAskAgain: true },
+  requestPhotoPermission: async () => ({ granted: true, canAskAgain: true }),
+  savePhoto: async (_uri: string) => {},
   copies: [] as Array<{ from: string; to: string; overwrite?: boolean; directoryTarget: boolean }>,
   deleted: [] as string[],
   picker: async () => new Directory('file:///user-selected-folder'),
@@ -23,6 +34,10 @@ export const nativeTransfer = {
   share: async () => {},
   reset() {
     this.pickerCalls = 0; this.downloads = []; this.shares = []; this.copies = []; this.deleted = []
+    this.photoSaves = []; this.photoPermissionCalls = []; this.photoPermission = { granted: true, canAskAgain: true }
+    this.settingsOpened = 0; Platform.OS = 'ios'; Platform.Version = 26
+    this.requestPhotoPermission = async () => ({ granted: true, canAskAgain: true })
+    this.savePhoto = async () => {}
     data.clear(); directories.clear()
     this.picker = async () => new Directory('file:///user-selected-folder')
     this.download = async file => { data.set(file.uri, 100); return file }
@@ -72,6 +87,9 @@ export class File {
   }
 }
 export async function isAvailableAsync() { return nativeTransfer.sharingAvailable }
+export async function getPermissionsAsync(...args: unknown[]) { nativeTransfer.photoPermissionCalls.push(args); return nativeTransfer.photoPermission }
+export async function requestPermissionsAsync(...args: unknown[]) { nativeTransfer.photoPermissionCalls.push(args); return nativeTransfer.requestPhotoPermission() }
+export const Asset = { create: async (uri: string) => { await nativeTransfer.savePhoto(uri); nativeTransfer.photoSaves.push(uri); return {} } }
 export async function shareAsync(uri: string) { nativeTransfer.shares.push(uri); await nativeTransfer.share() }
 export async function deleteAsync() {}
 export async function getInfoAsync() { return { exists: false } }

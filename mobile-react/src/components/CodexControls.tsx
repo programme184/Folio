@@ -43,7 +43,7 @@ import {
   type CodexContextUsage,
 } from '../lib/codex-token-usage'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type {
   CodexApprovalPolicy,
   CodexApprovalsReviewer,
@@ -93,7 +93,7 @@ export function CodexStatusButton({ compact }: { compact: boolean }) {
         ]}
       >
         {loading ? <ActivityIndicator size="small" color={accent} /> : <Bot size={17} color={accent} />}
-        {!compact ? <Text style={[styles.statusButtonText, { color: colors.text }]} numberOfLines={1}>Codex · {label}</Text> : null}
+        {!compact ? <Text style={[styles.statusButtonText, { color: colors.text }]} numberOfLines={1} localize>Codex · {label}</Text> : null}
         {pending ? <View style={[styles.badge, { backgroundColor: colors.orange }]}><Text style={styles.badgeText}>{pending}</Text></View> : null}
       </Pressable>
       {open ? <CodexControlsSheet visible onClose={close} /> : null}
@@ -374,8 +374,8 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <View style={[styles.sheetMark, { backgroundColor: colors.raised }]}><Bot size={20} color={colors.blue} /></View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.sheetTitle, { color: colors.text }]}>Codex thread controls</Text>
-            <Text style={[styles.sheetSubtitle, { color: colors.muted }]}>
+            <Text style={[styles.sheetTitle, { color: colors.text }]} localize>Codex thread controls</Text>
+            <Text style={[styles.sheetSubtitle, { color: colors.muted }]} localize>
               {runtime?.transport || 'app-server'} · {codexStatusLabel(runtime?.status)}
             </Text>
           </View>
@@ -388,7 +388,7 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
           contentContainerStyle={styles.controls}
           keyboardShouldPersistTaps="always"
         >
-          {loading ? <View style={styles.loading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }}>Loading thread controls…</Text></View> : null}
+          {loading ? <View style={styles.loading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }} localize>Loading thread controls…</Text></View> : null}
           {error ? <Notice text={error} tone="warning" /> : null}
           {notice ? <Notice text={notice.text} tone={notice.tone} onClose={() => setNotice(null)} /> : null}
 
@@ -430,7 +430,7 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
             {runtime?.goal ? (
               <View style={[styles.goalSummary, { backgroundColor: colors.background }]}>
                 <Text style={[styles.goalSummaryTitle, { color: colors.text }]} numberOfLines={2}>{runtime.goal.objective}</Text>
-                <Text style={{ color: colors.muted, fontSize: 11 }}>
+                <Text style={{ color: colors.muted, fontSize: 11 }} localize>
                   {runtime.goal.status} · {runtime.goal.tokensUsed.toLocaleString()}
                   {runtime.goal.tokenBudget ? ` / ${runtime.goal.tokenBudget.toLocaleString()} tokens` : ' tokens'}
                   {' · '}{Math.round(runtime.goal.timeUsedSeconds)}s elapsed
@@ -486,7 +486,7 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
               ]}
               onChange={value => setReviewer(value as CodexApprovalsReviewer)}
             />
-            {permissionProfile ? <Text testID="codex-permission-profile-hint" style={[styles.permissionHint, { color: colors.muted }]}>The selected profile replaces the custom filesystem sandbox. Choose Custom settings to edit the sandbox directly.</Text> : null}
+            {permissionProfile ? <Text testID="codex-permission-profile-hint" style={[styles.permissionHint, { color: colors.muted }]} localize>The selected profile replaces the custom filesystem sandbox. Choose Custom settings to edit the sandbox directly.</Text> : null}
             {profileLoadError ? <Text testID="codex-permission-profile-error" accessibilityRole="alert" style={[styles.permissionHint, { color: profileLoadBusy ? colors.yellow : colors.red }]}>{profileLoadBusy ? profileLoadError : `Profiles unavailable: ${profileLoadError}`}</Text> : null}
             <View style={styles.actions}><Action testID="codex-permissions-save" label={savingPermissions ? 'Saving permissions…' : 'Save permissions'} primary disabled={savingPermissions} onPress={savePermissions} /></View>
           </Section>
@@ -533,21 +533,21 @@ function CodexControlsSheet({ visible, onClose }: { visible: boolean; onClose: (
             ) : null}
             <View style={styles.actions}><Action label="Start inline review" disabled={refreshing || !actionsEnabled || reviewType !== 'uncommittedChanges' && !reviewValue.trim()} onPress={startReview} /></View>
             <Pressable accessibilityRole="button" accessibilityLabel="Advanced and unsandboxed actions" accessibilityState={{ expanded: advancedOpen }} onPress={() => setAdvancedOpen(value => !value)} style={[styles.advancedToggle, { backgroundColor: colors.background }]}>
-              <Text style={{ color: colors.orange, fontSize: 12, fontWeight: '800', flex: 1 }}>Advanced and unsandboxed actions</Text>
+              <Text style={{ color: colors.orange, fontSize: 12, fontWeight: '800', flex: 1 }} localize>Advanced and unsandboxed actions</Text>
               <ChevronDown size={16} color={colors.orange} style={{ transform: [{ rotate: advancedOpen ? '180deg' : '0deg' }] }} />
             </Pressable>
             {advancedOpen ? (
               <>
                 <View style={[styles.dangerBox, { borderColor: colors.red }]}>
-                  <Text style={[styles.actionRowTitle, { color: colors.text }]}>Roll back provider thread</Text>
-                  <Text style={[styles.actionRowDescription, { color: colors.muted }]}>Removes provider turns only. It does not revert files or erase this chat timeline.</Text>
+                  <Text style={[styles.actionRowTitle, { color: colors.text }]} localize>Roll back provider thread</Text>
+                  <Text style={[styles.actionRowDescription, { color: colors.muted }]} localize>Removes provider turns only. It does not revert files or erase this chat timeline.</Text>
                   <TextInput value={rollbackTurns} onChangeText={value => setRollbackTurns(digitsOnly(value))} keyboardType="number-pad" style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]} />
                   <ConfirmSwitch label="I understand this does not revert files." value={rollbackConfirmed} onChange={setRollbackConfirmed} />
                   <View style={styles.actions}><Action label="Roll back" tone="danger" disabled={refreshing || !actionsEnabled || !rollbackConfirmed} onPress={rollback} /></View>
                 </View>
                 <View style={[styles.dangerBox, { borderColor: colors.red }]}>
-                  <Text style={[styles.actionRowTitle, { color: colors.text }]}>Background shell command</Text>
-                  <Text style={[styles.actionRowDescription, { color: colors.muted }]}>Unsandboxed and has full access to the server host.</Text>
+                  <Text style={[styles.actionRowTitle, { color: colors.text }]} localize>Background shell command</Text>
+                  <Text style={[styles.actionRowDescription, { color: colors.muted }]} localize>Unsandboxed and has full access to the server host.</Text>
                   <TextInput value={shellCommand} onChangeText={setShellCommand} multiline placeholder="Enter an exact shell command" placeholderTextColor={colors.muted} autoCapitalize="none" style={[styles.textarea, { color: colors.text, borderColor: colors.border, backgroundColor: colors.background }]} />
                   <ConfirmSwitch label="I explicitly approve running this command with full access." value={shellConfirmed} onChange={setShellConfirmed} />
                   <View style={styles.actions}><Action label="Run command" tone="danger" disabled={refreshing || !actionsEnabled || !shellConfirmed || !shellCommand.trim()} onPress={runShell} /></View>
@@ -638,7 +638,7 @@ function BackgroundTerminals({ sessionId, runtimeSupported, busy, perform }: {
   return (
     <Section icon={SquareTerminal} title="Background terminals" subtitle="Loaded only when this section is open">
       <Pressable accessibilityRole="button" accessibilityLabel={open ? 'Hide background terminal processes' : 'Show background terminal processes'} accessibilityState={{ expanded: open }} onPress={toggle} style={[styles.advancedToggle, { backgroundColor: colors.background }]}>
-        <Text style={{ color: colors.text, fontSize: 12, fontWeight: '800', flex: 1 }}>{open ? 'Hide processes' : 'Show processes'}</Text>
+        <Text style={{ color: colors.text, fontSize: 12, fontWeight: '800', flex: 1 }} localize>{open ? 'Hide processes' : 'Show processes'}</Text>
         <ChevronDown size={16} color={colors.muted} style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }} />
       </Pressable>
       {open ? (
@@ -648,8 +648,8 @@ function BackgroundTerminals({ sessionId, runtimeSupported, busy, perform }: {
           </View>
           {loading ? <ActivityIndicator color={colors.blue} /> : null}
           {!loading && loadError ? <Notice text={loadError} tone="warning" /> : null}
-          {!loading && !loadError && supported === false ? <Text style={{ color: colors.muted, fontSize: 12 }}>Unsupported by this Codex version.</Text> : null}
-          {!loading && !loadError && supported !== false && !terminals.length ? <Text style={{ color: colors.muted, fontSize: 12 }}>No background terminals.</Text> : null}
+          {!loading && !loadError && supported === false ? <Text style={{ color: colors.muted, fontSize: 12 }} localize>Unsupported by this Codex version.</Text> : null}
+          {!loading && !loadError && supported !== false && !terminals.length ? <Text style={{ color: colors.muted, fontSize: 12 }} localize>No background terminals.</Text> : null}
           {terminals.map(terminal => (
             <View key={terminal.processId || terminal.itemId} style={[styles.terminal, { backgroundColor: colors.background }]}>
               <SquareTerminal size={16} color={colors.muted} />
@@ -659,7 +659,7 @@ function BackgroundTerminals({ sessionId, runtimeSupported, busy, perform }: {
               </View>
               {terminal.processId ? confirmingProcessId === terminal.processId ? (
                 <View style={styles.terminalConfirm}>
-                  <Text style={{ color: colors.red, fontSize: 10.5, fontWeight: '800' }}>Stop this process?</Text>
+                  <Text style={{ color: colors.red, fontSize: 10.5, fontWeight: '800' }} localize>Stop this process?</Text>
                   <View style={styles.actions}>
                     <Action label="Cancel" disabled={busy} onPress={() => setConfirmingProcessId(null)} />
                     <Action
@@ -755,10 +755,10 @@ function ContextUsageDetail({ usage }: { usage: CodexContextUsage }) {
   return <View style={[styles.contextDetail, { backgroundColor: colors.background, borderColor: colors.border }]}>
     <View style={styles.contextDetailHeading}>
       <View style={{ flex: 1, minWidth: 0 }}>
-        <Text style={[styles.contextDetailTitle, { color: colors.text }]}>Context usage</Text>
+        <Text style={[styles.contextDetailTitle, { color: colors.text }]} localize>Context usage</Text>
         <Text style={[styles.contextDetailSubtitle, { color: colors.muted }]} numberOfLines={2}>{formatContextUsageDetail(usage)}</Text>
       </View>
-      {latestId ? <View><Text style={[styles.contextDetailLabel, { color: colors.muted }]}>Latest turn</Text><Text style={[styles.contextDetailId, { color: colors.muted }]}>{shortUsageId(latestId)}</Text></View> : null}
+      {latestId ? <View><Text style={[styles.contextDetailLabel, { color: colors.muted }]} localize>Latest turn</Text><Text style={[styles.contextDetailId, { color: colors.muted }]}>{shortUsageId(latestId)}</Text></View> : null}
     </View>
     {percent == null ? null : <View
       accessible
@@ -939,56 +939,56 @@ function errorMessage(cause: unknown): string {
 const EMPTY_EVENTS = [] as const
 
 const styles = StyleSheet.create({
-  statusButton: { minHeight: 44, maxWidth: 150, borderRadius: 8, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  statusButton: { minHeight: 44, maxWidth: 150, borderRadius: radius.sm, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   statusButtonCompact: { width: 44, paddingHorizontal: 0 },
   statusButtonText: { fontSize: 10.5, fontWeight: '800', flexShrink: 1 },
-  contextIndicator: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: 8 },
-  badge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
+  contextIndicator: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md },
+  badge: { minWidth: 18, height: 18, borderRadius: radius.sm, paddingHorizontal: 4, alignItems: 'center', justifyContent: 'center' },
   badgeText: { color: 'white', fontSize: 9, fontWeight: '900' },
   sheet: { flex: 1 },
   sheetHeader: { minHeight: 70, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  sheetMark: { width: 40, height: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  sheetMark: { width: 40, height: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
   sheetTitle: { fontSize: 17, fontWeight: '900' },
   sheetSubtitle: { fontSize: 10.5, marginTop: 2 },
   controls: { width: '100%', maxWidth: 800, alignSelf: 'center', padding: 10, paddingBottom: 40, gap: 9 },
   loading: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  notice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  section: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, padding: 11, gap: 10 },
+  notice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  section: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 11, gap: 10 },
   sectionHeader: { minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 8 },
   sectionTitle: { fontSize: 13.5, fontWeight: '900' },
   sectionSubtitle: { fontSize: 10.5, marginTop: 2 },
   statusGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  datum: { minWidth: '46%', flexBasis: '46%', flexGrow: 1, borderRadius: 7, padding: 9 },
-  contextDetail: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 9, gap: 8 },
+  datum: { minWidth: '46%', flexBasis: '46%', flexGrow: 1, borderRadius: radius.md, padding: 9 },
+  contextDetail: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 9, gap: 8 },
   contextDetailHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
   contextDetailTitle: { fontSize: 11, fontWeight: '800' },
   contextDetailSubtitle: { marginTop: 2, fontSize: 9.5, lineHeight: 13 },
   contextDetailLabel: { fontSize: 9, textAlign: 'right' },
   contextDetailId: { marginTop: 2, fontSize: 9.5, fontFamily: 'Menlo' },
-  contextProgress: { height: 6, overflow: 'hidden', borderRadius: 3 },
-  contextProgressValue: { height: '100%', borderRadius: 3 },
+  contextProgress: { height: 6, overflow: 'hidden', borderRadius: radius.round },
+  contextProgressValue: { height: '100%', borderRadius: radius.round },
   contextMetrics: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  contextMetric: { minWidth: '30%', flexGrow: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 5, flexDirection: 'row', justifyContent: 'space-between', gap: 7 },
+  contextMetric: { minWidth: '30%', flexGrow: 1, borderRadius: radius.md, paddingHorizontal: 7, paddingVertical: 5, flexDirection: 'row', justifyContent: 'space-between', gap: 7 },
   contextMetricLabel: { fontSize: 9 },
   contextMetricValue: { fontSize: 9.5, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  goalSummary: { borderRadius: 7, padding: 9, gap: 4 },
+  goalSummary: { borderRadius: radius.md, padding: 9, gap: 4 },
   goalSummaryTitle: { fontSize: 12, fontWeight: '800' },
   fieldLabel: { fontSize: 10.5, fontWeight: '800' },
   permissionHint: { fontSize: 10.5, lineHeight: 15 },
-  choice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12.5 },
-  textarea: { minHeight: 82, maxHeight: 150, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 9, fontSize: 12.5, textAlignVertical: 'top' },
+  choice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12.5 },
+  textarea: { minHeight: 82, maxHeight: 150, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 9, fontSize: 12.5, textAlignVertical: 'top' },
   twoColumns: { flexDirection: 'row', gap: 8 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 7 },
-  action: { minHeight: 44, borderRadius: 7, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  action: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   actionRow: { minHeight: 54, flexDirection: 'row', alignItems: 'center', gap: 9 },
   actionRowTitle: { fontSize: 12, fontWeight: '800' },
   actionRowDescription: { fontSize: 10.5, lineHeight: 15, marginTop: 2 },
-  advancedToggle: { minHeight: 46, borderRadius: 7, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  dangerBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 10, gap: 8 },
+  advancedToggle: { minHeight: 46, borderRadius: radius.md, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  dangerBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10, gap: 8 },
   confirmRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  terminal: { minHeight: 58, borderRadius: 7, padding: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  terminal: { minHeight: 58, borderRadius: radius.md, padding: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
   terminalConfirm: { width: '100%', alignItems: 'flex-end', gap: 4 },
-  choiceMenu: { width: '100%', borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, padding: 6 },
-  choiceOption: { minHeight: 46, borderRadius: 6, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  choiceMenu: { width: '100%', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.sheet, padding: 6 },
+  choiceOption: { minHeight: 46, borderRadius: radius.md, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
 })

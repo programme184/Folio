@@ -104,7 +104,7 @@ export class CoordinatedUpdateManager {
   serverReachable(profileId: string, health: Health): void {
     if (!this.plan) return
     const observation = JSON.stringify([health.server_identity, health.server_instance_id, health.server_version,
-      health.api_contract_version, health.gateway, health.execution_service, health.server_update])
+      health.api_contract_version, health.gateway, health.execution_service, health.server_update, health.chat_readiness])
     const record = this.plan.records.find(candidate => candidate.profileId === profileId
       && candidate.serverIdentity === health.server_identity)
     // Older bridges omit update progress from health. Observe our admitted
@@ -227,6 +227,11 @@ export class CoordinatedUpdateManager {
         && updateReceipt.target_version === manifest.version && typeof updateReceipt.phase === 'string'
         && ACTIVE_PHASES.has(updateReceipt.phase)
       const activationPending = health.execution_service?.maintenance_held === true || activeTarget
+      if (executionCurrent && gatewayCurrent && !activationPending && health.chat_readiness?.ready === false) {
+        patch({ phase: health.chat_readiness.state === 'recovering' ? 'pending' : 'failed', paused: false,
+          message: health.chat_readiness.message || 'Server updated, but chat recovery is incomplete. Check the server.' })
+        return
+      }
       if (executionCurrent && gatewayCurrent && !activationPending) {
         const api = health.api_contract_version
         const supported = api !== undefined && api >= manifest.minimum_server_api_contract && api <= manifest.api_contract_version

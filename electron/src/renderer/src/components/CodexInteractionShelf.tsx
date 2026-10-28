@@ -89,6 +89,7 @@ interface InteractionCardProps {
   interaction: ProviderPendingInteraction
   busy: boolean
   providerName?: string
+  approvalActionLabels?: { allow: string; deny: string }
   onRespond(response: Record<string, JsonValue>): Promise<unknown>
 }
 
@@ -97,7 +98,7 @@ export function CodexInteractionCard(props: Omit<InteractionCardProps, 'provider
   return <ProviderInteractionCard {...props} providerName="Codex" />
 }
 
-export function ProviderInteractionCard({ interaction, busy, providerName = 'Codex', onRespond }: InteractionCardProps) {
+export function ProviderInteractionCard({ interaction, busy, providerName = 'Codex', approvalActionLabels, onRespond }: InteractionCardProps) {
   useLocale()
   const method = interaction.method
   const params = interaction.params ?? {}
@@ -111,10 +112,10 @@ export function ProviderInteractionCard({ interaction, busy, providerName = 'Cod
   if (method === 'mcpServer/elicitation/request') {
     return <McpElicitationCard interaction={interaction} busy={busy} providerName={providerName} onRespond={onRespond} />
   }
-  return <ApprovalCard interaction={interaction} busy={busy} providerName={providerName} onRespond={onRespond} />
+  return <ApprovalCard interaction={interaction} busy={busy} providerName={providerName} approvalActionLabels={approvalActionLabels} onRespond={onRespond} />
 }
 
-function ApprovalCard({ interaction, busy, providerName = 'Codex', onRespond }: InteractionCardProps) {
+function ApprovalCard({ interaction, busy, providerName = 'Codex', approvalActionLabels, onRespond }: InteractionCardProps) {
   useLocale()
   const params = interaction.params
   const headingId = useId()
@@ -195,7 +196,7 @@ function ApprovalCard({ interaction, busy, providerName = 'Codex', onRespond }: 
         : command
           ? `Review the command below. ${providerName} stays paused until you choose.`
           : `${providerName} wants to use ${displayName || 'this tool'}. It stays paused until you choose.`
-  const approveLabel = fileApproval
+  const approveLabel = approvalActionLabels?.allow ?? (fileApproval
     ? 'Approve changes'
     : networkApproval
       ? 'Approve access'
@@ -203,14 +204,14 @@ function ApprovalCard({ interaction, busy, providerName = 'Codex', onRespond }: 
         ? `Allow ${toolName || displayName} once`
         : command
           ? 'Approve & run'
-          : 'Approve once'
-  const declineLabel = fileApproval
+          : 'Approve once')
+  const declineLabel = approvalActionLabels?.deny ?? (fileApproval
     ? 'Reject changes'
     : networkApproval
       ? 'Deny access'
       : command && !toolApproval
         ? 'Deny command'
-        : 'Deny action'
+        : 'Deny action')
   const canDecline = legacy || allowed('decline')
   const canCancel = !legacy && allowed('cancel')
   const sessionApprovalLabel = permissionSuggestions.length > 0

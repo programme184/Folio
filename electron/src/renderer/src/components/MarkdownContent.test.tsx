@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { MarkdownContent } from './MarkdownContent'
 import SafeHtmlMarkdownContent from './SafeHtmlMarkdownContent'
+import { useAppStore } from '../store/app-store'
 
 describe('MarkdownContent', () => {
   const openLinked = vi.fn().mockResolvedValue(undefined)
@@ -10,7 +11,8 @@ describe('MarkdownContent', () => {
   const writeClipboard = vi.fn().mockResolvedValue(undefined)
 
   beforeEach(() => {
-    openLinked.mockClear()
+    openLinked.mockReset().mockResolvedValue(undefined)
+    useAppStore.setState({ error: null, switchingProfileId: null })
     openExternal.mockClear()
     writeClipboard.mockClear()
     Object.defineProperty(window, 'agentsDock', {
@@ -44,6 +46,26 @@ describe('MarkdownContent', () => {
     expect(link).toHaveAttribute('href', 'agentsdock-workspace:out%2Frun%2Freport.csv')
     fireEvent.click(link)
     expect(openLinked).toHaveBeenCalledWith('chat-7', 'out/run/report.csv')
+  })
+
+  it('shows actionable feedback for an unregistered ZIP instead of silently rejecting', async () => {
+    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 404"))
+    render(<MarkdownContent text="[Test app](/server/build/Test.zip)" sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'Test app' }))
+    await waitFor(() => expect(useAppStore.getState().error).toBe(
+      'Could not open "Test.zip": This file is not available as an attachment in this chat. Ask the agent to attach it, then try again.'
+    ))
+    expect(openLinked).toHaveBeenCalledExactlyOnceWith('chat-7', '/server/build/Test.zip')
+    expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('reports native failures opening matched binary attachments', async () => {
+    vi.mocked(window.agentsDock.files.open).mockRejectedValue(new Error('No application can open this file.'))
+    const file = { id: 'zip', filename: 'Test.zip', content_type: 'application/zip' }
+    render(<MarkdownContent text="[Test app](Test.zip)" files={[file]} sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'Test app' }))
+    await waitFor(() => expect(useAppStore.getState().error).toContain('No application can open this file.'))
+    expect(openLinked).not.toHaveBeenCalled()
   })
 
   it('does not resolve workspace links against Electron’s packaged renderer URL', () => {

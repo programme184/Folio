@@ -31,7 +31,10 @@ test('Android release identity, LAN access, keyboard resize, icon, and notificat
   assert.deepEqual(config.android.blockedPermissions, [
     'android.permission.SYSTEM_ALERT_WINDOW',
     'android.permission.READ_EXTERNAL_STORAGE',
-    'android.permission.WRITE_EXTERNAL_STORAGE',
+    'android.permission.READ_MEDIA_IMAGES',
+    'android.permission.READ_MEDIA_VIDEO',
+    'android.permission.READ_MEDIA_AUDIO',
+    'android.permission.READ_MEDIA_VISUAL_USER_SELECTED',
   ])
   assert.ok(config.android.adaptiveIcon.foregroundImage)
   const notifications = config.plugins.find(value => Array.isArray(value) && value[0] === 'expo-notifications')

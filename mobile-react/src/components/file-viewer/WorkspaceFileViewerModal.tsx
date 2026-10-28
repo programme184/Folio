@@ -19,7 +19,7 @@ import { formatBytes } from '../../lib/format'
 import { fullscreenModalPadding, type FullscreenSafeAreaInsets } from '../../lib/fullscreen-modal-layout'
 import { workspaceFileDepartureDecision } from '../../lib/workspace-file-editing'
 import { client, useAppStore } from '../../store/useAppStore'
-import { usePalette } from '../../theme'
+import { radius, usePalette } from '../../theme'
 import type { WorkspaceEntry, WorkspaceFile, WorkspaceInfo } from '../../types'
 import { Text, TextInput } from '../AppText'
 import { EmptyState, IconButton, SheetCloseButton } from '../ui'
@@ -689,11 +689,11 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
     ? !infoResolved
       ? infoError
         ? <View accessibilityRole="alert" style={styles.previewLoading}>
-            <Text style={[styles.previewProblemTitle, { color: colors.text }]}>Could not check file access</Text>
+            <Text style={[styles.previewProblemTitle, { color: colors.text }]} localize>Could not check file access</Text>
             <Text style={[styles.previewProblemBody, { color: colors.muted }]}>{infoError}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Retry file access" onPress={() => setInfoRevision(value => value + 1)} style={[styles.previewRetry, { backgroundColor: colors.raised }]}><RefreshCw size={16} color={colors.blue} /><Text style={{ color: colors.blue, fontWeight: '700' }}>Retry</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Retry file access" onPress={() => setInfoRevision(value => value + 1)} style={[styles.previewRetry, { backgroundColor: colors.raised }]}><RefreshCw size={16} color={colors.blue} /><Text style={{ color: colors.blue, fontWeight: '700' }} localize>Retry</Text></Pressable>
           </View>
-        : <View style={styles.previewLoading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }}>Checking file access…</Text></View>
+        : <View style={styles.previewLoading}><ActivityIndicator color={colors.blue} /><Text style={{ color: colors.muted }} localize>Checking file access…</Text></View>
       : <WorkspacePreview
           previewRevision={previewRevision}
           entry={selected}
@@ -728,7 +728,7 @@ function ScopedWorkspaceFileViewer({ request, connection, modalPadding, connecti
       {layout === 'pad' ? <IconButton icon={RefreshCw} onPress={refresh} label="Refresh workspace files" activateOnPressIn /> : null}
     </View>
     <FileTransferNotice state={fileTransfer.state} onCancel={fileTransfer.cancel} onDismiss={fileTransfer.dismiss} />
-    {!connectionAvailable ? <View accessibilityRole="alert" style={[styles.connectionNotice, { borderColor: colors.border, backgroundColor: colors.surface }]}><ActivityIndicator size="small" color={colors.blue} /><Text style={[styles.connectionNoticeText, { color: colors.muted }]}>{reconnecting ? 'Reconnecting… Your open file and unsaved edits are preserved.' : 'Server offline. Your open file and unsaved edits are preserved.'}</Text></View> : null}
+    {!connectionAvailable ? <View accessibilityRole="alert" style={[styles.connectionNotice, { borderColor: colors.border, backgroundColor: colors.surface }]}><ActivityIndicator size="small" color={colors.blue} /><Text style={[styles.connectionNoticeText, { color: colors.muted }]} localize>{reconnecting ? 'Reconnecting… Your open file and unsaved edits are preserved.' : 'Server offline. Your open file and unsaved edits are preserved.'}</Text></View> : null}
     {mutationBusy || mutationError ? <View accessibilityRole={mutationError ? 'alert' : undefined} accessibilityLiveRegion="polite" style={[styles.mutationNotice, { borderColor: mutationError ? colors.red : colors.border, backgroundColor: colors.surface }]}>
       {mutationBusy ? <ActivityIndicator size="small" color={colors.blue} /> : <AlertCircle size={16} color={colors.red} />}
       <Text style={[styles.mutationNoticeText, { color: mutationError ? colors.red : colors.muted }]} numberOfLines={2}>{mutationError || workspaceMutationStatus(mutationBusy)}</Text>
@@ -801,7 +801,7 @@ function WorkspaceBrowser({ layout, directory, entries, total, hasMore, query, s
       keyboardShouldPersistTaps="handled"
       renderItem={({ item }) => <WorkspaceEntryRow layout={layout} entry={item} selected={selectedPath === item.path} mutationsAvailable={mutationsAvailable} mutationBusy={mutationBusy} onPress={() => onOpen(item)} onRename={() => onRename(item)} onDelete={() => onDelete(item)} onMore={() => onMore(item)} />}
       ListEmptyComponent={<EmptyState title={query.trim() ? 'No matching files' : 'This folder is empty'} body={query.trim() ? 'Try another file name or path.' : undefined} />}
-      ListFooterComponent={hasMore ? <Pressable accessibilityRole="button" accessibilityLabel="Load more workspace files" accessibilityState={{ disabled: loadingMore || mutationBusy }} disabled={loadingMore || mutationBusy} onPress={onLoadMore} style={[styles.loadMore, { backgroundColor: colors.raised }]}>{loadingMore ? <ActivityIndicator color={colors.blue} /> : <Text style={{ color: colors.blue, fontWeight: '700' }}>Load more · {entries.length}/{total}</Text>}</Pressable> : null}
+      ListFooterComponent={hasMore ? <Pressable accessibilityRole="button" accessibilityLabel="Load more workspace files" accessibilityState={{ disabled: loadingMore || mutationBusy }} disabled={loadingMore || mutationBusy} onPress={onLoadMore} style={[styles.loadMore, { backgroundColor: colors.raised }]}>{loadingMore ? <ActivityIndicator color={colors.blue} /> : <Text style={{ color: colors.blue, fontWeight: '700' }} localize>Load more · {entries.length}/{total}</Text>}</Pressable> : null}
     />}
   </View>
 }
@@ -844,7 +844,7 @@ function WorkspacePreview({ entry, layout, previewRevision, previewURL, headers,
 
 function UnavailableWorkspaceViewer({ reconnecting, sessionChanged, modalPadding, onClose }: { reconnecting: boolean; sessionChanged: boolean; modalPadding: ReturnType<typeof fullscreenModalPadding>; onClose: () => void }) {
   const colors = usePalette()
-  return <View onAccessibilityEscape={onClose} style={[styles.root, { backgroundColor: colors.background }, modalPadding]}><View collapsable={false} pointerEvents="auto" style={[styles.header, { borderColor: colors.border, backgroundColor: colors.background }]}><SheetCloseButton onPress={onClose} label="Close workspace files" testID="workspace-file-viewer-close" activateOnPressIn /><Text style={[styles.headerTitle, { color: colors.text }]}>Workspace files</Text></View><EmptyState title={sessionChanged ? 'Chat changed' : reconnecting ? 'Verifying file access…' : 'Server unavailable'} body={sessionChanged ? 'Close this viewer and open Files from the active chat.' : 'Reconnect this server to browse the chat workspace.'} /></View>
+  return <View onAccessibilityEscape={onClose} style={[styles.root, { backgroundColor: colors.background }, modalPadding]}><View collapsable={false} pointerEvents="auto" style={[styles.header, { borderColor: colors.border, backgroundColor: colors.background }]}><SheetCloseButton onPress={onClose} label="Close workspace files" testID="workspace-file-viewer-close" activateOnPressIn /><Text style={[styles.headerTitle, { color: colors.text }]} localize>Workspace files</Text></View><EmptyState title={sessionChanged ? 'Chat changed' : reconnecting ? 'Verifying file access…' : 'Server unavailable'} body={sessionChanged ? 'Close this viewer and open Files from the active chat.' : 'Reconnect this server to browse the chat workspace.'} /></View>
 }
 
 function mergeWorkspaceEntries(current: WorkspaceEntry[], incoming: WorkspaceEntry[]): WorkspaceEntry[] {
@@ -973,19 +973,19 @@ const styles = StyleSheet.create({
   previewLoading: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center', gap: 9 },
   previewProblemTitle: { fontSize: 16, lineHeight: 21, fontWeight: '800', textAlign: 'center' },
   previewProblemBody: { maxWidth: 420, paddingHorizontal: 18, fontSize: 12, lineHeight: 17, textAlign: 'center' },
-  previewRetry: { minHeight: 44, borderRadius: 8, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  previewRetry: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   phoneActions: { minHeight: 52, flexShrink: 0, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4 },
   phoneBrowser: { flex: 1, minHeight: 0 },
   browser: { flex: 1, minHeight: 0, paddingHorizontal: 8, paddingTop: 8 },
-  search: { minHeight: 44, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  search: { minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 7 },
   searchInput: { flex: 1, minWidth: 0, minHeight: 42, fontSize: 13, paddingVertical: 0 },
   breadcrumbs: { minHeight: 38, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', paddingHorizontal: 4, paddingVertical: 5 },
   breadcrumb: { minHeight: 44, maxWidth: 150, flexDirection: 'row', alignItems: 'center' },
-  inlineError: { borderRadius: 7, padding: 9, marginBottom: 6 },
+  inlineError: { borderRadius: radius.md, padding: 9, marginBottom: 6 },
   browserLoading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  entry: { minHeight: 52, borderRadius: 7, flexDirection: 'row', alignItems: 'center' },
+  entry: { minHeight: 52, borderRadius: radius.md, flexDirection: 'row', alignItems: 'center' },
   entryOpen: { flex: 1, minWidth: 0, minHeight: 52, paddingLeft: 9, paddingRight: 4, flexDirection: 'row', alignItems: 'center', gap: 8 },
   entryActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center' },
   entryIdentity: { flex: 1, minWidth: 0, gap: 2 },
-  loadMore: { minHeight: 46, borderRadius: 7, marginVertical: 8, alignItems: 'center', justifyContent: 'center' },
+  loadMore: { minHeight: 46, borderRadius: radius.md, marginVertical: 8, alignItems: 'center', justifyContent: 'center' },
 })

@@ -126,6 +126,51 @@ async def wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> Non
 
 
 class CodexAppServerClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_shell_rechecks_owner_at_stdin_boundary_after_waiting_for_writer(self) -> None:
+        factory = FakeProcessFactory()
+        client = self.make_client(factory)
+        self.addAsyncCleanup(client.close)
+        factory.process.responders["thread/shellCommand"] = lambda _: {}
+        await client.start()
+        await client._write_lock.acquire()
+        owns_thread = True
+        request = asyncio.create_task(client.run_thread_shell_command(
+            "thread", "printf explicit", before_send=lambda: owns_thread,
+        ))
+        await wait_until(lambda: any(row[0] == "thread/shellCommand" for row in client._pending.values()))
+        owns_thread = False
+        client._write_lock.release()
+        with self.assertRaises(CodexAppServerProtocolError) as caught:
+            await request
+        self.assertFalse(caught.exception.request_sent)
+        self.assertFalse(any(row.get("method") == "thread/shellCommand" for row in factory.process.messages))
+        await client.run_thread_shell_command("thread", "printf explicit", before_send=lambda: True)
+        self.assertEqual(len([row for row in factory.process.messages if row.get("method") == "thread/shellCommand"]), 1)
+
+    async def test_inflight_work_keeps_thread_ownership_for_session_handoff(self) -> None:
+        factory = FakeProcessFactory()
+        client = self.make_client(factory)
+        self.addAsyncCleanup(client.close)
+        factory.process.responders["thread/read"] = lambda _: NO_RESPONSE
+        request = asyncio.create_task(client.read_thread("thread-b"))
+        await wait_until(lambda: any(row[0] == "thread/read" for row in client._pending.values()))
+        pending = next(row[1] for row in client._pending.values() if row[0] == "thread/read")
+        self.assertEqual(pending._codex_thread_id, "thread-b")
+        waiting = asyncio.Event()
+        async def callback(_notification):
+            await waiting.wait()
+        client._dispatch_notification_handlers(
+            {"method": "thread/status/changed", "params": {"threadId": "thread-b"}},
+            (callback,),
+        )
+        self.assertTrue(client._callback_tasks)
+        self.assertTrue(all(task._codex_thread_id == "thread-b" for task in client._callback_tasks))
+        client._start_server_request(99, "item/commandExecution/requestApproval", {"threadId": "thread-b"})
+        self.assertEqual(client._server_request_tasks[99]._codex_thread_id, "thread-b")
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        waiting.set()
+
     async def test_native_thread_names_are_cached_without_extra_requests(self) -> None:
         factory = FakeProcessFactory()
         client = self.make_client(factory)

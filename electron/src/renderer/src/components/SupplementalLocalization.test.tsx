@@ -73,10 +73,10 @@ it('updates only canned welcome copy when switching languages and preserves user
 })
 
 it('localizes emergency counts and retry state without altering alert text or acknowledgement IDs', async () => {
-  const acknowledgeEmergency = vi.fn().mockResolvedValue(false)
+  const dismissEmergencyAlerts = vi.fn().mockResolvedValue(false)
   useAppStore.setState({
     activeProfileId: 'raw-profile', profileGeneration: 1, profiles: [], switchingProfileId: null,
-    acknowledgeEmergency,
+    dismissEmergencyAlerts,
     sessions: ['current', 'second', 'third'].map(id => ({
       id, title: `Raw ${id} Settings`, backend: 'codex' as const,
       emergency_alert: {
@@ -91,9 +91,9 @@ it('localizes emergency counts and retry state without altering alert text or ac
   act(() => setLocale('zh-CN'))
   expect(screen.getByText('另有 2 个待处理的紧急情况')).toBeInTheDocument()
   expect(screen.getByText('Raw failure detail: /tmp/Message.txt')).toBeInTheDocument()
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '确认“Raw current Settings”中的紧急情况' })) })
-  expect(acknowledgeEmergency).toHaveBeenCalledWith('current', 'raw-alert-current')
-  expect(screen.getByRole('alert')).toHaveTextContent('无法确认。请重试。')
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '清除“Raw current Settings”中的所有紧急警报' })) })
+  expect(dismissEmergencyAlerts).toHaveBeenCalledWith('current', 'raw-alert-current')
+  expect(screen.getByRole('alert')).toHaveTextContent('无法清除警报。请重试。')
   act(() => setLocale('en'))
-  expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t acknowledge. Try again.')
+  expect(screen.getByRole('alert')).toHaveTextContent('Couldn’t dismiss the alerts. Try again.')
 })

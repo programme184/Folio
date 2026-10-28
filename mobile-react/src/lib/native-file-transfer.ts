@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
 import { createFileTransferRunner, numberedDownloadFilename } from './file-transfer'
+import { preparePhotoSave, saveToPhotos } from './native-media-save'
 
 const TEMPORARY_DIRECTORY = 'agentsdock-file-transfers'
 const SHARED_FILE_LIFETIME_MS = 24 * 60 * 60 * 1000
@@ -12,6 +13,8 @@ export const runNativeFileTransfer = createFileTransferRunner<Directory, File>({
     return Directory.pickDirectoryAsync()
   },
   sharingAvailable: () => Sharing.isAvailableAsync(),
+  preparePhotoSave,
+  saveToPhotos: file => saveToPhotos(file.uri),
   createTemporaryFile: async filename => {
     const root = new Directory(Paths.cache, TEMPORARY_DIRECTORY)
     root.create({ idempotent: true, intermediates: true })

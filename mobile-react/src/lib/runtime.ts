@@ -1,9 +1,9 @@
-import type { Backend, Health, RuntimeCatalog, RuntimeDiagnostic } from '../types'
+import type { Health, RuntimeCatalog, RuntimeDiagnostic } from '../types'
 
 export function runtimeDiagnosticFor(
   health: Health | null | undefined,
   catalog: RuntimeCatalog | null | undefined,
-  backend: Backend,
+  backend: string,
 ): RuntimeDiagnostic | null {
   const fromHealth = health?.runtimes?.[backend] ?? null
   const fromCatalog = catalog?.backends?.[backend]?.diagnostic ?? null

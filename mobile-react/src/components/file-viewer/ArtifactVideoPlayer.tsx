@@ -1,3 +1,4 @@
+import { radius } from '../../theme'
 import * as FileSystem from 'expo-file-system/legacy'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -164,7 +165,9 @@ function StagedIOSArtifactVideo({ file, connection, remoteSource, registerPause,
       const task = FileSystem.createDownloadResumable(
         remoteSource.uri,
         cacheDestination,
-        { headers: remoteSource.headers },
+        // Preview staging is cancelled when the app leaves the foreground.
+        // Keep its download in-process instead of the iOS background daemon.
+        { headers: remoteSource.headers, sessionType: FileSystem.FileSystemSessionType.FOREGROUND },
         value => {
           if (!stillCurrent()) return
           lastProgressAt = Date.now()
@@ -244,7 +247,7 @@ function StagedIOSArtifactVideo({ file, connection, remoteSource, registerPause,
   const progressPercent = progress == null ? null : Math.round(progress * 100)
   return <View testID="artifact-video-staging" style={styles.stage}>
     {stageProblem ? <View accessibilityRole="alert" testID="artifact-video-stage-problem" style={styles.problem}>
-      <Text style={styles.problemTitle}>Video could not be prepared</Text>
+      <Text style={styles.problemTitle} localize>Video could not be prepared</Text>
       <Text style={styles.problemBody} numberOfLines={5}>{stageProblem}</Text>
       <View style={styles.actions}>
         <StageButton icon={RefreshCw} label="Retry" testID="artifact-video-stage-retry" onPress={restage} />
@@ -299,12 +302,12 @@ const styles = StyleSheet.create({
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 11, padding: 24 },
   loadingStatus: { width: '100%', alignItems: 'center', justifyContent: 'center', gap: 11 },
   loadingTitle: { color: '#d6d8dc', fontSize: 12, lineHeight: 17, fontWeight: '700', textAlign: 'center' },
-  progressRail: { width: '72%', maxWidth: 420, height: 5, overflow: 'hidden', borderRadius: 3, backgroundColor: '#ffffff2c' },
-  progressFill: { height: 5, borderRadius: 3, backgroundColor: 'white' },
+  progressRail: { width: '72%', maxWidth: 420, height: 5, overflow: 'hidden', borderRadius: radius.round, backgroundColor: '#ffffff2c' },
+  progressFill: { height: 5, borderRadius: radius.round, backgroundColor: 'white' },
   problem: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: 24, backgroundColor: '#050506' },
   problemTitle: { color: 'white', fontSize: 16, fontWeight: '800', textAlign: 'center' },
   problemBody: { color: '#b7bbc2', fontSize: 12, lineHeight: 17, textAlign: 'center' },
   actions: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  button: { minWidth: 96, minHeight: 44, borderRadius: 10, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
+  button: { minWidth: 96, minHeight: 44, borderRadius: radius.md, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
   buttonText: { color: 'white', fontSize: 12, lineHeight: 16, fontWeight: '800' },
 })

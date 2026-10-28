@@ -42,6 +42,21 @@ const trustedEvent = {
 describe('Team Hub IPC registration', () => {
   beforeEach(() => harness.handlers.clear())
 
+  it.each([
+    ['servers:copy-token', 'copyServerToken'],
+    ['servers:token-preview', 'serverTokenPreview'],
+    ['servers:connection-qr', 'serverConnectionQr'],
+    ['servers:save-connection-qr', 'saveServerConnectionQr']
+  ])('restricts %s to a trusted desktop caller', async (channel, method) => {
+    const action = vi.fn().mockResolvedValue(undefined)
+    registerIpc({ [method]: action } as unknown as AppService, {} as AppUpdateManager)
+    expect(await harness.handlers.get(channel)?.(trustedEvent, 'inactive-server')).toBeUndefined()
+    expect(action.mock.calls[0][0]).toBe('inactive-server')
+    const remoteEvent = { ...trustedEvent, senderFrame: { url: 'https://example.test/shared-chat', parent: null } }
+    expect(() => harness.handlers.get(channel)?.(remoteEvent, 'inactive-server')).toThrow('untrusted')
+    expect(action).toHaveBeenCalledTimes(1)
+  })
+
   it('does not register the removed shared Codex credential mutation', () => {
     registerIpc({} as AppService, {} as AppUpdateManager)
     expect(harness.handlers.has('codex:auth:get')).toBe(true)

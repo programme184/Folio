@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, ClipboardCopy, ClipboardPaste, Columns2, Key
 import { AgentServerClientDisposedError, type AgentServerClient } from '../api/AgentServerClient'
 import { scaleAppFont } from '../lib/typography'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type { Session, TerminalWindow } from '../types'
 import { Text } from './AppText'
 import { TerminalViewport, type TerminalViewportHandle } from './terminal/TerminalViewport'
@@ -34,12 +34,12 @@ export function TerminalView({ session, onClose }: { session: Session; onClose: 
   if (!connectionReady) {
     return <View collapsable={false} style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }]}>
       <View style={[styles.tabs, { backgroundColor: colors.background, borderColor: colors.border }]}>
-        <Text style={[styles.unavailableTitle, { color: colors.muted }]} numberOfLines={1}>Terminal unavailable</Text>
+        <Text style={[styles.unavailableTitle, { color: colors.muted }]} numberOfLines={1} localize>Terminal unavailable</Text>
         <View style={{ flex: 1 }} />
         <IconButton icon={X} size={17} touchSize={44} label="Close terminal" testID="terminal-close" onPress={onClose} />
       </View>
       <View style={styles.unavailable}>
-        <Text style={[styles.unavailableText, { color: colors.muted }]}>{connecting || switchingProfileId ? 'Verifying server identity…' : 'Reconnect this server to open its terminal.'}</Text>
+        <Text style={[styles.unavailableText, { color: colors.muted }]} localize>{connecting || switchingProfileId ? 'Verifying server identity…' : 'Reconnect this server to open its terminal.'}</Text>
       </View>
     </View>
   }
@@ -190,10 +190,10 @@ const styles = StyleSheet.create({
   root: { flex: 1, minHeight: 0, borderTopWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   tabs: { position: 'relative', zIndex: 2, flexShrink: 0, minHeight: 48, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 5, paddingVertical: 2, flexDirection: 'row', alignItems: 'center', gap: 4 },
   status: { maxWidth: 82, flexDirection: 'row', alignItems: 'center', gap: 4, paddingLeft: 3 },
-  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  statusDot: { width: 7, height: 7, borderRadius: radius.round },
   tabScroller: { flex: 1 },
   tabContent: { alignItems: 'center', gap: 4, paddingHorizontal: 2 },
-  tab: { maxWidth: 120, minHeight: 44, borderRadius: 5, paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center' },
+  tab: { maxWidth: 120, minHeight: 44, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 3, justifyContent: 'center' },
   terminalViewport: { position: 'relative', zIndex: 0, flex: 1, minHeight: 0, overflow: 'hidden' },
   terminal: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   unavailable: { flex: 1, minHeight: 0, alignItems: 'center', justifyContent: 'center', padding: 24 },

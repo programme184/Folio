@@ -139,6 +139,8 @@ const requests: RequestRecord[] = []
 const firstHealthStarted = deferred<void>()
 const firstHealthResponse = deferred<Response>()
 let delayFirstHealth = true
+let heldSessions: ReturnType<typeof deferred<Response>> | null = null
+let heldHealth: ReturnType<typeof deferred<Response>> | null = null
 
 try {
   await AsyncStorage.clear()
@@ -167,6 +169,7 @@ try {
     requests.push({ method, pathname: url.pathname })
 
     if (url.pathname === '/api/health') {
+      if (heldHealth) return heldHealth.promise
       if (delayFirstHealth) {
         delayFirstHealth = false
         firstHealthStarted.resolve(undefined)
@@ -180,18 +183,22 @@ try {
         active_sessions: [],
       })
     }
-    if (url.pathname === '/api/sessions') return jsonResponse({ sessions: [session] })
+    if (url.pathname === '/api/sessions') return heldSessions?.promise ?? jsonResponse({ sessions: [session] })
     if (url.pathname === '/api/runtime/catalog') return jsonResponse({ backends: {} })
     if (url.pathname === '/api/jobs') return jsonResponse({ jobs: [] })
     if (url.pathname === `/api/sessions/${session.id}`) {
       return jsonResponse({
         session,
-        events: [],
+        events: [cachedEvent],
         queued_turns: [],
         events_omitted_before: 0,
         events_omitted_after: 0,
         latest_seq: 5,
         event_count: 1,
+        semantic_item_count: 1,
+        semantic_total: 1,
+        semantic_omitted_before: 0,
+        semantic_omitted_after: 0,
       })
     }
     if (url.pathname === `/api/sessions/${session.id}/files`) {
@@ -315,7 +322,63 @@ try {
   assert.equal(runtimeNotifications.length, 1, 'a stopped stale stream must not publish runtime invalidations')
   unsubscribeRuntime()
 
-  console.log('store lifecycle, runtime invalidation, passive trace, and read-receipt regressions passed')
+  heldSessions = deferred<Response>()
+  const streamsBeforeResume = FakeWebSocket.instances.length
+  const tailsBeforeResume = requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length
+  appState.__emitAppState('active')
+  await waitFor(
+    () => FakeWebSocket.instances.length === streamsBeforeResume + 1,
+    'foreground timeline must resume while the session list is still pending',
+  )
+  assert.equal(requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length, tailsBeforeResume + 1)
+  heldSessions.resolve(jsonResponse({ sessions: [session] }))
+  heldSessions = null
+  await nextTurn()
+  await nextTurn()
+  assert.equal(FakeWebSocket.instances.length, streamsBeforeResume + 1, 'finishing the list must not open a duplicate stream')
+
+  // A list started before backgrounding must not block the next foreground.
+  heldSessions = deferred<Response>()
+  const pendingRefresh = useAppStore.getState().refreshSessions()
+  await nextTurn()
+  appState.__emitAppState('background')
+  appState.__emitAppState('active')
+  await waitFor(
+    () => FakeWebSocket.instances.length === streamsBeforeResume + 2,
+    'joining an existing list request must still resume the selected timeline',
+  )
+  heldSessions.resolve(jsonResponse({ sessions: [session] }))
+  heldSessions = null
+  await pendingRefresh
+  await nextTurn()
+  assert.equal(FakeWebSocket.instances.length, streamsBeforeResume + 2)
+
+  heldSessions = deferred<Response>()
+  const reconnect = useAppStore.getState().reconnect()
+  await waitFor(
+    () => FakeWebSocket.instances.length === streamsBeforeResume + 3,
+    'reconnect must sync a cached selection after validation without waiting for the list',
+  )
+  heldSessions.resolve(jsonResponse({ sessions: [session] }))
+  heldSessions = null
+  await reconnect
+  assert.equal(FakeWebSocket.instances.length, streamsBeforeResume + 3, 'reconnect list completion must not restart the selected chat')
+
+  heldHealth = deferred<Response>()
+  const healthRequestsBefore = requests.filter(request => request.pathname === '/api/health').length
+  const tailsBeforeValidation = requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length
+  appState.__emitAppState('background')
+  appState.__emitAppState('active')
+  await waitFor(() => requests.filter(request => request.pathname === '/api/health').length > healthRequestsBefore, 'foreground must validate health')
+  await nextTurn()
+  assert.equal(requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length, tailsBeforeValidation, 'timeline must wait for identity validation, even though it no longer waits for the list')
+  heldHealth.resolve(new Response(JSON.stringify({ detail: 'Invalid test token' }), { status: 401 }))
+  heldHealth = null
+  await waitFor(() => !useAppStore.getState().connected, 'authentication failure must disconnect')
+  assert.equal(FakeWebSocket.instances.length, streamsBeforeResume + 3, 'rejected validation must not open a new stream')
+  assert.equal(requests.filter(request => request.pathname === `/api/sessions/${session.id}`).length, tailsBeforeValidation)
+
+  console.log('store lifecycle, nonblocking foreground, runtime invalidation, passive trace, and read-receipt regressions passed')
 } finally {
   appState.__emitAppState('background')
   globalThis.fetch = originalFetch

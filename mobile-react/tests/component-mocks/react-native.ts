@@ -33,6 +33,13 @@ export const useColorScheme = () => 'dark'
 export const useWindowDimensions = () => ({ width: 390, height: 844, scale: 3, fontScale: 1 })
 export const Keyboard = { dismiss() {} }
 export const Linking = { async openURL(_url: string) {} }
+export const Appearance = { setColorScheme(_scheme: string) {}, getColorScheme() { return 'dark' } }
+export const TurboModuleRegistry = { get(_name: string) { return null }, getEnforcing(_name: string) { return {} } }
+export class NativeEventEmitter {
+  addListener(_event: string, _listener: (...args: unknown[]) => void) { return { remove() {} } }
+  removeAllListeners(_event: string) {}
+  listenerCount(_event: string) { return 0 }
+}
 
 type AlertButton = { text?: string; style?: string; onPress?: () => void }
 type AlertOptions = { cancelable?: boolean; onDismiss?: () => void }

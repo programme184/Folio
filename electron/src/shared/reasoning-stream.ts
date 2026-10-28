@@ -14,7 +14,8 @@ export function isReasoningSummaryStream(value: unknown): value is ReasoningSumm
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false
     const item = value as Record<string, unknown>
     if (!identity(item.run_id) || !identity(item.item_id)
-      || item.backend !== 'codex' || (item.phase !== 'summary' && item.phase !== 'reasoning')
+      || !['codex', 'gemini'].includes(String(item.backend))
+      || !['summary', 'reasoning', ...(item.backend === 'gemini' ? ['assistant'] : [])].includes(String(item.phase))
       || typeof item.text !== 'string'
       || !Number.isSafeInteger(item.after_seq) || Number(item.after_seq) < 0
       || typeof item.ts !== 'string' || item.ts.length > 80 || !Number.isFinite(Date.parse(item.ts))) return false

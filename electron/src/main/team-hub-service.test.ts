@@ -1,3 +1,4 @@
+import { TeamHubStoppedHostingError } from './team-hub-role-change'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -1085,6 +1086,67 @@ describe('TeamHubService embedded discovery', () => {
     expect(test.discovery.configureTeamHubServerRole).toHaveBeenCalledWith(profileScope, {
       role: 'member', serverName: 'Atlas'
     })
+  })
+
+  it.each(['success', 'response-lost'] as const)('leaves an existing managed host ready to join after demotion (%s)', async outcome => {
+    const test = harness()
+    test.setDiscovery({ serverSessionBasePath: '/api/team-hub-server' })
+    test.client.health.mockResolvedValue({
+      ok: true, service: 'agentsdock-team-hub', api_version: 1,
+      hub_id: 'hub-stable-1', instance_id: 'instance-1',
+      bootstrapped: true, bootstrap_required: false, server_session_available: true
+    })
+    test.client.serverSession.mockResolvedValue(serverSessionSnapshot())
+    const host = await test.service.connect()
+    expect(host).toMatchObject({ authenticated: true, designatedHost: true, serverManaged: true })
+    const memberDiscovery: TeamHubDiscovery = {
+      available: false, designatedHost: false, version: 1, basePath: null,
+      transport: null, hubUrl: null, hubIdentity: null, hostServerIdentity: null,
+      serverSessionBasePath: undefined,
+      message: 'This server is a Team Network member.', action: 'Connect it to a host.'
+    }
+    test.discovery.configureTeamHubServerRole.mockImplementation(async () => {
+      test.setDiscovery(memberDiscovery)
+      if (outcome === 'response-lost') throw new TeamHubStoppedHostingError(new Error('Host stopped; previous team connection failed.'))
+      return { ...memberDiscovery }
+    })
+    const change = test.service.configureServerRole({
+      profileId: host.profileId!, profileGeneration: host.profileGeneration!, serverIdentity: host.serverIdentity!
+    }, { role: 'member', serverName: 'Atlas' })
+    if (outcome === 'response-lost') await expect(change).rejects.toThrow('Host stopped; previous team connection failed.')
+    else await change
+    expect(test.service.status()).toMatchObject({
+      authenticated: false, designatedHost: false, serverManaged: false,
+      savedHubIdentity: null, error: null
+    })
+    expect(test.settings.forgetBinding).toHaveBeenCalledExactlyOnceWith(host.profileId)
+    expect(test.client.refresh).not.toHaveBeenCalled()
+    await expect(test.service.connect()).resolves.toMatchObject({
+      authenticated: false, designatedHost: false, serverManaged: false, error: null
+    })
+    test.discovery.requestSecurePeerPairing.mockResolvedValue({ completeOnApproval: true } as never)
+    await test.service.requestSecurePeerPairing({
+      profileId: host.profileId!, profileGeneration: host.profileGeneration!, serverIdentity: host.serverIdentity!
+    }, { completeOnApproval: true } as never)
+    expect(test.discovery.requestSecurePeerPairing).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a managed host binding when stopping hosting fails before the role changes', async () => {
+    const test = harness()
+    test.setDiscovery({ serverSessionBasePath: '/api/team-hub-server' })
+    test.client.health.mockResolvedValue({
+      ok: true, service: 'agentsdock-team-hub', api_version: 1,
+      hub_id: 'hub-stable-1', instance_id: 'instance-1',
+      bootstrapped: true, bootstrap_required: false, server_session_available: true
+    })
+    test.client.serverSession.mockResolvedValue(serverSessionSnapshot())
+    const host = await test.service.connect()
+    test.discovery.configureTeamHubServerRole.mockRejectedValue(new Error('Host change failed.'))
+    await expect(test.service.configureServerRole({
+      profileId: host.profileId!, profileGeneration: host.profileGeneration!, serverIdentity: host.serverIdentity!
+    }, { role: 'member', serverName: 'Atlas' })).rejects.toThrow('Host change failed.')
+    expect(test.service.status()).toMatchObject({ authenticated: true, designatedHost: true, serverManaged: true })
+    expect(test.settings.forgetBinding).not.toHaveBeenCalled()
   })
 
   it('fails closed if the selected server changes while a role change is in flight', async () => {

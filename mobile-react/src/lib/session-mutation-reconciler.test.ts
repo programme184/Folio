@@ -14,6 +14,19 @@ const session = (patch: Partial<Session> = {}): Session => ({
 
 {
   const reconciler = new SessionMutationReconciler()
+  const current = session({ system_prompt: 'Configured on server', codex_thread_id: 'native-thread', provider_connection: 'custom' })
+  const summary = session({ title: 'Summary title' })
+  const merged = reconciler.reconcileIncoming(current, summary, reconciler.captureRead())
+  assert.equal(merged.system_prompt, current.system_prompt, 'summary omissions must preserve loaded detail fields')
+  assert.equal(merged.codex_thread_id, current.codex_thread_id)
+  assert.equal(merged.provider_connection, 'custom')
+  const cleared = reconciler.reconcileIncoming(merged, session({ provider_connection: 'default', system_prompt: null }), reconciler.captureRead())
+  assert.equal(cleared.provider_connection, 'default', 'explicit summary resets must still be applied')
+  assert.equal(cleared.system_prompt, null)
+}
+
+{
+  const reconciler = new SessionMutationReconciler()
   let current = session()
   const title = reconciler.begin(current, { title: 'Local title' })
   current = { ...current, title: 'Local title' }

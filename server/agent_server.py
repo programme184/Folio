@@ -26,6 +26,7 @@ import importlib.util
 import inspect
 import io
 import json
+from transcript_reader import jsonl_records, scan_check, SCAN_SECONDS
 import logging
 import logging.handlers
 import math
@@ -83,6 +84,7 @@ import server_instances
 import local_session_ownership
 import cursor_history
 import provider_usage
+import session_unread
 
 from codex_app_server import (
     CodexAppServerDisconnected,
@@ -95,13 +97,13 @@ from codex_app_server import (
     decline_server_request,
 )
 from claude_sdk_client import (
-    CLAUDE_NON_DURABLE_SCHEDULER_TOOLS,
     CLAUDE_PROVIDER_MCP_SERVER_NAME,
     CLAUDE_PROVIDER_MCP_TOOL_NAME,
     CLAUDE_SDK_MCP_STATUS_TRUNCATED_KEY,
     ClaudeSDKConfigurationConflict,
     ClaudeSDKControlTimeout,
     ClaudeSDKGenerationChanged,
+    ClaudeSDKGoalReceipt,
     ClaudeSDKMCPServerNotFound,
     ClaudeSDKQueryError,
     ClaudeSDKRunActive,
@@ -111,7 +113,6 @@ from claude_sdk_client import (
     ClaudeSDKUnavailable,
     canonical_claude_mcp_identifier,
     claude_background_tracking_hooks,
-    claude_nondurable_scheduler_reason,
     create_claude_agent_options,
     create_claude_sdk_mcp_server,
 )
@@ -124,6 +125,7 @@ from provider_commands import (
     claude_provider_command_inventory,
     codex_provider_command_inventory,
     empty_provider_command_inventory,
+    gemini_provider_skill_inventory,
     opencode_provider_skill_inventory,
     validate_opencode_provider_skill_record,
 )
@@ -206,7 +208,8 @@ BACKEND_CLAUDE = "claude"
 BACKEND_CODEX = "codex"
 BACKEND_CURSOR = "cursor"
 BACKEND_OPENCODE = "opencode"
-VALID_BACKENDS = {BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, BACKEND_OPENCODE}
+BACKEND_GEMINI = "gemini"
+VALID_BACKENDS = {BACKEND_CLAUDE, BACKEND_CODEX, BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI}
 CODEX_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 CODEX_EFFORT_ALIASES = {
     "extra high": "xhigh",
@@ -470,39 +473,17 @@ def boolean_setting(suffix: str, default: bool) -> bool:
     return default
 
 
-CODEX_GOALS_DEFAULT_ENABLED = boolean_setting("CODEX_GOALS_ENABLED", True)
+CODEX_GOALS_DEFAULT_ENABLED = True
 
 
 def read_codex_goals_enabled(path: Path | None = None) -> bool:
-    """Read the persistent server-wide Codex goals policy.
+    """Goals are available without a server-wide opt-in.
 
-    Existing installations have no settings file, so goals remain enabled by
-    default.  An environment setting can choose the first-run default, while
-    an administrator's persisted choice remains authoritative afterward.
+    Ignore the retired environment/config switch, including persisted False
+    from older clients. Do not rewrite shared settings or resume paused goals.
+    Keep the optional path argument for compatibility with existing callers.
     """
-
-    settings_path = path or CODEX_SETTINGS_FILE
-    try:
-        value = json.loads(settings_path.read_text())
-    except FileNotFoundError:
-        return CODEX_GOALS_DEFAULT_ENABLED
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning(
-            "could not read Codex server settings from %s: %s",
-            settings_path,
-            exc,
-        )
-        return CODEX_GOALS_DEFAULT_ENABLED
-    if not isinstance(value, dict) or not isinstance(
-        value.get("goals_enabled"),
-        bool,
-    ):
-        logger.warning(
-            "ignoring malformed Codex server settings at %s",
-            settings_path,
-        )
-        return CODEX_GOALS_DEFAULT_ENABLED
-    return bool(value["goals_enabled"])
+    return True
 
 
 # Per-thread Codex config overrides (codex-cli 0.149.1: thread/start,
@@ -682,6 +663,7 @@ def codex_effective_thread_config(sess: dict[str, Any]) -> dict[str, Any]:
 CODEX_GOALS_ENABLED = read_codex_goals_enabled()
 
 CODEX_FALLBACK_MODELS = (
+    ("gpt-6-luna", "GPT-6-Luna"),
     ("gpt-5.6-sol", "GPT-5.6-Sol"),
     ("gpt-5.6-terra", "GPT-5.6-Terra"),
     ("gpt-5.6-luna", "GPT-5.6-Luna"),
@@ -692,6 +674,7 @@ CODEX_FALLBACK_MODELS = (
 CODEX_FALLBACK_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")
 CODEX_EFFORT_ORDER = ("none", "minimal", *CODEX_FALLBACK_EFFORTS)
 CODEX_FALLBACK_MODEL_EFFORTS = {
+    "gpt-6-luna": ("low", "medium", "high", "xhigh", "max"),
     "gpt-5.6-sol": ("low", "medium", "high", "xhigh", "max", "ultra"),
     "gpt-5.6-terra": ("low", "medium", "high", "xhigh", "max", "ultra"),
     "gpt-5.6-luna": ("low", "medium", "high", "xhigh", "max"),
@@ -768,6 +751,7 @@ PROVIDER_CROSS_CHAT_ROUTE_ACTIONS = ("instruction", "request_reply")
 PROVIDER_CROSS_CHAT_ROUTE_ACTION_SET = set(PROVIDER_CROSS_CHAT_ROUTE_ACTIONS)
 EMERGENCY_MESSAGE_MAX_CHARS = 500
 EMERGENCY_REQUESTS_PER_RUN = 3
+NOTIFICATION_REQUESTS_PER_RUN = 5
 EMERGENCY_ACTIVE_ALERT_LIMIT = 32
 EMERGENCY_WEBSOCKET_PROTOCOL = "agentsdock-emergency-v1"
 EVENTS_WEBSOCKET_PROTOCOL = "agentsdock-events-v1"
@@ -898,23 +882,23 @@ if CLAUDE_TRANSPORT not in {
 }:
     CLAUDE_TRANSPORT = CLAUDE_TRANSPORT_AUTO
 CLAUDE_SDK_MAX_LOADED_CHATS = max(
-    1,
-    int(agentsdock_setting("CLAUDE_SDK_MAX_LOADED_CHATS", "4")),
+    0,
+    int(agentsdock_setting("CLAUDE_SDK_MAX_LOADED_CHATS", "0")),
 )
 CLAUDE_SDK_CONNECT_TIMEOUT_SECONDS = max(
     5.0,
     float(agentsdock_setting("CLAUDE_SDK_CONNECT_TIMEOUT_SECONDS", "30")),
 )
 CLAUDE_SDK_IDLE_TTL_SECONDS = max(
-    30,
-    int(agentsdock_setting("CLAUDE_SDK_IDLE_TTL_SECONDS", "300")),
+    0,
+    int(agentsdock_setting("CLAUDE_SDK_IDLE_TTL_SECONDS", "0")),
 )
 CLAUDE_SDK_POST_ACK_FIRST_ACTIVITY_TIMEOUT_SECONDS = max(
-    1.0,
+    0.0,
     float(
         agentsdock_setting(
             "CLAUDE_SDK_POST_ACK_FIRST_ACTIVITY_TIMEOUT_SECONDS",
-            "180",
+            "0",
         )
     ),
 )
@@ -927,10 +911,10 @@ CLAUDE_MCP_MAX_SERVERS = 100
 CLAUDE_MCP_STATUS_SCAN_LIMIT = 500
 CLAUDE_MCP_MAX_TOOL_COUNT = 100_000
 CODEX_APP_SERVER_MAX_LOADED_THREADS = max(
-    1,
-    int(agentsdock_setting("CODEX_APP_SERVER_MAX_LOADED_THREADS", "12")),
+    0,
+    int(agentsdock_setting("CODEX_APP_SERVER_MAX_LOADED_THREADS", "0")),
 )
-CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS = int(agentsdock_setting("CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS", "120"))
+CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS = int(agentsdock_setting("CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS", "0"))
 RUNTIME_CATALOG_TIMEOUT_SECONDS = float(agentsdock_setting("RUNTIME_CATALOG_TIMEOUT_SECONDS", "6"))
 # Leave room for HTTP/JSON overhead before desktop and mobile's 30s deadline.
 RUNTIME_CATALOG_BUDGET_SECONDS = 25.0
@@ -975,7 +959,7 @@ JOB_BUSY_RETRY_SECONDS = int(agentsdock_setting("JOB_BUSY_RETRY_SECONDS", "60"))
 # Zero means scheduled jobs have no scheduler-specific concurrency ceiling.
 # The optional global cap and low-memory check still apply.
 JOB_MAX_ACTIVE_RUNS = int(agentsdock_setting("JOB_MAX_ACTIVE_RUNS", "0"))
-JOB_MIN_AVAILABLE_MEM_MB = int(agentsdock_setting("JOB_MIN_AVAILABLE_MEM_MB", "4096"))
+JOB_MIN_AVAILABLE_MEM_MB = int(agentsdock_setting("JOB_MIN_AVAILABLE_MEM_MB", "0"))
 JOB_DEFER_EVENT_MIN_SECONDS = int(agentsdock_setting("JOB_DEFER_EVENT_MIN_SECONDS", "300"))
 # A missing or logged-out provider runtime may recover without operator action,
 # but an occurrence must not be parked forever.  Keep the small retry budget on
@@ -984,14 +968,14 @@ JOB_RUNTIME_UNAVAILABLE_MAX_DEFERS = 3
 # No server-wide chat-run ceiling by default. Operators can explicitly set a
 # positive cap; launch memory and managed-update guards remain independent.
 MAX_ACTIVE_AGENT_RUNS = int(agentsdock_setting("MAX_ACTIVE_AGENT_RUNS", "0"))
-MIN_START_AVAILABLE_MEM_MB = int(agentsdock_setting("MIN_START_AVAILABLE_MEM_MB", "2048"))
+MIN_START_AVAILABLE_MEM_MB = int(agentsdock_setting("MIN_START_AVAILABLE_MEM_MB", "0"))
 HOST_MONITOR_INTERVAL_SECONDS = float(agentsdock_setting("HOST_MONITOR_INTERVAL_SECONDS", "15"))
 HOST_HEALTH_MAX_BYTES = int(agentsdock_setting("HOST_HEALTH_MAX_BYTES", str(20 * 1024 * 1024)))
 IDLE_WARN_SECONDS = int(agentsdock_setting("IDLE_WARN_SECONDS", "1800"))
-IDLE_KILL_SECONDS = int(agentsdock_setting("IDLE_KILL_SECONDS", "21600"))
+IDLE_KILL_SECONDS = int(agentsdock_setting("IDLE_KILL_SECONDS", "0"))
 CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS = max(
-    30.0,
-    float(agentsdock_setting("CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS", "600")),
+    0.0,
+    float(agentsdock_setting("CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS", "0")),
 )
 # An active Claude turn has no useful wall-clock lifetime limit. Long-running
 # tool work and user approvals can legitimately span hours; cancel remains the
@@ -1002,7 +986,7 @@ CLAUDE_SDK_TURN_TIMEOUT_SECONDS = max(
     float(agentsdock_setting("CLAUDE_SDK_TURN_TIMEOUT_SECONDS", "0")),
 )
 CLAUDE_SDK_IDLE_TIMEOUT_SECONDS = max(
-    30.0,
+    0.0,
     float(
         agentsdock_setting(
             "CLAUDE_SDK_IDLE_TIMEOUT_SECONDS",
@@ -1012,26 +996,20 @@ CLAUDE_SDK_IDLE_TIMEOUT_SECONDS = max(
 )
 CLAUDE_SDK_IDLE_WARN_SECONDS = max(
     1.0,
-    min(float(IDLE_WARN_SECONDS), CLAUDE_SDK_IDLE_TIMEOUT_SECONDS / 2),
+    min(float(IDLE_WARN_SECONDS), CLAUDE_SDK_IDLE_TIMEOUT_SECONDS / 2)
+    if CLAUDE_SDK_IDLE_TIMEOUT_SECONDS > 0 else float(IDLE_WARN_SECONDS),
 )
-# A Codex app-server notification can be silently dropped if it arrives for a
-# subscription that already closed (see _route_notification in
-# codex_app_server.py) - the turn then waits forever with zero visible
-# activity, but IDLE_WARN/IDLE_KILL_SECONDS above are sized for legitimate
-# gaps *between* activity on an already-productive turn, not "nothing has
-# happened since the turn started." This bounds only that first-activity
-# wait, far tighter, so a stalled turn fails fast and (if resuming an
-# existing thread) is picked up by the existing rollover-retry path instead
-# of hanging with no error for up to IDLE_KILL_SECONDS.
+# Accepted native work can legitimately be silent. Operators may opt into an
+# inactivity cutoff, but absence of output alone does not fail a turn by default.
 CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS = int(
-    agentsdock_setting("CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS", "180")
+    agentsdock_setting("CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS", "0")
 )
 CURSOR_STARTUP_TIMEOUT_SECONDS = max(
-    5.0,
-    float(agentsdock_setting("CURSOR_STARTUP_TIMEOUT_SECONDS", "120")),
+    0.0,
+    float(agentsdock_setting("CURSOR_STARTUP_TIMEOUT_SECONDS", "0")),
 )
 CURSOR_TURN_TIMEOUT_SECONDS = max(
-    CURSOR_STARTUP_TIMEOUT_SECONDS,
+    0.0,
     float(
         agentsdock_setting(
             "CURSOR_TURN_TIMEOUT_SECONDS",
@@ -1040,10 +1018,13 @@ CURSOR_TURN_TIMEOUT_SECONDS = max(
     ),
 )
 CURSOR_IDLE_TIMEOUT_SECONDS = max(
-    30.0,
-    float(agentsdock_setting("CURSOR_IDLE_TIMEOUT_SECONDS", "900")),
+    0.0,
+    float(agentsdock_setting("CURSOR_IDLE_TIMEOUT_SECONDS", "0")),
 )
-CURSOR_IDLE_WARN_SECONDS = min(300.0, CURSOR_IDLE_TIMEOUT_SECONDS / 2)
+CURSOR_IDLE_WARN_SECONDS = (
+    min(300.0, CURSOR_IDLE_TIMEOUT_SECONDS / 2)
+    if CURSOR_IDLE_TIMEOUT_SECONDS > 0 else 300.0
+)
 CURSOR_POST_TERMINAL_EXIT_SECONDS = max(
     0.1,
     float(agentsdock_setting("CURSOR_POST_TERMINAL_EXIT_SECONDS", "30")),
@@ -1083,11 +1064,11 @@ CURSOR_MAX_TOOL_CALLS = max(
     int(agentsdock_setting("CURSOR_MAX_TOOL_CALLS", "4096")),
 )
 OPENCODE_STARTUP_TIMEOUT_SECONDS = max(
-    5.0,
-    float(agentsdock_setting("OPENCODE_STARTUP_TIMEOUT_SECONDS", "120")),
+    0.0,
+    float(agentsdock_setting("OPENCODE_STARTUP_TIMEOUT_SECONDS", "0")),
 )
 OPENCODE_TURN_TIMEOUT_SECONDS = max(
-    OPENCODE_STARTUP_TIMEOUT_SECONDS,
+    0.0,
     float(
         agentsdock_setting(
             "OPENCODE_TURN_TIMEOUT_SECONDS",
@@ -1095,15 +1076,17 @@ OPENCODE_TURN_TIMEOUT_SECONDS = max(
         )
     ),
 )
-# Sized deliberately, not copied: a turn whose tools are all denied was
-# measured retrying for more than ten minutes without finishing or failing.
-# Nothing inside OpenCode bounds that, so this ceiling is the only thing that
-# ends such a turn.
+# Execution deadlines are opt-in; native retries and silent tools may remain
+# active without producing stream events. Stop and transport failure still end
+# the owned process normally.
 OPENCODE_IDLE_TIMEOUT_SECONDS = max(
-    30.0,
-    float(agentsdock_setting("OPENCODE_IDLE_TIMEOUT_SECONDS", "900")),
+    0.0,
+    float(agentsdock_setting("OPENCODE_IDLE_TIMEOUT_SECONDS", "0")),
 )
-OPENCODE_IDLE_WARN_SECONDS = min(300.0, OPENCODE_IDLE_TIMEOUT_SECONDS / 2)
+OPENCODE_IDLE_WARN_SECONDS = (
+    min(300.0, OPENCODE_IDLE_TIMEOUT_SECONDS / 2)
+    if OPENCODE_IDLE_TIMEOUT_SECONDS > 0 else 300.0
+)
 OPENCODE_POST_TERMINAL_EXIT_SECONDS = max(
     0.1,
     float(agentsdock_setting("OPENCODE_POST_TERMINAL_EXIT_SECONDS", "30")),
@@ -1318,8 +1301,10 @@ HISTORY_SYNC_EVENT_SCAN_LIMIT = int(
 MAX_IMPORTED_TEXT_CHARS = int(agentsdock_setting("HISTORY_IMPORT_TEXT_CHARS", "12000"))
 MAX_LOCAL_SESSION_LIST_ITEMS = 500
 MAX_LOCAL_SESSION_SCAN_FILES = 10_000
-MAX_LOCAL_TRANSCRIPT_BYTES = 256 * 1024 * 1024
-MAX_LOCAL_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024
+# Retained text/metadata budget. Opaque native media/tool bytes are streamed.
+# Private timeline/index readers still use this as their raw record bound.
+MAX_LOCAL_TRANSCRIPT_LINE_BYTES = 32 * 1024 * 1024
+HISTORY_SYNC_BATCH_BYTES = 16 * 1024 * 1024
 MAX_LOCAL_TRANSCRIPT_SCAN_LINES = 250_000
 MAX_CODEX_SESSION_INDEX_BYTES = 16 * 1024 * 1024
 MAX_CODEX_SESSION_INDEX_LINES = 100_000
@@ -1579,7 +1564,7 @@ CODEX_PROVIDER_MCP_HEADER_NAME = "X-AgentsDock-Provider-MCP"
 CODEX_PROVIDER_MCP_HEADER_SECRET = secrets.token_urlsafe(48)
 CODEX_PROVIDER_MCP_PROOF_KEY = secrets.token_bytes(32)
 PROVIDER_TOOL_HELPERS = frozenset({
-    "chats", "jobs", "publish", "emergency", "mail", "team",
+    "chats", "jobs", "publish", "emergency", "notify", "mail", "team",
 })
 PROVIDER_TOOL_READ_ONLY_COMMANDS = {
     "chats": frozenset({"list", "inbox"}),
@@ -1595,7 +1580,6 @@ PROVIDER_TOOL_MAX_STDIN_CHARS = CROSS_CHAT_HANDOFF_BODY_MAX_CHARS
 PROVIDER_TOOL_MAX_STDIN_BYTES = 400 * 1024
 PROVIDER_TOOL_MAX_OUTPUT_BYTES = 128 * 1024
 PROVIDER_TOOL_TIMEOUT_SECONDS = 90.0
-PROVIDER_TOOL_MAX_CONCURRENT_PER_CLAUDE_CHAT = 2
 PROVIDER_TOOL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1612,7 +1596,7 @@ PROVIDER_TOOL_INPUT_SCHEMA: dict[str, Any] = {
 }
 PROVIDER_TOOL_DESCRIPTION = (
     "Run one capability-scoped AgentsDock helper for the exact live turn. "
-    "Choose chats, jobs, publish, emergency, mail, or team; pass ordinary CLI "
+    "Choose chats, jobs, publish, emergency, notify, mail, or team; pass ordinary CLI "
     "arguments without authority/chat identity flags. Discover permitted chats with "
     "chats list and contact its exact --route. Legacy one-use handles use "
     "chats send|ask --target-index N. For the current inbound reply use chats "
@@ -1736,12 +1720,12 @@ SUBAGENT_SNAPSHOT_TEXT_LIMIT = 600
 MAX_PROVIDER_STATIC_INSTRUCTIONS_CHARS = 16 * 1024
 PROVIDER_AUTHORITY_USAGE_INSTRUCTIONS = (
     "AgentsDock provider actions (run-scoped, never user content):\n"
-    f"- Use only `{CLAUDE_PROVIDER_MCP_TOOL_NAME}` for Chats, Jobs, Publish, Emergency, Mail, and Team helpers. "
+    f"- Use only `{CLAUDE_PROVIDER_MCP_TOOL_NAME}` for Chats, Jobs, Publish, Emergency, Notify, Mail, and Team helpers. "
     "A user-configured MCP server named `agentsdock` is unrelated and must never receive these calls. "
     "Pass `helper`, the helper's ordinary argument list without authority/chat identity flags, and optional UTF-8 `stdin`. "
     "The server binds every call to the exact live run and supplies its private authority; an unavailable action is denied. "
     "The tool supplies helper authentication and its own chat, session, run, and provider identity.\n"
-    "- Helpers: `chats`, `jobs`, `publish`, `emergency`, `mail`, and `team`. Arguments match their documented CLI "
+    "- Helpers: `chats`, `jobs`, `publish`, `emergency`, `notify`, `mail`, and `team`. Arguments match their documented CLI "
     "subcommands except that one-use @Chat handles use `--target-index N`, and an inbound reply uses `respond-current`. "
     "Indexes follow source-mention order. The server resolves the opaque handle, required action, async mode, current "
     "exchange, inbound leg, and follow-up ceiling without revealing them.\n"
@@ -1833,14 +1817,10 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Keep final answers concise; the UI separates tools, output, reasoning, and artifacts.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
-- Treat milestone completion as progress, not completion of the user's whole request. Before finishing, join child tasks you started and wait for every requested milestone and acceptance check; automate only when explicitly asked.
-- Never detach required work with `nohup`, `disown`, `setsid`, shell `&`, or Bash `run_in_background`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a tracked Agent/workflow; background Bash does not guarantee a completion wake-up.
-- This is AgentsDock, not Slack; never use Slack file helpers.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
-- Publish user-facing files only with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
-- Never use Claude's `Monitor`, `ScheduleWakeup`, `/loop`, or `CronCreate`; under AgentsDock they cannot durably deliver a later chat update. Only when explicitly asked, use the Jobs helper through the provider tool.
+- Publish user-facing files to this chat with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to resolved `$AGENTSDOCK_MANIFEST_PATH` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
-- Inspect `$AGENTSDOCK_TMUX_SESSION` read-only unless explicitly asked to operate it.
+- `$AGENTSDOCK_TMUX_SESSION` identifies this chat's persistent terminal when available.
 - Check skills and project playbooks before claiming an environment or remote path is unavailable.
 - If optional cleanup makes a compound command fail, immediately retry the still-safe requested operation without it.
 - Keep chat focused; delegate bounded noisy exploration and return summaries.
@@ -1852,14 +1832,14 @@ SYSTEM_PROMPT = CLAUDE_PROMPT_PRELUDE
 
 # v8: static provider-authority usage and cross-chat delivery provenance moved
 # from every per-turn prompt into these thread instructions (context diet).
-CODEX_THREAD_POLICY_VERSION = "11"
-CURSOR_PROMPT_POLICY_VERSION = "6"
+CODEX_THREAD_POLICY_VERSION = "12"
+CURSOR_PROMPT_POLICY_VERSION = "7"
 # Native permissions remain in force; the private run profile adds only MCP.
 CURSOR_FILE_DELIVERY_ADDENDUM = """\
-Delivering files in this Cursor session:
+Attaching files to this AgentsDock chat from Cursor:
 - Use the internal provider tool with helper=publish; it needs no Shell permission. An explicit denial still applies. A rejected tool call means the file remains undelivered.
 - On older runtimes without the internal tool, the authorized file-writing fallback needs no shell: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only "submitted for attachment". Do not use this fallback to bypass an explicit denial.
-- This covers everything produced for the user, including generated images: write the image to a real file first, then list that absolute path in the manifest.
+- For attachments to this chat, including generated images: write the image to a real file first, then list that absolute path in the manifest.
 """
 CLAUDE_SDK_CONFIGURATION_VERSION = 10
 CODEX_PROMPT_PRELUDE = """\
@@ -1867,17 +1847,15 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Keep the final answer concise; the UI renders tool calls, command output, reasoning, and artifacts separately.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
-- Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked exec, Agent, or workflow; an explicitly requested durable service must use an observable service manager.
-- This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
+- Detached shell processes do not themselves wake this chat; provider-tracked background work exposes completion through the provider's native lifecycle.
 - Link editor-readable files with Markdown paths relative to the chat working directory, optionally with `#L42`; do not use `file://`.
-- Publish user-facing files only with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
-- Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked through the run-bound provider tool; query it instead of relying on a prompt snapshot.
+- Publish user-facing files to this chat with the AgentsDock provider tool described below. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- Native scheduling tools follow the provider's lifecycle. AgentsDock Jobs provide durable scheduled delivery to this chat through the run-bound provider tool; query it for current job state.
 - Use the run-bound AgentsDock provider tool described below for cross-chat messages.
-- The persistent terminal is tmux session `{terminal_session}`; inspect it read-only unless the user explicitly asks you to operate it.
+- The persistent terminal is tmux session `{terminal_session}`.
 - Check installed skills and project playbooks before claiming a specialized environment or remote path is unavailable.
 - If an incidental cleanup or optional clause makes a compound command fail, immediately retry the still-safe requested operation without that clause.
 - Keep the main chat focused; delegate bounded noisy exploration and return summaries instead of dumping large logs or tool output into the thread.
-- When you call `spawn_agent`, pass `fork_turns` as a small number written as a string (for example `"3"`) or `"none"`, never `"all"`: a full-history fork copies the entire compacted parent transcript (hundreds of MB per child) and exhausts the server.
 - Preserve user work; avoid destructive actions without authorization; continue until complete or blocked.
 """ + PROVIDER_THREAD_INSTRUCTION_ADDENDUM
 
@@ -1888,12 +1866,11 @@ You are operating through AgentsDock, backed by AgentsServer.
 - Keep the final answer concise; the UI renders tool calls, command output, reasoning, and artifacts separately.
 - Render inline math as `$...$` and display math as `$$...$$`.
 - Continue through ordinary inspection errors when a safe retry or narrow fix is available.
-- Never detach required work with `nohup`, `disown`, `setsid`, or shell `&`. Keep work needed for the current reply in foreground. Async completion that must wake chat requires a provider-tracked Agent/workflow; an explicitly requested durable service must use an observable service manager.
-- This is AgentsDock, not Slack; create files locally and never call Slack file helpers.
-- Publish user-facing files only through the run-bound AgentsDock provider tool. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
-- Never rely on provider-local timers, loops, or detached processes to wake this AgentsDock chat or deliver a later reply. Manage durable scheduled jobs only when explicitly asked and only through the Jobs helper in the run-bound provider tool.
+- Detached shell processes do not themselves wake this chat; provider-tracked background work exposes completion through the provider's native lifecycle.
+- Publish user-facing files to this chat through the run-bound AgentsDock provider tool. Say “attached” only after a successful JSON receipt. Older-server fallback: write `{{"files":["/absolute/path.ext"]}}` to `{manifest_path}` and say only “submitted for attachment.” Use absolute paths and playable `.mp4`/`.mov` videos.
+- Native scheduling tools follow the provider's lifecycle. AgentsDock Jobs provide durable scheduled delivery to this chat through the run-bound provider tool; query it for current job state.
 - Use the Chats helper through the run-bound provider tool for cross-chat messages.
-- The persistent terminal is tmux session `{terminal_session}`; inspect it read-only unless the user explicitly asks you to operate it.
+- The persistent terminal is tmux session `{terminal_session}`.
 - Check installed skills and project playbooks before claiming a specialized environment or remote path is unavailable.
 - If an incidental cleanup or optional clause makes a compound command fail, immediately retry the still-safe requested operation without that clause.
 - Keep the main chat focused; delegate bounded noisy exploration and return summaries instead of dumping large logs or tool output into the thread.
@@ -6373,6 +6350,7 @@ class CreateSessionRequest(BaseModel):
     # Same three names as Cursor, but "default" means OpenCode's own
     # permissions, which do allow shell.
     opencode_permission_mode: Literal["default", "full_access", "plan"] | None = None
+    gemini_permission_mode: Literal["default", "autoEdit", "yolo", "plan"] | None = None
 
 
 MAX_BULK_IMPORT_ITEMS = 25
@@ -6384,9 +6362,10 @@ PROVIDER_SESSION_IDENTIFIER_RE = re.compile(
 
 class BulkImportSessionItem(BaseModel):
     provider_session_id: str = Field(min_length=1, max_length=256)
-    backend: Literal["claude", "codex", "cursor"]
+    backend: Literal["claude", "codex", "cursor", "gemini"]
     cwd: str | None = Field(default=None, max_length=MAX_WORKSPACE_PATH_CHARS)
     title: str | None = Field(default=None, max_length=MAX_LOCAL_SESSION_LABEL_CHARS)
+    provider_connection: Literal["custom"] | None = None
 
     @field_validator("provider_session_id")
     @classmethod
@@ -6410,6 +6389,7 @@ class BulkImportSessionsRequest(BaseModel):
 
 
 class UpdateSessionRequest(BaseModel):
+    gemini_connect_api: bool | None = Field(default=None, strict=True)
     title: str | None = None
     auto_title_enabled: bool | None = None
     folder: str | None = None
@@ -6438,6 +6418,7 @@ class UpdateSessionRequest(BaseModel):
     provider_jobs_access: Literal["full", "read_only", "blocked"] | None = None
     cursor_permission_mode: Literal["default", "full_access", "plan"] | None = None
     opencode_permission_mode: Literal["default", "full_access", "plan"] | None = None
+    gemini_permission_mode: Literal["default", "autoEdit", "yolo", "plan"] | None = None
 
 
 SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
@@ -6456,6 +6437,7 @@ SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
     "provider_jobs_access",
     "cursor_permission_mode",
     "opencode_permission_mode",
+    "gemini_permission_mode",
     "archived",
 })
 
@@ -6602,14 +6584,35 @@ class EmergencyAlertRequest(BaseModel):
     message: str = Field(min_length=1, max_length=EMERGENCY_MESSAGE_MAX_CHARS)
 
 
+class AgentNotificationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    request_id: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+    level: Literal["normal", "important", "emergency"]
+    message: str = Field(min_length=1, max_length=EMERGENCY_MESSAGE_MAX_CHARS)
+
+
 class AcknowledgeEmergencyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
-    expected_alert_id: str = Field(
+    expected_alert_id: str | None = Field(
+        default=None,
         min_length=8,
         max_length=80,
         pattern=r"^emergency_[0-9a-f]{32}$",
     )
+    through_alert_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=80,
+        pattern=r"^emergency_[0-9a-f]{32}$",
+    )
+
+    @model_validator(mode="after")
+    def exactly_one_alert_boundary(self):
+        if (self.expected_alert_id is None) == (self.through_alert_id is None):
+            raise ValueError("provide exactly one of expected_alert_id or through_alert_id")
+        return self
 
 
 class ChatReference(BaseModel):
@@ -6779,6 +6782,7 @@ class ProviderCommandSelectionUnavailable(HTTPException):
 
 class TurnRequest(BaseModel):
     prompt: str
+    client_request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{8,128}$")
     # Server-derived attribution only; the guest router accepts neither field
     # from its JSON body and never accepts arbitrary TurnRequest controls.
     shared_chat_id: str | None = Field(default=None, pattern=r"^interactive_[a-f0-9]{32}$")
@@ -7091,6 +7095,10 @@ def normalize_runtime_effort(backend: str, effort: Any, *, strict: bool = False)
     clean = str(effort or "").strip().lower()
     if not clean:
         return None
+    if backend == BACKEND_GEMINI:
+        if strict:
+            raise HTTPException(400, "Gemini reasoning settings are managed by its native model.")
+        return None
     if str(backend or "").strip().lower() != BACKEND_CODEX:
         return clean
 
@@ -7238,7 +7246,7 @@ def preview_session_runtime_update(
 
     current_connection = sess.get("provider_connection") or "default"
     connection = (patch.get("provider_connection") or "default") if "provider_connection" in patch else "default" if backend_changed else current_connection
-    if connection not in {"default", "custom"} or connection == "custom" and prospective_backend not in {BACKEND_CLAUDE, BACKEND_OPENCODE, BACKEND_CURSOR}:
+    if connection not in {"default", "custom"} or connection == "custom" and prospective_backend not in {BACKEND_CLAUDE, BACKEND_OPENCODE, BACKEND_CURSOR, BACKEND_GEMINI}:
         raise HTTPException(400, "This backend does not support that API connection.")
     connection_changed = current_connection != connection
     if connection_changed and session_backend_locked(sess):
@@ -7250,11 +7258,21 @@ def preview_session_runtime_update(
         if "model" in patch
         else None if backend_changed or provider_changed else sess.get("model")
     )
+    previous_model = prospective_model
+    if prospective_backend == BACKEND_CODEX and prospective_provider == "default" and prospective_model:
+        prospective_model = codex_available_model(str(prospective_model))
     prospective_effort = (
         patch.get("effort")
         if "effort" in patch
         else None if backend_changed or provider_changed else sess.get("effort")
     )
+    if prospective_model != previous_model and prospective_effort:
+        # Saved/queued settings may contain a level unsupported by the new
+        # model. Validate the vocabulary, then preserve the nearest level.
+        prospective_effort = clamp_codex_runtime_effort(
+            str(prospective_model),
+            normalize_runtime_effort(BACKEND_CODEX, prospective_effort, strict="effort" in patch),
+        )
     normalized_effort = (
         normalize_runtime_effort(prospective_backend, prospective_effort, strict="effort" in patch)
         if prospective_provider == "custom" else
@@ -7272,7 +7290,7 @@ def preview_session_runtime_update(
     preview["model"] = prospective_model
     preview["effort"] = normalized_effort
     preview["provider_connection"] = connection
-    if connection_changed or connection == "default":
+    if backend_changed or connection_changed or connection == "default":
         preview.pop("provider_connection_revision", None)
     if connection == "custom":
         selected_connection = PROVIDER_CONNECTION_STORE.bind(preview)
@@ -7294,6 +7312,7 @@ def preview_session_runtime_update(
             BACKEND_CODEX: "codex_thread_id",
             BACKEND_CURSOR: "cursor_session_id",
             BACKEND_OPENCODE: "opencode_session_id",
+            BACKEND_GEMINI: "gemini_session_id",
         }[prospective_backend]
         preview["session_id"] = sess.get(provider_id_field)
     return preview
@@ -9685,35 +9704,133 @@ def normalized_emergency_alert(value: Any) -> dict[str, Any] | None:
     }
 
 
-def reversed_jsonl_events(path: Path) -> Iterator[dict[str, Any]]:
-    """Yield durable JSONL records newest-first without a lossy line cap."""
+def reversed_jsonl_events(
+    path: Path, *, retained_fields: frozenset[str] | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Read newest-first in linear work, without accumulating a giant line.
+
+    Find offsets in fixed blocks. Emergency readers only retain lifecycle
+    fields; unrelated text/media is validated and skipped in bounded chunks.
+    Other consumers retain the full event contract.
+    """
 
     if not path.exists():
         return
     chunk_size = 256 * 1024
     with path.open("rb") as source:
         source.seek(0, os.SEEK_END)
-        position = source.tell()
-        remainder = b""
+        position = end = source.tell()
+
+        def read_event(start: int, stop: int) -> dict[str, Any] | None:
+            if stop <= start:
+                return None
+            source.seek(start)
+            if retained_fields is not None:
+                for event, _, _ in jsonl_records(
+                    source, end=stop, project=False, require_newline=False,
+                    retained_fields=retained_fields, deadline=float("inf"),
+                    # This is a server-owned journal, not a native import.
+                    # A tool payload can legitimately contain many values.
+                    # Keep retained metadata bounded; scan omitted values in
+                    # linear time without the importer's value-count ceiling.
+                    max_nodes=None, max_depth=512,
+                ):
+                    return event
+                return None
+            with suppress(ValueError, UnicodeError):
+                event = json.loads(source.read(stop - start).decode("utf-8", "replace"))
+                if isinstance(event, dict):
+                    return event
+            return None
+
         while position > 0:
             read_size = min(chunk_size, position)
             position -= read_size
             source.seek(position)
-            block = source.read(read_size) + remainder
-            lines = block.split(b"\n")
-            remainder = lines[0]
-            for raw_line in reversed(lines[1:]):
-                if not raw_line.strip():
-                    continue
-                with suppress(Exception):
-                    event = json.loads(raw_line.decode("utf-8", "replace"))
-                    if isinstance(event, dict):
-                        yield event
-        if remainder.strip():
-            with suppress(Exception):
-                event = json.loads(remainder.decode("utf-8", "replace"))
-                if isinstance(event, dict):
+            block = source.read(read_size)
+            offset = len(block)
+            while (offset := block.rfind(b"\n", 0, offset)) >= 0:
+                start = position + offset + 1
+                event = read_event(start, end)
+                if event is not None:
                     yield event
+                end = start - 1
+        event = read_event(0, end)
+        if event is not None:
+            yield event
+
+
+EMERGENCY_EVENT_FIELDS = frozenset({
+    "id", "seq", "type", "ts", "session_id", "run_id",
+    "emergency_alert", "emergency_alert_id", "emergency_request_id", "emergency_request_digest",
+})
+NOTIFICATION_EVENT_FIELDS = frozenset({
+    "id", "seq", "type", "ts", "session_id", "run_id", "message",
+    "notification_level", "notification_request_id", "notification_request_digest",
+})
+
+
+def notification_events_after(
+    session_id: str,
+    after_seq: int,
+) -> tuple[list[dict[str, Any]], int]:
+    newest_seq = max(0, int(after_seq or 0))
+    events: list[dict[str, Any]] = []
+    for event in reversed_jsonl_events(events_path(session_id), retained_fields=NOTIFICATION_EVENT_FIELDS):
+        seq = int(event.get("seq") or 0)
+        newest_seq = max(newest_seq, seq)
+        if seq <= after_seq:
+            break
+        if event.get("type") == "agent_notification":
+            events.append(event)
+    events.reverse()
+    return events, newest_seq
+
+
+def reconcile_session_agent_notifications(session_id: str, sess: dict[str, Any]) -> bool:
+    through = max(0, int(sess.get("_notification_reconciled_through_seq") or 0))
+    checkpoint = through or max(0, int(sess.get("latest_event_seq") or 0))
+    events, newest_seq = notification_events_after(session_id, checkpoint)
+    if not events and not through:
+        return False
+    before = (
+        sess.get("latest_notification_level"), sess.get("latest_notification_message"),
+        sess.get("unread_notification_level"), sess.get("unread_notification_seq"), through,
+    )
+    if not through and events:
+        sess.pop("unread_notification_level", None)
+        sess.pop("unread_notification_seq", None)
+    read_seq = int(sess.get("last_read_agent_event_seq") or 0)
+    ranks = {"normal": 1, "important": 2, "emergency": 3}
+    for event in events:
+        level = event.get("notification_level")
+        seq = int(event.get("seq") or 0)
+        if level not in ranks or seq <= 0:
+            continue
+        sess["latest_notification_level"] = level
+        sess["latest_notification_message"] = event.get("message")
+        if seq > int(sess.get("latest_agent_event_seq") or 0):
+            sess["latest_agent_event_seq"] = seq
+            sess["latest_agent_event_at"] = event.get("ts")
+            sess["latest_agent_event_type"] = "agent_notification"
+        if seq > int(sess.get("latest_event_seq") or 0):
+            sess["latest_event_seq"] = seq
+            sess["latest_event_at"] = event.get("ts")
+            sess["latest_event_type"] = "agent_notification"
+        if seq > read_seq and ranks[level] >= ranks.get(sess.get("unread_notification_level"), 0):
+            sess["unread_notification_level"] = level
+            sess["unread_notification_seq"] = seq
+    if int(sess.get("unread_notification_seq") or 0) <= read_seq:
+        sess.pop("unread_notification_level", None)
+        sess.pop("unread_notification_seq", None)
+    if newest_seq:
+        sess["_notification_reconciled_through_seq"] = newest_seq
+    after = (
+        sess.get("latest_notification_level"), sess.get("latest_notification_message"),
+        sess.get("unread_notification_level"), sess.get("unread_notification_seq"),
+        int(sess.get("_notification_reconciled_through_seq") or 0),
+    )
+    return before != after
 
 
 def emergency_lifecycle_events_after(
@@ -9724,7 +9841,9 @@ def emergency_lifecycle_events_after(
 
     newest_seq = max(0, int(after_seq or 0))
     events: list[dict[str, Any]] = []
-    for event in reversed_jsonl_events(events_path(session_id)):
+    for event in reversed_jsonl_events(
+        events_path(session_id), retained_fields=EMERGENCY_EVENT_FIELDS,
+    ):
         seq = int(event.get("seq") or 0)
         newest_seq = max(newest_seq, seq)
         if seq <= after_seq:
@@ -10214,7 +10333,12 @@ class SessionStore:
                 durable_route_reconciliation = True
             if reconcile_session_emergency_alerts(session_id, sess):
                 runtime_changed = True
+            if reconcile_session_agent_notifications(session_id, sess):
+                runtime_changed = True
             backend = str(sess.get("backend") or DEFAULT_BACKEND).strip().lower()
+            if not sess.get("gemini_permission_mode"):
+                sess["gemini_permission_mode"] = "default"
+                runtime_changed = True
             claude_permission_mode = effective_claude_permission_mode(sess)
             if sess.get("claude_permission_mode") != claude_permission_mode:
                 sess["claude_permission_mode"] = claude_permission_mode
@@ -10579,13 +10703,25 @@ class SessionStore:
         if initializing_fork and parent_id and req.provider_connection == "custom":
             parent = self.sessions.get(parent_id) or {}
             runtime_source.update({name: parent.get(name) for name in ("provider_connection", "provider_connection_revision")})
-        if req.provider_connection == "custom" and not initializing_fork and any((req.provider_session_id, req.session_id, req.claude_session_id, req.opencode_session_id)):
+        if backend != BACKEND_GEMINI and req.provider_connection == "custom" and not initializing_fork and any((req.provider_session_id, req.session_id, req.claude_session_id, req.opencode_session_id)):
             raise HTTPException(409, "Import native conversations with their native login. Create a new chat for a custom API.")
         runtime = preview_session_runtime_update(runtime_source, {
             "codex_provider": req.codex_provider, "provider_connection": req.provider_connection, "model": req.model, "effort": req.effort,
         })
         model, effort = runtime["model"], runtime["effort"]
         session_cwd = req.cwd or DEFAULT_CWD
+        if backend == BACKEND_GEMINI:
+            if req.provider_session_id or req.session_id or req.import_history:
+                from gemini_import import initial_history
+                from gemini_acp_client import GeminiProtocolError
+                try:
+                    await asyncio.to_thread(initial_history, sys.modules[__name__], runner_env(),
+                        req.provider_session_id or req.session_id or "", str(Path(session_cwd).expanduser().resolve()))
+                except (GeminiProtocolError, OSError, ValueError):
+                    raise HTTPException(400, "Gemini history does not uniquely match this session ID and workspace.") from None
+            if not Path(session_cwd).expanduser().is_dir():
+                raise HTTPException(400, "Gemini requires an existing workspace directory.")
+            session_cwd = str(Path(session_cwd).expanduser().resolve())
         if backend == BACKEND_OPENCODE:
             session_cwd = validated_opencode_cwd(
                 session_cwd,
@@ -10622,6 +10758,7 @@ class SessionStore:
             claude_session_id if backend == BACKEND_CLAUDE
             else codex_thread_id if backend == BACKEND_CODEX
             else cursor_session_id if backend == BACKEND_CURSOR
+            else provider_id if backend == BACKEND_GEMINI
             else opencode_session_id
         )
         # A Claude chat can park an inactive Codex identity for later backend
@@ -10688,6 +10825,9 @@ class SessionStore:
             "claude_session_id": claude_session_id,
             "codex_thread_id": codex_thread_id,
             "cursor_session_id": cursor_session_id,
+            "gemini_session_id": provider_id if backend == BACKEND_GEMINI else None,
+            "gemini_native_history": bool(backend == BACKEND_GEMINI and provider_id),
+            "gemini_session_cwd": session_cwd if backend == BACKEND_GEMINI and provider_id else None,
             "opencode_session_id": opencode_session_id,
             "opencode_session_cwd": (
                 session_cwd
@@ -10707,6 +10847,7 @@ class SessionStore:
             "opencode_permission_mode": (
                 req.opencode_permission_mode or OPENCODE_DEFAULT_PERMISSION_MODE
             ),
+            "gemini_permission_mode": req.gemini_permission_mode or "default",
             "codex_approval_policy": (
                 req.codex_approval_policy or CODEX_DEFAULT_APPROVAL_POLICY
             ),
@@ -10743,6 +10884,8 @@ class SessionStore:
             "created_at": now,
             "updated_at": now,
         }
+        if not active_provider_id and not parent_id and sess["title"] == "New chat":
+            sess["_empty_chat_cleanup"] = {"version": 1, "dismissed_by": {}}
         if req.subagent_limit is not None:
             sess["subagent_limit"] = req.subagent_limit
         if initializing_fork and parent_id:
@@ -10802,6 +10945,7 @@ class SessionStore:
             if "subagent_limit" in patch:
                 validate_session_subagent_limit({**sess, "backend": patch.get("backend") or sess.get("backend")}, patch["subagent_limit"])
             previous_provider_runtime = dict(sess) if {"codex_provider", "provider_connection", "subagent_limit"}.intersection(patch) else None
+            previous_title_runtime = title_runtime_key(sess)
             missing_policy = object()
             previous_provider_jobs_access = sess.get(
                 "provider_jobs_access",
@@ -10899,10 +11043,8 @@ class SessionStore:
                         sess.pop("_title_seed", None)
             if patch.get("auto_title_enabled") is not None:
                 sess["auto_title_enabled"] = bool(patch["auto_title_enabled"])
-            if (any(key in patch for key in ("title", "model", "backend", "codex_provider"))
-                    or patch.get("auto_title_enabled") is False or patch.get("archived") is True):
-                cancel_generated_session_title(sid)
             for key, default, allowed in (
+                ("gemini_permission_mode", "default", {"default", "autoEdit", "yolo", "plan"}),
                 (
                     "claude_permission_mode",
                     CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -10983,14 +11125,15 @@ class SessionStore:
                 sess["subagent_limit"] = patch["subagent_limit"]
             if "system_prompt" in patch:
                 sess["system_prompt"] = clean_session_system_prompt(patch["system_prompt"])
+            if {"cwd", "backend", "provider_connection"}.intersection(patch):
+                sess.pop("gemini_permission_modes", None)
             for key in ("model", "effort"):
                 if key in patch:
                     value = patch[key]
                     if key == "effort":
                         sess[key] = normalized_prospective_effort
                     else:
-                        clean = str(value).strip() if value is not None else ""
-                        sess[key] = clean or None
+                        sess[key] = runtime_preview["model"]
             if reset_implicit_incompatible_effort:
                 # Older clients update the model and effort in separate
                 # requests. Let that model change succeed while clearing a
@@ -11023,6 +11166,13 @@ class SessionStore:
             new_section = session_section_key(sess)
             if new_section != old_section:
                 sess["sort_order"] = self.top_order_for_section(new_section, excluding_id=sid)
+            # Ordinary/queued turns re-save their backend and may repeat model
+            # or provider selections. Only an actual runtime change invalidates
+            # the in-flight title; cancelling a no-op consumes its sole attempt.
+            # An explicit title PATCH is still manual ownership, even if equal.
+            if ("title" in patch or title_runtime_key(sess) != previous_title_runtime
+                    or patch.get("auto_title_enabled") is False or patch.get("archived") is True):
+                cancel_generated_session_title(sid)
             sess["updated_at"] = now_iso()
             try:
                 await self.save()
@@ -11093,7 +11243,8 @@ class SessionStore:
             }
             sess.update(title=title, _title_source=source, _title_auto_value=title)
             if source == "prompt" and isinstance(prompt_seed, str):
-                sess["_title_seed"] = prompt_seed[:1600]
+                sess["_title_seed"] = (title_generation.gemini_title_seed(prompt_seed)
+                    if sess.get("backend") == BACKEND_GEMINI else prompt_seed[:1600])
             elif source in {"provider", "generated"}:
                 sess.pop("_title_seed", None)
             sess["updated_at"] = now_iso()
@@ -11210,6 +11361,9 @@ class SessionStore:
             sess["last_read_agent_event_seq"] = max(current, requested)
             sess["last_read_agent_event_at"] = now_iso()
             sess["manual_unread"] = False
+            if sess["last_read_agent_event_seq"] >= int(sess.get("unread_notification_seq") or 0):
+                sess.pop("unread_notification_level", None)
+                sess.pop("unread_notification_seq", None)
             await self.save()
             return sess
 
@@ -11230,9 +11384,18 @@ class SessionStore:
         sid: str,
         event: dict[str, Any],
     ) -> dict[str, Any]:
+        # Disk replay must not hold the global sessions lock: other chats and
+        # health/recovery controls must remain usable during a large scan.
+        snapshot = self.sessions.get(sid)
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="session not found")
+        scan_after = max(0, int(snapshot.get("_emergency_reconciled_through_seq") or 0))
+        lifecycle_events, reconciled_through = await asyncio.to_thread(
+            emergency_lifecycle_events_after, sid, scan_after,
+        )
         async with self._lock:
             sess = self.sessions.get(sid)
-            if not sess:
+            if not sess or sess is not snapshot:
                 raise HTTPException(status_code=404, detail="session not found")
             previous_present = "_emergency_alerts" in sess
             previous = sess.get("_emergency_alerts")
@@ -11242,11 +11405,10 @@ class SessionStore:
                 0,
                 int(sess.get("_emergency_reconciled_through_seq") or 0),
             )
-            lifecycle_events, reconciled_through = await asyncio.to_thread(
-                emergency_lifecycle_events_after,
-                sid,
-                previous_reconciled_through,
-            )
+            # A concurrent projection may have advanced while we read. Never
+            # replay an older raise over a newer acknowledgement.
+            lifecycle_events = [candidate for candidate in lifecycle_events
+                                if int(candidate.get("seq") or 0) > previous_reconciled_through]
             event_seq = int(event.get("seq") or 0)
             if (
                 event_seq > previous_reconciled_through
@@ -11417,6 +11579,9 @@ class SessionStore:
                     sess.pop("cursor_instruction_version", None)
             elif backend == BACKEND_OPENCODE:
                 sess["opencode_session_id"] = provider_id
+            elif backend == BACKEND_GEMINI:
+                sess["gemini_session_id"] = provider_id
+                sess["gemini_session_cwd"] = cwd
             if backend == BACKEND_CLAUDE and cwd:
                 sess["claude_session_cwd"] = cwd
             if backend == BACKEND_OPENCODE and cwd:
@@ -13107,9 +13272,10 @@ class JobStore:
                 job_title=str(job.get("title") or jid),
                 job_scheduled_run_at=scheduled_run_at,
                 client_capabilities=(
-                    [CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY]
-                    if chat_references
-                    else []
+                    ([CROSS_CHAT_HANDOFFS_V2_CLIENT_CAPABILITY] if chat_references else [])
+                    + ([GEMINI_CLIENT_CAPABILITY] if (
+                        job.get("backend") or (parent_session or {}).get("backend")
+                    ) == BACKEND_GEMINI else [])
                 ),
                 chat_references=chat_references,
                 team_references=team_references,
@@ -14129,6 +14295,8 @@ RUN_NOW_TURNS: dict[str, dict[str, Any]] = {}
 # that the scan has not discovered yet. A completed failed task intentionally
 # remains installed and keeps admission fail-closed.
 QUEUE_RECOVERY_TASK: asyncio.Task[tuple[int, int]] | None = None
+QUEUE_RECOVERY_READY: set[str] = set()
+QUEUE_CHECKPOINT_DIRTY: set[str] = set()
 QUEUE_RECOVERY_ADMISSION_WAIT_SECONDS = 2.0
 STEERING_SESSIONS: set[str] = set()
 # A non-native Force Send keeps the steering fence while the interrupted
@@ -16587,6 +16755,7 @@ HANDOFF_DIGEST_FINALIZING: set[str] = set()
 RUNTIME_DIAGNOSTICS: dict[str, dict[str, Any]] = {}
 RUNTIME_DIAGNOSTICS_LOCK = threading.RLock()
 RUNTIME_DIAGNOSTIC_GENERATIONS: dict[str, int] = {}
+CODEX_MODEL_MIGRATION_TARGET = "gpt-6-luna"
 ABANDONED_FORK_PROVIDER_THREADS: set[str] = set()
 ABANDONED_FORK_PROVIDER_THREADS_LOCK = asyncio.Lock()
 
@@ -17297,14 +17466,20 @@ def is_agent_visible_event(event_type: str, event: dict[str, Any]) -> bool:
         return bool(str(event.get("text") or "").strip())
     if event_type == "turn_finished":
         return bool(str(event.get("result_text") or "").strip())
+    if event_type == "codex_goal_updated":
+        goal = event.get("goal")
+        return isinstance(goal, dict) and goal.get("status") == "complete"
     return event_type in {
         "error",
         "emergency_alert_raised",
+        "agent_notification",
         "artifact_created",
         "job_ran",
+        "job_finished",
         "job_error",
         "handoff_digest_received",
         "codex_interaction_requested",
+        "claude_interaction_requested",
     }
 
 
@@ -17391,11 +17566,17 @@ def should_bump_session_updated_at(event_type: str, event: dict[str, Any]) -> bo
 
 
 async def update_session_event_metadata(session_id: str, event: dict[str, Any]) -> None:
+    QUEUE_CHECKPOINT_DIRTY.add(session_id)
     sess = STORE.sessions.get(session_id)
     if not sess:
         return
     event_type = str(event.get("type") or "")
     run_id = str(event.get("run_id") or "").strip()
+    # Read run provenance before terminal events retire active_run.
+    session_unread.project_event(
+        sess, event, visible=is_agent_visible_event(event_type, event),
+        run_metadata=run_event_metadata(run_id) if run_id else {},
+    )
     active_run_changed = False
     compaction_state_changed = False
     imported_event = event.get("imported") is True or run_id.startswith("import_")
@@ -17509,6 +17690,15 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
         sess["latest_agent_event_seq"] = int(event.get("seq") or 0)
         sess["latest_agent_event_at"] = event.get("ts")
         sess["latest_agent_event_type"] = event_type
+    if event_type == "agent_notification":
+        level = event.get("notification_level")
+        ranks = {"normal": 1, "important": 2, "emergency": 3}
+        sess["latest_notification_level"] = level
+        sess["latest_notification_message"] = event.get("message")
+        sess["_notification_reconciled_through_seq"] = int(event.get("seq") or 0)
+        if level in ranks and ranks[level] >= ranks.get(sess.get("unread_notification_level"), 0):
+            sess["unread_notification_level"] = level
+            sess["unread_notification_seq"] = int(event.get("seq") or 0)
     bump_updated_at = should_bump_session_updated_at(event_type, event)
     if bump_updated_at:
         sess["updated_at"] = event.get("ts") or now_iso()
@@ -17518,7 +17708,84 @@ async def update_session_event_metadata(session_id: str, event: dict[str, Any]) 
         await STORE.save(flush=False)
 
 
-async def wait_for_queue_recovery_admission() -> None:
+NON_JOB_AGENT_RECOVERY_PENDING: set[str] = set()
+
+
+def prepare_non_job_agent_recovery() -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
+    """Capture durable checkpoints before startup recovery can append events."""
+    NON_JOB_AGENT_RECOVERY_PENDING.clear()
+    items = []
+    for session_id, session in STORE.sessions.items():
+        snapshot = {key: copy.deepcopy(session[key]) for key in (
+            session_unread.COUNTER, session_unread.CHECKPOINT,
+            session_unread.LAST_RUN, session_unread.JOURNAL, "latest_event_seq",
+        ) if key in session}
+        items.append((session_id, session, snapshot))
+        NON_JOB_AGENT_RECOVERY_PENDING.add(session_id)
+    return items
+
+
+async def recover_non_job_agent_metadata(items: list[tuple[str, dict[str, Any], dict[str, Any]]]) -> None:
+    """One background reader migrates old chats and repairs crash tails once."""
+    cancelled = threading.Event()
+    try:
+        for session_id, owner, snapshot in items:
+            if STORE.sessions.get(session_id) is not owner:
+                NON_JOB_AGENT_RECOVERY_PENDING.discard(session_id)
+                continue
+            try:
+                path = events_path(session_id)
+                result = await asyncio.to_thread(
+                    session_unread.recover_projection, path, snapshot,
+                    visible=is_agent_visible_event,
+                    resume_offset=event_index_resume_offset,
+                    prior_events=lambda path=path: reversed_jsonl_events(path, retained_fields={
+                        "seq", "type", "run_id", "purpose", "job_id", "job",
+                    }),
+                    cancelled=cancelled.is_set,
+                )
+                if STORE.sessions.get(session_id) is not owner:
+                    NON_JOB_AGENT_RECOVERY_PENDING.discard(session_id)
+                    continue
+                through = int(result[session_unread.CHECKPOINT])
+                live_counter = max(int(owner.get(session_unread.COUNTER) or 0), int(owner.get(session_unread.PENDING_COUNTER) or 0))
+                owner[session_unread.COUNTER] = max(
+                    int(result[session_unread.COUNTER]), live_counter if live_counter > through else 0,
+                )
+                owner.pop(session_unread.PENDING_COUNTER, None)
+                owner[session_unread.CHECKPOINT] = max(through, int(owner.get(session_unread.CHECKPOINT) or 0))
+                if int(owner.get("latest_event_seq") or 0) <= through:
+                    owner[session_unread.LAST_RUN] = result[session_unread.LAST_RUN]
+                if session_unread.JOURNAL in result:
+                    owner[session_unread.JOURNAL] = result[session_unread.JOURNAL]
+                await STORE.save(flush=False)
+                NON_JOB_AGENT_RECOVERY_PENDING.discard(session_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Leave the field unknown. A later restart can retry the
+                # journal; never publish a guessed zero or start provider work.
+                logger.exception("unread provenance recovery failed session=%s", session_id)
+    finally:
+        cancelled.set()
+
+
+def queue_recovery_readiness() -> dict[str, Any]:
+    recovery = QUEUE_RECOVERY_TASK
+    if recovery is None or (recovery.done() and not recovery.cancelled() and recovery.exception() is None):
+        return {"ready": True, "state": "ready", "message": None}
+    if not recovery.done():
+        return {
+            "ready": False, "state": "recovering",
+            "message": "Queued messages are being restored after restart. Retry shortly; do not resend accepted messages.",
+        }
+    return {
+        "ready": False, "state": "failed",
+        "message": "Queued message recovery failed. Chat admission remains closed to preserve saved messages. Restart the managed server; if it repeats, inspect server logs.",
+    }
+
+
+async def wait_for_queue_recovery_admission(session_id: str | None = None) -> None:
     """Wait briefly for the one startup queue scan, then fail retryably.
 
     The shared recovery task is shielded because disconnecting one request
@@ -17527,42 +17794,34 @@ async def wait_for_queue_recovery_admission() -> None:
     ordering hole with only a partial in-memory queue.
     """
 
+    if session_id is not None and session_id in QUEUE_RECOVERY_READY:
+        return
     recovery = QUEUE_RECOVERY_TASK
     if recovery is None or recovery is asyncio.current_task():
         return
-    try:
-        await asyncio.wait_for(
-            asyncio.shield(recovery),
-            timeout=max(0.0, QUEUE_RECOVERY_ADMISSION_WAIT_SECONDS),
-        )
-    except asyncio.TimeoutError as exc:
+    # asyncio.wait does not propagate the task's own TimeoutError and never
+    # cancels the shared recovery when this request times out/disconnects.
+    done, _ = await asyncio.wait(
+        {recovery}, timeout=max(0.0, QUEUE_RECOVERY_ADMISSION_WAIT_SECONDS),
+    )
+    if not done:
         raise TransientAdmissionWait(
             status_code=503,
-            detail=(
-                "queued turn recovery is still in progress; retry this "
-                "request shortly"
-            ),
-        ) from exc
+            detail="queued turn recovery is still in progress; retry this request shortly",
+        )
+    try:
+        recovery.result()
     except asyncio.CancelledError:
-        # Caller cancellation propagates normally. If the shared task itself
-        # was cancelled outside shutdown, convert that failed recovery into a
-        # retryable fail-closed admission result.
-        if recovery.cancelled() and not SERVER_SHUTTING_DOWN:
-            raise TransientAdmissionWait(
-                status_code=503,
-                detail=(
-                    "queued turn recovery did not complete; restart or retry "
-                    "the managed server"
-                ),
-            ) from None
-        raise
+        if SERVER_SHUTTING_DOWN:
+            raise
+        raise TransientAdmissionWait(
+            status_code=503,
+            detail="queued turn recovery did not complete; restart the managed server; if it repeats, inspect server logs",
+        ) from None
     except Exception as exc:
         raise TransientAdmissionWait(
             status_code=503,
-            detail=(
-                "queued turn recovery did not complete; restart or retry the "
-                "managed server"
-            ),
+            detail="queued turn recovery did not complete; restart the managed server; if it repeats, inspect server logs",
         ) from exc
 
 
@@ -17575,7 +17834,7 @@ async def enqueue_turn(
     secure_peer_route_snapshots: list[dict[str, Any]] | None = None,
     reciprocal_route_grant: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if not routed_references_match_visible_prompt(
         req.prompt,
         req.display_prompt,
@@ -17847,6 +18106,7 @@ async def enqueue_turn(
                 ),
                 "prompt": display_prompt,
                 "request_prompt": req.prompt,
+                "client_request_id": getattr(req, "client_request_id", None),
                 "display_prompt": req.display_prompt,
                 "file_ids": list(req.file_ids),
                 "position": position,
@@ -18112,7 +18372,7 @@ async def enqueue_turn(
 
 
 async def unqueue_turn(session_id: str, queued_id: str) -> dict[str, Any]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
 
@@ -20208,7 +20468,7 @@ async def issue_cross_chat_capability(
         STORE.sessions.get(source_session_id)
     )
     effective_actions = set(actions or {
-        "jobs", "publish", "emergency", "cross_chat_instruction",
+        "jobs", "publish", "emergency", "notify", "cross_chat_instruction",
         "cross_chat_request_reply", "agent_cross_chat_routes",
         "team_mail",
     })
@@ -20756,7 +21016,7 @@ def provider_tool_active_matches(
     expected_transport = (
         CODEX_TRANSPORT_APP_SERVER
         if backend == BACKEND_CODEX
-        else "exec" if backend in {BACKEND_CURSOR, BACKEND_OPENCODE}
+        else "exec" if backend in {BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI}
         else CLAUDE_TRANSPORT_AGENT_SDK
     )
     matches = bool(
@@ -20781,7 +21041,7 @@ def provider_tool_active_matches(
             and str(active.get("provider_turn_id") or "") == provider_turn_id
             and active.get("provider_turn_ready") is True
         )
-    elif backend in {BACKEND_CURSOR, BACKEND_OPENCODE}:
+    elif backend in {BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI}:
         proc = active.get("proc")
         matches = bool(
             matches and cursor_owner_token
@@ -20854,7 +21114,7 @@ async def provider_tool_capability_snapshot(
                      and codex_native_mailbox_owner_matches(session_id, run_id, provider_thread_id, provider_turn_id))
         ):
             raise ProviderToolError("provider tool turn is stale")
-    elif backend not in {BACKEND_CURSOR, BACKEND_OPENCODE}:
+    elif backend not in {BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI}:
         raise ProviderToolError("provider tool backend is unsupported")
 
     async with ACTIVE_LOCK:
@@ -21055,11 +21315,12 @@ async def execute_provider_tool(
         "jobs": SERVER_ROOT / "agentsdock_jobs.py",
         "publish": SERVER_ROOT / "agentsdock_publish.py",
         "emergency": SERVER_ROOT / "agentsdock_emergency.py",
+        "notify": SERVER_ROOT / "agentsdock_notify.py",
         "mail": SERVER_ROOT / "agentsdock_mail.py",
         "team": SERVER_ROOT / "agentsdock_team.py",
     }
     command = [sys.executable, str(scripts[helper]), "--authority-file", str(authority_path)]
-    if helper in {"jobs", "publish", "emergency"}:
+    if helper in {"jobs", "publish", "emergency", "notify"}:
         command.extend(["--chat-id", session_id])
     command.extend(resolved)
     proc: asyncio.subprocess.Process | None = None
@@ -21435,7 +21696,7 @@ def native_steer_provider_actions(
     )
     actions = {"publish"}
     if provider_turn_may_raise_emergency(selected.get("purpose")):
-        actions.add("emergency")
+        actions.update({"emergency", "notify"})
     if jobs_access != "blocked" and AGENT_TOKEN:
         actions.add("jobs")
     if AGENT_TOKEN and provider_turn_may_read_team(selected.get("purpose")):
@@ -21798,6 +22059,10 @@ def cross_chat_provider_authority_block(
             "- Emergency contact is reserved for an urgent risk of data loss, security compromise, irreversible external harm, or a sustained production outage. Do not use it for ordinary failures, uncertainty, or clarification.",
             f"- Emergency contact: `\"$AGENTSDOCK_EMERGENCY_CLI\" --authority-file {shlex.quote(str(authority_path))} --chat-id {shlex.quote(source_session_id)} alert --message TEXT`",
         ))
+    if "notify" in actions:
+        helper_lines.append(
+            f"- Agent notification: `\"$AGENTSDOCK_NOTIFY_CLI\" --authority-file {shlex.quote(str(authority_path))} --chat-id {shlex.quote(source_session_id)} send --level normal|important|emergency --message TEXT`. Choose the level from the actual user impact: normal for ordinary updates, important when input or a significant result needs attention, emergency only for urgent harm or outage. Do not notify for every routine message."
+        )
     if "team_mail" in actions:
         helper_lines.extend((
             "- The user explicitly opened this turn for server-authored Team Network mail with `/mail`.",
@@ -22649,7 +22914,7 @@ def public_queued_turn(
 
 
 async def queued_turns_snapshot(session_id: str) -> list[dict[str, Any]]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     async with QUEUE_LOCK:
         queue = list(QUEUED_TURNS.get(session_id) or [])
         run_now = RUN_NOW_TURNS.get(session_id)
@@ -22709,7 +22974,7 @@ def reject_promoted_queue_mutation(session_id: str, queued_id: str) -> None:
 
 
 async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedTurnRequest) -> dict[str, Any]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     async_result = await update_async_queued_message(session_id, queued_id, req)
@@ -23156,7 +23421,7 @@ async def update_queued_turn(session_id: str, queued_id: str, req: UpdateQueuedT
 
 
 async def move_queued_turn(session_id: str, queued_id: str, req: MoveQueuedTurnRequest) -> dict[str, Any]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
     direction = req.direction.strip().lower()
@@ -23671,7 +23936,7 @@ async def reconcile_idle_queued_turns(*, reason: str) -> int:
 
 async def run_queued_turn_now(session_id: str, queued_id: str) -> dict[str, Any]:
     """Coalesce duplicate Force Send requests without replaying a steer."""
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     ensure_session_not_deleting(session_id)
     await reconcile_idle_queue_session(
         session_id,
@@ -24456,6 +24721,12 @@ async def _run_queued_turn_now_once(
                     if goal_followup and active_turn.get("codex_native_operation_kind") != "goal_resume"
                     else "native_steer_queue"
                 )
+                claude_followup = bool(
+                    active_turn.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK
+                    and "claude_followup_queue" in active_turn
+                )
+                if claude_followup:
+                    native_steer_queue_key = "claude_followup_queue"
                 native_steer_queue = active_turn.get(native_steer_queue_key)
                 native_steer = bool(
                     (
@@ -24529,6 +24800,43 @@ async def _run_queued_turn_now_once(
                         )
                     )
                 )
+                if claude_followup:
+                    # Additional user input belongs to this existing native
+                    # run. Keep its process, child tasks, approvals, tool owner
+                    # and original authorization intact. Picker changes apply
+                    # on the next turn, as they do for native goal steering.
+                    native_steer = bool(
+                        selected_backend == BACKEND_CLAUDE
+                        and active_turn.get("provider_turn_ready")
+                        and not active_turn.get("stop_requested")
+                        and native_steer_queue is not None
+                        and codex_goal_steer_selection_is_plain(selected)
+                    )
+                    if not native_steer and codex_goal_steer_selection_is_plain(selected):
+                        if not selected.get("_turn_deferred_notified"):
+                            selected["_turn_deferred_notified"] = True
+                            await append_event(session_id, "turn_deferred", {
+                                "queued_id": queued_id, "remaining": len(items),
+                                "message": "Claude is starting or finishing. Your message remains queued; running subagents have been kept alive.",
+                            })
+                        return {
+                            "ok": False, "queued_id": queued_id, "interrupted": False,
+                            "deferred": True, "replays_interrupted_message": False,
+                            "remaining": len(items), "superseded_queued_ids": [],
+                            "message": "Claude is starting or finishing. Your message remains queued; running subagents have been kept alive.",
+                        }
+                    if not native_steer:
+                        raise HTTPException(status_code=409, detail=force_send_conflict_detail(
+                            session_id, queued_id, guard="claude_followup_not_ready",
+                            message=(
+                                "This action needs a new Claude turn and remains queued. Running subagents have been kept alive."
+                                if not codex_goal_steer_selection_is_plain(selected) else
+                                "Claude is finishing or starting its turn. Your message remains queued."
+                            ),
+                            action="Send text or files now, or let this action run next.",
+                            retryable=codex_goal_steer_selection_is_plain(selected),
+                            owner_queued_id=queued_id,
+                        ))
                 if goal_followup and not native_steer:
                     unsupported_input = not codex_goal_steer_selection_is_plain(selected)
                     raise HTTPException(
@@ -24609,6 +24917,7 @@ async def _run_queued_turn_now_once(
                 "remaining": remaining,
                 "future": future,
                 "phase": "queued",
+                "preserve_claude_run": claude_followup,
                 "accepted_event": asyncio.Event(),
                 "owner_task": owner_task,
                 "expected_provider_turn_id": (
@@ -25017,6 +25326,17 @@ async def pause_queued_turns_after_explicit_stop(session_id: str) -> int:
                     item["_paused_after_stop"] = True
                     if not durable:
                         item["_durable"] = False
+            if run_now is not None and str(run_now.get("queued_id") or "").strip() in queued_ids:
+                # Stop has withdrawn this promotion before provider admission.
+                # Return it to the held queue in the same transition: the Stop
+                # fence may prevent the scheduler from doing so for some time.
+                RUN_NOW_TURNS.pop(session_id, None)
+                queue = QUEUED_TURNS.setdefault(session_id, deque())
+                if not any(
+                    str(candidate.get("queued_id") or "") == str(run_now.get("queued_id") or "")
+                    for candidate in queue
+                ):
+                    queue.appendleft(run_now)
             for queued_id in queued_ids:
                 RUN_NOW_COMPLETED_RESULTS.pop((session_id, queued_id), None)
             if hidden_delivery_at_head:
@@ -25316,7 +25636,7 @@ def schedule_steered_turn_slot_waiter(
 
 
 async def start_next_queued_turn(session_id: str) -> None:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     await reconcile_idle_queue_session(
         session_id,
         schedule=False,
@@ -25958,12 +26278,76 @@ def queued_turn_from_event(event: dict[str, Any], sess: dict[str, Any], position
     }
 
 
-def queued_event_lines(path: Path, *, include_envelopes: bool = False) -> Iterator[bytes]:
+def queued_event_lines(path: Path, *, include_envelopes: bool = False,
+                       scan: dict[str, Any] | None = None) -> Iterator[bytes]:
     with path.open("rb") as source:
-        for raw_line in source:
+        if scan is not None:
+            source.seek(scan["offset"])
+        while True:
+            remaining = scan["end"] - source.tell() if scan is not None else -1
+            if remaining == 0:
+                break
+            raw_line = source.readline(remaining)
+            if not raw_line:
+                break
+            if scan is not None:
+                if not raw_line.endswith(b"\n"):
+                    break
+                scan["offset"] = source.tell()
             if (b'"queued_id"' in raw_line or b'"turn_queue_paused"' in raw_line
                     or (include_envelopes and b'"cross_chat_envelope_id"' in raw_line)):
                 yield raw_line
+
+
+def queue_checkpoint_anchor(path: Path, offset: int) -> str:
+    with path.open("rb") as stream:
+        stream.seek(max(0, offset - 4096))
+        return hashlib.sha256(stream.read(min(offset, 4096))).hexdigest()
+
+
+def queue_checkpoint_seed(path: Path, stamp, *, enabled: bool) -> tuple[dict, list]:
+    if enabled:
+        try:
+            checkpoint_path = path.with_name("queue-recovery.json")
+            if checkpoint_path.stat().st_size > 16 * 1024 * 1024:
+                raise ValueError("oversized queue checkpoint")
+            value = json.loads(checkpoint_path.read_text())
+            offset = value["offset"]
+            rows = value["pending"]
+            if (value["version"] == 1 and value["dev"] == stamp.st_dev
+                    and value["ino"] == stamp.st_ino and isinstance(offset, int)
+                    and 0 <= offset <= stamp.st_size
+                    and (offset != stamp.st_size or value["mtime_ns"] == stamp.st_mtime_ns)
+                    and value["anchor"] == queue_checkpoint_anchor(path, offset)
+                    and isinstance(rows, list)
+                    and all(isinstance(row, dict) and isinstance(row.get("queued_id"), str) for row in rows)):
+                return {"offset": offset, "end": stamp.st_size}, rows
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return {"offset": 0, "end": stamp.st_size}, []
+
+
+def save_queue_checkpoint(path: Path, stamp, offset: int, rows: list) -> None:
+    # These logs are server-owned append-only journals. Replacement/truncation
+    # invalidates the checkpoint; a bounded boundary anchor detects regrowth.
+    current = path.stat()
+    if (current.st_dev, current.st_ino) != (stamp.st_dev, stamp.st_ino) or current.st_size < offset:
+        return
+    if current.st_size == stamp.st_size and current.st_mtime_ns != stamp.st_mtime_ns:
+        return
+    value = {"version": 1, "dev": stamp.st_dev, "ino": stamp.st_ino,
+             "mtime_ns": stamp.st_mtime_ns, "offset": offset,
+             "anchor": queue_checkpoint_anchor(path, offset), "pending": rows}
+    target = path.with_name("queue-recovery.json")
+    temporary = target.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("x") as stream:
+            json.dump(value, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def record_mailbox_migration_evidence(evidence: dict[str, dict[str, Any]], event: dict[str, Any]) -> None:
@@ -25999,11 +26383,13 @@ def scan_queued_turns_from_events(
             value["complete"] = False
         if not path.exists():
             continue
-        proof_stamp = path.stat() if evidence else None
+        scan_stamp = path.stat()
+        proof_stamp = scan_stamp if evidence else None
         proof_complete = True
-        pending: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
-        for raw_line in (queued_event_lines(path, include_envelopes=True) if evidence else queued_event_lines(path)):
+        scan, prior_rows = queue_checkpoint_seed(path, scan_stamp, enabled=not evidence)
+        pending: dict[str, dict[str, Any]] = {row["queued_id"]: row for row in prior_rows}
+        order: list[str] = [row["queued_id"] for row in prior_rows]
+        for raw_line in queued_event_lines(path, include_envelopes=bool(evidence), scan=scan):
             try:
                 event = json.loads(raw_line.decode("utf-8", "replace"))
             except Exception:
@@ -26059,7 +26445,7 @@ def scan_queued_turns_from_events(
                     order.append(queued_id)
             elif event_type in {"turn_queue_updated", "turn_queue_run_now"} and queued_id in pending:
                 pending[queued_id].update(async_route_queue_fields({**pending[queued_id], **event}))
-                if event_type == "turn_queue_run_now" and event.get("native_goal_steer") is not True:
+                if event_type == "turn_queue_run_now" and event.get("native_goal_steer") is not True and event.get("native_followup") is not True:
                     pending[queued_id]["_paused_after_stop"] = False
                     pending[queued_id].pop("_native_delivery_fenced", None)
                 # A goal follow-up continues an existing provider turn. Its
@@ -26163,7 +26549,9 @@ def scan_queued_turns_from_events(
             unchanged = ((proof_stamp.st_dev, proof_stamp.st_ino, proof_stamp.st_size, proof_stamp.st_mtime_ns)
                          == (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns))
             for value in evidence.values():
-                value["complete"] = proof_complete and unchanged
+                # A snapshot ending in a partial record was not fully scanned.
+                # It may hide a terminal/admission event, so never migrate it.
+                value["complete"] = proof_complete and unchanged and scan["offset"] == scan["end"]
         items = [
             pending[qid]
             for qid in order
@@ -26174,6 +26562,9 @@ def scan_queued_turns_from_events(
         ]
         if items:
             recovered[session_id] = items
+        if proof_complete:
+            with suppress(OSError):
+                save_queue_checkpoint(path, scan_stamp, scan["offset"], [pending[qid] for qid in order if qid in pending])
     return recovered
 
 
@@ -26337,13 +26728,48 @@ async def migrate_unstarted_chat_mailbox_backlog(
     return migrated
 
 
+async def queue_checkpoint_loop() -> None:
+    while True:
+        await asyncio.sleep(60)
+        if QUEUE_RECOVERY_TASK is not None:
+            continue
+        for session_id in tuple(QUEUE_CHECKPOINT_DIRTY):
+            sess = STORE.sessions.get(session_id)
+            QUEUE_CHECKPOINT_DIRTY.discard(session_id)
+            if not sess or session_id in DELETING_SESSIONS:
+                continue
+            try:
+                await asyncio.to_thread(scan_queued_turns_from_events, [(session_id, dict(sess))])
+            except Exception as exc:
+                QUEUE_CHECKPOINT_DIRTY.add(session_id)
+                logger.warning("queue checkpoint deferred session=%s error=%s", session_id, type(exc).__name__)
+
+
 async def recover_queued_turns_after_start() -> tuple[int, int]:
+    QUEUE_RECOVERY_READY.clear()
+    candidates = await CROSS_CHAT.pending_mailbox_migration_candidates()
+    sessions = [(sid, dict(sess)) for sid, sess in STORE.sessions.items()]
+    # Recover small/checkpointed chats first. A legacy giant only fences itself.
+    def recovery_cost(item):
+        path = events_path(item[0])
+        try:
+            checkpoint = json.loads(path.with_name("queue-recovery.json").read_text())
+            return max(0, path.stat().st_size - int(checkpoint.get("offset", 0)))
+        except (OSError, ValueError, TypeError):
+            return path.stat().st_size if path.exists() else 0
+    sessions = await asyncio.to_thread(lambda: sorted(sessions, key=recovery_cost))
+    rebuilt = scheduled = 0
+    for sid, sess in sessions:
+        relevant = [row for row in candidates if row.get("target_session_id") == sid]
+        count, started = await _recover_queued_turns_for_sessions([(sid, sess)], relevant)
+        rebuilt += count
+        scheduled += started
+        QUEUE_RECOVERY_READY.add(sid)
+    return rebuilt, scheduled
+
+
+async def _recover_queued_turns_for_sessions(session_items, migration_candidates) -> tuple[int, int]:
     started = time.monotonic()
-    session_items = [
-        (session_id, dict(sess))
-        for session_id, sess in STORE.sessions.items()
-    ]
-    migration_candidates = await CROSS_CHAT.pending_mailbox_migration_candidates()
     mailbox_evidence = {str(record["id"]): {"target_session_id": record["target_session_id"]}
                        for record in migration_candidates if is_async_route_message(record)}
     recovered = await asyncio.to_thread(scan_queued_turns_from_events, session_items,
@@ -27732,6 +28158,40 @@ def linux_process_still_exists(
     return True
 
 
+def systemd_worker_preserves_descendants(service_cgroup: str) -> bool:
+    """Prove the effective stop policy of this exact native worker, read-only.
+
+    Never infer policy from an on-disk unit: runtime drop-ins and an unloaded
+    replacement can differ. Unknown/malformed ownership retains the existing
+    requirement that the service cgroup contain no other processes.
+    """
+
+    if not sys.platform.startswith("linux"):
+        return False
+    properties = {"LoadState", "ActiveState", "MainPID", "ControlGroup", "KillMode", "SendSIGKILL"}
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show", AGENTS_SERVER_SYSTEMD_UNIT, "--no-pager",
+             "--property=" + ",".join(sorted(properties))],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=2.0, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0 or len(result.stdout) > 16_384:
+        return False
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator or key in values or key not in properties:
+            return False
+        values[key] = value
+    return values == {
+        "LoadState": "loaded", "ActiveState": "active", "MainPID": str(os.getpid()),
+        "ControlGroup": service_cgroup, "KillMode": "process", "SendSIGKILL": "no",
+    } and agents_server_systemd_cgroup() == service_cgroup
+
+
 def managed_update_service_cgroup_state(
     *,
     service_cgroup: str | None = None,
@@ -27803,10 +28263,11 @@ def managed_update_service_cgroup_state(
         })
         return state
     unknown = tuple(sorted(service_pids - {os.getpid()}))
+    preserved = bool(unknown) and systemd_worker_preserves_descendants(selected_cgroup)
     state.update({
-        "safe": not unknown,
+        "safe": not unknown or preserved,
         "unknown_descendant_count": len(unknown),
-        "inspection": "verified",
+        "inspection": "verified-preserved" if preserved else "verified",
         "_unknown_descendant_pids": unknown,
     })
     return state
@@ -29876,6 +30337,13 @@ def client_safe_event(event: dict[str, Any]) -> dict[str, Any]:
             safe = dict(event)
         safe.pop("emergency_request_id", None)
         safe.pop("emergency_request_digest", None)
+    if event.get("type") == "agent_notification" and (
+        "notification_request_id" in event or "notification_request_digest" in event
+    ):
+        if safe is event:
+            safe = dict(event)
+        safe.pop("notification_request_id", None)
+        safe.pop("notification_request_digest", None)
     output = event.get("output")
     if output is not None and not isinstance(output, str):
         if safe is event:
@@ -30117,6 +30585,14 @@ async def reconcile_provider_task_exit(
     prevents delayed cleanup from touching a replacement turn.
     """
 
+    if backend == BACKEND_GEMINI:
+        async with ACTIVE_LOCK:
+            active = ACTIVE.get(session_id) or {}
+            if active.get("run_id") == run_id and active.get("gemini_cleanup_failed"):
+                # Keep the exact owner fenced. A dead consumer is not proof
+                # that its editing tool processes stopped; Stop/Delete retry
+                # the owned cleanup before releasing this slot.
+                return False
     persisted_active = (STORE.sessions.get(session_id) or {}).get("active_run")
     terminal_missing = bool(
         isinstance(persisted_active, dict)
@@ -31182,6 +31658,7 @@ async def _emit_codex_subagent_state_once(
         "subagent_started_at": started_at,
         "subagent_provider_ref": child_thread_id,
         "subagent_parent_thread_id": resolved_parent or None,
+        "subagent_root_thread_id": session_codex_thread_id(STORE.sessions.get(session_id) or {}) or None,
         "subagent_log": log,
     }
     if identity_only or terminal_identity_only:
@@ -31209,6 +31686,7 @@ async def _emit_codex_subagent_state_once(
         "subagent_activity",
         "subagent_summary",
         "subagent_parent_thread_id",
+        "subagent_root_thread_id",
         "subagent_log",
     )
     manager = existing_codex_app_server_manager(STORE.sessions.get(session_id))
@@ -31624,12 +32102,14 @@ async def stop_codex_descendant_subagents(
         or not callable(list_turns)
         or not callable(interrupt_turn)
     ):
+        known_active = [state for state in session_codex_subagent_states(session_id)
+                        if normalize_subagent_status(state.get("subagent_status")) in {"starting", "running"}]
         return {
             "descendants": 0,
             "requested": [],
             "interrupted": [],
             "pending": [],
-            "errors": [],
+            "errors": ["The native runtime is unavailable; child stopping could not be confirmed."] if known_active else [],
         }
     try:
         descendants = await list_descendants(root_thread_id)
@@ -31646,14 +32126,29 @@ async def stop_codex_descendant_subagents(
     interrupted: list[str] = []
     errors: list[str] = []
     pending: dict[str, dict[str, Any]] = {}
-    targets = {str(value) for value in target_thread_ids} if target_thread_ids else None
+    targets = {str(value) for value in target_thread_ids} if target_thread_ids is not None else None
+    requested_turns: set[tuple[str, str]] = set()
+
+    def still_owned(child_thread_id: str) -> bool:
+        # A child can be adopted as a separate chat while native reads await.
+        if child_thread_id == root_thread_id or CODEX_THREAD_SESSION_INDEX.get(child_thread_id):
+            return False
+        with CODEX_SUBAGENT_INDEX_LOCK:
+            return CODEX_SUBAGENT_SESSION_INDEX.get(child_thread_id) in {None, session_id}
+
     for thread in descendants if isinstance(descendants, list) else []:
         if not isinstance(thread, dict):
             continue
         child_thread_id = str(thread.get("id") or "").strip()
-        if not child_thread_id or (targets is not None and child_thread_id not in targets):
+        if (not child_thread_id or child_thread_id == root_thread_id
+                or CODEX_THREAD_SESSION_INDEX.get(child_thread_id)
+                or (targets is not None and child_thread_id not in targets)):
             continue
         with CODEX_SUBAGENT_INDEX_LOCK:
+            owner = CODEX_SUBAGENT_SESSION_INDEX.get(child_thread_id)
+            if owner and owner != session_id:
+                continue
+            previous = dict(CODEX_SUBAGENT_STATE.get(child_thread_id) or {})
             CODEX_SUBAGENT_SESSION_INDEX[child_thread_id] = session_id
         try:
             turns = await list_turns(
@@ -31662,6 +32157,8 @@ async def stop_codex_descendant_subagents(
                 items_view="summary",
                 sort_direction="desc",
             )
+            if not still_owned(child_thread_id):
+                continue
             active_turns = [
                 turn for turn in turns
                 if isinstance(turn, dict)
@@ -31669,7 +32166,12 @@ async def stop_codex_descendant_subagents(
                 and str(turn.get("id") or "").strip()
             ]
             for turn in active_turns:
+                if not still_owned(child_thread_id):
+                    break
                 await interrupt_turn(child_thread_id, str(turn["id"]))
+                requested_turns.add((child_thread_id, str(turn["id"])))
+            if not still_owned(child_thread_id):
+                continue
             if active_turns:
                 requested.append(child_thread_id)
                 pending[child_thread_id] = thread
@@ -31685,17 +32187,41 @@ async def stop_codex_descendant_subagents(
                     parent_thread_id=str(thread.get("parentThreadId") or root_thread_id),
                     name=thread.get("preview"),
                     activity="Stopping subagent…",
+                    reconcile_expected_state=previous,
                 )
+            else:
+                status = codex_child_status_from_turn(turns[0] if turns else None)
+                if status in {"completed", "stopped", "failed"}:
+                    # Stop must repair a stale live snapshot even when the
+                    # native child finished before we could interrupt it.
+                    reconciled = await emit_codex_subagent_state(
+                        session_id, child_thread_id, status,
+                        parent_thread_id=str(thread.get("parentThreadId") or root_thread_id),
+                        activity=f"Subagent {status}",
+                        persist_event=bool(previous),
+                        reconcile_expected_state=previous,
+                    )
+                    if normalize_subagent_status((reconciled or {}).get("subagent_status")) not in {"completed", "stopped", "failed"}:
+                        pending[child_thread_id] = thread
+                else:
+                    # A starting child may not have a turn ID yet. Keep it
+                    # pending and interrupt its exact turn once it appears.
+                    pending[child_thread_id] = thread
         except Exception as exc:
             errors.append(f"{child_thread_id}: {concise_error_message(exc)}")
 
     deadline = asyncio.get_running_loop().time() + STOP_CONFIRM_TIMEOUT_SECONDS
     while pending and asyncio.get_running_loop().time() < deadline:
         for child_thread_id, thread in list(pending.items()):
+            if not still_owned(child_thread_id):
+                pending.pop(child_thread_id, None)
+                continue
+            with CODEX_SUBAGENT_INDEX_LOCK:
+                previous = dict(CODEX_SUBAGENT_STATE.get(child_thread_id) or {})
             try:
                 turns = await list_turns(
                     child_thread_id,
-                    limit=1,
+                    limit=4,
                     items_view="summary",
                     sort_direction="desc",
                 )
@@ -31703,18 +32229,39 @@ async def stop_codex_descendant_subagents(
                 errors.append(f"{child_thread_id}: {concise_error_message(exc)}")
                 pending.pop(child_thread_id, None)
                 continue
+            if not still_owned(child_thread_id):
+                pending.pop(child_thread_id, None)
+                continue
             latest_turn = turns[0] if turns else None
             status = codex_child_status_from_turn(latest_turn)
             if status in {None, "running"}:
+                for turn in turns:
+                    if not isinstance(turn, dict) or not still_owned(child_thread_id):
+                        continue
+                    turn_id = str(turn.get("id") or "")
+                    key = (child_thread_id, turn_id)
+                    if turn_id and turn.get("status") == "inProgress" and key not in requested_turns:
+                        try:
+                            await interrupt_turn(child_thread_id, turn_id)
+                            requested_turns.add(key)
+                            if child_thread_id not in requested:
+                                requested.append(child_thread_id)
+                        except Exception as exc:
+                            errors.append(f"{child_thread_id}: {concise_error_message(exc)}")
+                            pending.pop(child_thread_id, None)
                 continue
-            await emit_codex_subagent_state(
+            reconciled = await emit_codex_subagent_state(
                 session_id,
                 child_thread_id,
                 status,
                 parent_thread_id=str(thread.get("parentThreadId") or root_thread_id),
                 name=thread.get("preview"),
                 activity=f"Subagent {status}",
+                reconcile_expected_state=previous,
             )
+            status = normalize_subagent_status((reconciled or {}).get("subagent_status"))
+            if status not in {"completed", "stopped", "failed"}:
+                continue
             if status == "stopped":
                 interrupted.append(child_thread_id)
             pending.pop(child_thread_id, None)
@@ -31726,6 +32273,17 @@ async def stop_codex_descendant_subagents(
         "interrupted": interrupted,
         "pending": list(pending),
         "errors": errors,
+    }
+
+
+def codex_subagent_stop_status(session: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    """A stopped parent is not proof that every native child has stopped."""
+    if session.get("backend") != BACKEND_CODEX or not (result.get("pending") or result.get("errors")):
+        return {}
+    return {
+        "stopped": False,
+        "pending": True,
+        "message": "Some Codex subagents have not confirmed stopping. Retry Stop; other chats are unaffected.",
     }
 
 
@@ -32230,6 +32788,9 @@ SEMANTIC_TIMELINE_EVENT_BUDGET_PER_ITEM = 4
 SEMANTIC_TIMELINE_ESSENTIAL_LIMIT_PER_ITEM = 32
 SEMANTIC_TIMELINE_ESSENTIAL_PAGE_OVERFLOW_LIMIT = 128
 SEMANTIC_TIMELINE_TRACE_ANCHOR_PAGE_OVERFLOW_LIMIT = 128
+# Same-ID history corrections clear previously cached replay bubbles. They
+# need their own bounded allowance, not the slots reserved for chat content.
+SEMANTIC_TIMELINE_REPAIR_PAGE_OVERFLOW_LIMIT = 256
 JOB_RUN_HISTORY_TEXT_LIMIT = 64 * 1024
 SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES = {
     "artifact_created",
@@ -32509,14 +33070,14 @@ CODEX_GOAL_HISTORY_REPAIR_CACHE = CodexGoalHistoryRepairCache()
 CODEX_NATIVE_HISTORY_REPAIR_CACHE = CodexNativeHistoryRepairCache()
 
 
-def prepare_provider_history_metadata_repair(session_id: str) -> None:
-    """Prepare bounded source proofs only at explicit history-read boundaries."""
+def prepare_provider_history_metadata_repair(session_id: str) -> bool | None:
+    """Prepare bounded source proofs in background history maintenance."""
     prepare_claude_history_metadata_repair(session_id)
     prepare_codex_goal_history_repair(session_id)
-    prepare_codex_native_history_repair(session_id)
+    return prepare_codex_native_history_repair(session_id)
 
 
-def prepare_codex_native_history_repair(session_id: str) -> None:
+def prepare_codex_native_history_repair(session_id: str) -> bool | None:
     session = STORE.sessions.get(session_id)
     provider_id = provider_session_identifier(session_provider_id(session)) if isinstance(session, dict) else None
     if not provider_id or session.get("backend") != BACKEND_CODEX or session.get("_deleting") is True:
@@ -32531,11 +33092,13 @@ def prepare_codex_native_history_repair(session_id: str) -> None:
             session_id, provider_id, events_path(session_id), source, CODEX_SESSIONS_ROOT,
             lambda event: codex_history_event_item(event, expected_session_id=session_id),
         )
-    except CodexNativeHistoryProofUnavailable:
+    except CodexNativeHistoryProofUnavailable as exc:
+        if getattr(exc, "deterministic", False):
+            raise
         # Incomplete evidence is retryable at a later explicit read boundary,
         # not a successful empty proof and not a reason to break chat opening.
         logger.debug("native history repair deferred session=%s", session_id)
-        return
+        return False
     if changed:
         HISTORY_SEARCH_REPAIR_DIRTY.add(session_id)
         HISTORY_SEARCH_DIRTY.add(session_id)
@@ -33098,7 +33661,6 @@ def build_timeline_index(session_id: str) -> dict[str, Any]:
 
 
 def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
-    prepare_provider_history_metadata_repair(session_id)
     claude_metadata_signature = CLAUDE_METADATA_REPAIR_CACHE.signature(session_id)
     codex_goal_history_signature = (
         CODEX_GOAL_HISTORY_REPAIR_CACHE.signature(session_id),
@@ -33186,6 +33748,15 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
         if can_append
         else []
     )
+    # Keep provisional turn lookup linear in the journal size. Scheduled-job
+    # streams can have hundreds of thousands of events with no ordinary turn;
+    # scanning every preceding landmark for each one makes cold opens quadratic.
+    turn_record_keys_by_run: dict[str, list[str]] = {}
+    for existing in records:
+        existing_key = str(existing.get("key") or "")
+        if existing_key.startswith("turn:") and not existing.get("_native_user_followup"):
+            existing_run = existing_key[5:].split(":start-", 1)[0]
+            turn_record_keys_by_run.setdefault(existing_run, []).append(existing_key)
     dirty_record_keys: set[str] = set()
     active_turn_key: str | None = cached.get("active_turn_key") if can_append else None
     current_turn_by_run: dict[str, str] = (
@@ -33506,6 +34077,8 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
             }
             by_key[key] = record
             records.append(record)
+            if key.startswith("turn:") and not is_native_goal_steer_event(event):
+                turn_record_keys_by_run.setdefault(key[5:].split(":start-", 1)[0], []).append(key)
             if advance_timeline:
                 latest_timeline_landmark_key = key
         record["start_seq"] = min(int(record["start_seq"]), seq)
@@ -33959,7 +34532,7 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 or event.get("purpose") == "scheduled_job"
                 or event.get("job_id")
                 or (run_id and run_id in job_by_run)
-            ):
+            ) and not is_native_goal_steer_event(event):
                 job = event.get("job") if isinstance(event.get("job"), dict) else {}
                 job_id = str(
                     event.get("job_id")
@@ -33971,17 +34544,15 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 if run_id:
                     job_by_run[run_id] = job_id
                 prior_key = current_turn_by_run.pop(run_id, None) if run_id else None
+                if (by_key.get(prior_key or "") or {}).get("_native_user_followup"):
+                    if active_turn_key == prior_key:
+                        active_turn_key = None
+                    prior_key = None
                 if not prior_key and run_id:
-                    base_turn_key = f"turn:{run_id}"
-                    prior_key = next(
-                        (
-                            str(candidate.get("key") or "")
-                            for candidate in reversed(records)
-                            if str(candidate.get("key") or "") == base_turn_key
-                            or str(candidate.get("key") or "").startswith(f"{base_turn_key}:start-")
-                        ),
-                        None,
-                    )
+                    prior_keys = turn_record_keys_by_run.get(run_id, [])
+                    while prior_keys and prior_keys[-1] not in by_key:
+                        prior_keys.pop()
+                    prior_key = prior_keys[-1] if prior_keys else None
                 prior = by_key.get(prior_key or "")
                 group_key, group_created = assign_job_timeline_group(
                     event,
@@ -34120,9 +34691,10 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                     # ``:start-{seq}`` disambiguated key as the index.
                     safe_start_offset = int(base_record.get("start_offset") or 0)
                     key = f"turn:{run_key}:start-{seq}"
-                active_turn_key = key
-                if run_id:
-                    current_turn_by_run[run_id] = key
+                if not resolved_job_id:
+                    active_turn_key = key
+                    if run_id:
+                        current_turn_by_run[run_id] = key
                 if hidden_imported_prompt:
                     # Preserve routing for a following provider answer without
                     # exposing the generated input. The placeholder retains
@@ -34153,6 +34725,11 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                 )
                 record["has_turn_start"] = True
                 record["has_user"] = True
+                # A human input in a scheduled owner is its own presentation
+                # boundary; later job output must not absorb it as a legacy
+                # provisional job start.
+                if is_native_goal_steer_event(event):
+                    record["_native_user_followup"] = True
                 prompt = compact_timeline_index_text(event.get("prompt"))
                 if prompt:
                     record["title"] = compact_timeline_index_text(prompt, 72)
@@ -34996,11 +35573,19 @@ def is_native_goal_steer_event(event: dict[str, Any]) -> bool:
     """An accepted human follow-up, not a new run or provider goal prompt."""
     return bool(
         event.get("type") == "turn_steered"
-        and event.get("native_goal_steer") is True
         and event.get("native_steer") is True
         and event.get("provider_user_authored") is True
-        and event.get("backend") == BACKEND_CODEX
-        and event.get("purpose") == "codex_goal_resume"
+        and (
+            (event.get("native_goal_steer") is True
+             and event.get("backend") == BACKEND_CODEX
+             and event.get("purpose") == "codex_goal_resume")
+            or (event.get("native_followup") is True
+                and event.get("backend") == BACKEND_CLAUDE
+                and event.get("purpose") is None
+                and event.get("provider_generated") is not True
+                and isinstance(event.get("provider_message_id"), str)
+                and event["provider_message_id"].strip())
+        )
         and str(event.get("run_id") or "").strip()
     )
 
@@ -35300,7 +35885,7 @@ def collect_semantic_timeline_events(
                     job_id = explicit_job_id or run_id or f"job-{seq}"
                 if codex_lifecycle_key:
                     key = codex_lifecycle_key
-                elif job_id:
+                elif job_id and not is_native_goal_steer_event(event):
                     occurrence = scheduled_job_occurrence_key(event)
                     occurrence_map_key = (
                         f"{job_id}\0{occurrence}"
@@ -35352,9 +35937,10 @@ def collect_semantic_timeline_events(
                     if is_native_goal_steer_event(event) or key in seen_user_turn_keys:
                         key = f"turn:{run_key}:start-{seq}"
                     seen_user_turn_keys.add(key)
-                    active_turn_key = key
-                    if run_id:
-                        current_turn_by_run[run_id] = key
+                    if not job_id:
+                        active_turn_key = key
+                        if run_id:
+                            current_turn_by_run[run_id] = key
                 else:
                     key = current_turn_by_run.get(run_id) if run_id else active_turn_key
                     if run_id and not key:
@@ -35607,9 +36193,6 @@ def collect_semantic_timeline_events(
         deduplicated[identity] = event
         return True
 
-    for event in page_repairs:
-        append_with_limit(event, event_limit)
-
     # Every selected semantic item gets one representative before any item
     # receives detail. The page-size clamp in read_semantic_timeline_page()
     # guarantees that this baseline always fits.
@@ -35623,6 +36206,22 @@ def collect_semantic_timeline_events(
     for _primary, secondary, _essential, _optional in reversed(bundles):
         for event in secondary:
             append_with_limit(event, event_limit)
+
+    # Reserve both sides of ordinary turns before emitting repair receipts.
+    # A single imported run can contain hundreds of corrected boundaries:
+    # charging them to the ordinary budget used to leave only trace anchors
+    # for recent turns. Extend that budget only by receipts actually added,
+    # retaining its remaining detail capacity and the absolute response cap.
+    repair_allowance = min(
+        SEMANTIC_TIMELINE_REPAIR_PAGE_OVERFLOW_LIMIT,
+        MAX_EVENT_RESPONSE_LIMIT - event_limit,
+    )
+    repair_limit = len(deduplicated) + repair_allowance
+    repair_count = 0
+    for event in page_repairs:
+        if append_with_limit(event, repair_limit):
+            repair_count += 1
+    event_limit += repair_count
 
     # Files and reviewable diffs are semantic output, not optional trace
     # detail. Give each selected item a generous but bounded overflow and also
@@ -38506,7 +39105,7 @@ def cross_chat_supported_target_backends() -> list[str]:
     # Only cached diagnostics/private metadata are read here; health must not
     # launch CLIs or authenticate remotely. Each target's actual turn admission
     # still checks its own binding, CLI compatibility and selected login mode.
-    for backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
+    for backend in (BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI):
         with RUNTIME_DIAGNOSTICS_LOCK:
             diagnostic = dict(RUNTIME_DIAGNOSTICS.get(backend) or {})
         ready = diagnostic.get("status") == "ready"
@@ -38670,15 +39269,21 @@ def cross_chat_handoffs_capability() -> dict[str, Any]:
             BACKEND_CLAUDE: CLAUDE_TRANSPORT_AGENT_SDK,
             BACKEND_CURSOR: "headless-stream-json",
             BACKEND_OPENCODE: "headless-stream-json",
+            BACKEND_GEMINI: "acp",
         },
     }
 
 
 OPENCODE_CROSS_CHAT_CLIENT_CAPABILITY = "opencode_cross_chat_v1"
+GEMINI_CLIENT_CAPABILITY = "gemini_acp_v1"
 
 
 def cross_chat_delivery_client_capabilities(target: dict[str, Any]) -> list[str]:
     backend = str(target.get("backend") or DEFAULT_BACKEND).strip().lower()
+    if backend == BACKEND_GEMINI:
+        if not cross_chat_target_backend_supported(backend):
+            raise HTTPException(409, "The target Gemini CLI is unavailable.")
+        return [GEMINI_CLIENT_CAPABILITY]
     if backend == BACKEND_CODEX:
         if not cross_chat_target_backend_supported(backend):
             raise HTTPException(
@@ -38721,6 +39326,7 @@ CROSS_CHAT_DELIVERY_CAPABILITIES_BY_BACKEND: dict[str, frozenset[str]] = {
     BACKEND_CLAUDE: frozenset({CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY}),
     BACKEND_CURSOR: frozenset(),
     BACKEND_OPENCODE: frozenset({OPENCODE_CROSS_CHAT_CLIENT_CAPABILITY}),
+    BACKEND_GEMINI: frozenset({GEMINI_CLIENT_CAPABILITY}),
 }
 
 
@@ -43823,6 +44429,7 @@ async def authorize_provider_action(
         "jobs",
         "publish",
         "emergency",
+        "notify",
         "agent_cross_chat_routes",
         "team_mail",
         "team_read",
@@ -44203,10 +44810,31 @@ def find_emergency_request_event(
     request_id: str,
     source_run_id: str,
 ) -> dict[str, Any] | None:
-    for event in reversed_jsonl_events(events_path(session_id)):
+    for event in reversed_jsonl_events(
+        events_path(session_id), retained_fields=EMERGENCY_EVENT_FIELDS,
+    ):
         if (
             event.get("type") == "emergency_alert_raised"
             and event.get("emergency_request_id") == request_id
+            and event.get("run_id") == source_run_id
+        ):
+            return event
+    return None
+
+
+def find_agent_notification_event(
+    session_id: str,
+    request_id: str,
+    source_run_id: str,
+) -> dict[str, Any] | None:
+    retained = frozenset({
+        "type", "id", "seq", "run_id", "notification_request_id",
+        "notification_request_digest", "notification_level",
+    })
+    for event in reversed_jsonl_events(events_path(session_id), retained_fields=retained):
+        if (
+            event.get("type") == "agent_notification"
+            and event.get("notification_request_id") == request_id
             and event.get("run_id") == source_run_id
         ):
             return event
@@ -44218,7 +44846,9 @@ def emergency_alert_was_acknowledged(
     alert_id: str,
     raised_seq: int,
 ) -> bool:
-    for event in reversed_jsonl_events(events_path(session_id)):
+    for event in reversed_jsonl_events(
+        events_path(session_id), retained_fields=EMERGENCY_EVENT_FIELDS,
+    ):
         seq = int(event.get("seq") or 0)
         if seq <= raised_seq:
             return False
@@ -44234,13 +44864,50 @@ def find_emergency_acknowledgement_event(
     session_id: str,
     alert_id: str,
 ) -> dict[str, Any] | None:
-    for event in reversed_jsonl_events(events_path(session_id)):
+    for event in reversed_jsonl_events(
+        events_path(session_id), retained_fields=EMERGENCY_EVENT_FIELDS,
+    ):
         if (
             event.get("type") == "emergency_alert_acknowledged"
             and event.get("emergency_alert_id") == alert_id
         ):
             return event
     return None
+
+
+def emergency_alert_batch_through(
+    session_id: str,
+    through_alert_id: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Freeze active IDs at an exact durable raise boundary, including retries.
+
+    Read lifecycle facts rather than a potentially interrupted summary save.
+    Reverse order lets each alert's newest fact determine whether it is active.
+    A previously acknowledged boundary remains a valid, immutable cut-off.
+    """
+    settled: set[str] = set()
+    active: list[tuple[int, str]] = []
+    boundary = None
+    for event in reversed_jsonl_events(
+        events_path(session_id), retained_fields=EMERGENCY_EVENT_FIELDS,
+    ):
+        if event.get("type") == "emergency_alert_acknowledged":
+            settled.add(str(event.get("emergency_alert_id") or ""))
+        elif event.get("type") == "emergency_alert_raised":
+            alert = normalized_emergency_alert(event.get("emergency_alert"))
+            seq = int(event.get("seq") or 0)
+            if alert is None or seq <= 0:
+                continue
+            alert_id = alert["id"]
+            if alert_id == through_alert_id:
+                boundary = event
+            if alert_id not in settled:
+                active.append((seq, alert_id))
+                settled.add(alert_id)
+    if boundary is None:
+        return None, []
+    boundary_seq = int(boundary["seq"])
+    return boundary, [alert_id for seq, alert_id in reversed(active) if seq <= boundary_seq]
 
 
 def emergency_alert_response(
@@ -46218,98 +46885,46 @@ def bounded_jsonl_paths(
                     continue
 
 
-def bounded_jsonl_events(path: Path, *, preserve_invalid: bool = False) -> Iterator[dict[str, Any] | None]:
-    """Parse a transcript with hard byte, line-size, and line-count bounds."""
 
-    size = path.stat().st_size
-    if size > MAX_LOCAL_TRANSCRIPT_BYTES:
-        raise ValueError(
-            f"transcript exceeds the {MAX_LOCAL_TRANSCRIPT_BYTES}-byte import limit"
-        )
-    consumed = 0
+
+def bounded_jsonl_events(path: Path, *, preserve_invalid: bool = False) -> Iterator[dict[str, Any] | None]:
+    """Project native records with bounded memory, not a source-byte cap."""
+    initial = path.stat()
+    expected = {field: int(getattr(initial, field)) for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")}
     with path.open("rb") as stream:
-        for line_number in range(1, MAX_LOCAL_TRANSCRIPT_SCAN_LINES + 1):
-            raw_line = stream.readline(MAX_LOCAL_TRANSCRIPT_LINE_BYTES + 1)
-            if not raw_line:
-                return
-            consumed += len(raw_line)
-            if consumed > MAX_LOCAL_TRANSCRIPT_BYTES:
-                raise ValueError("transcript changed while it was being imported")
-            if len(raw_line) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError(f"transcript line {line_number} exceeds the import limit")
-            if not raw_line.strip():
-                continue
-            try:
-                event = json.loads(raw_line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                if preserve_invalid:
-                    yield None
-                continue
-            if isinstance(event, dict):
+        opened = os.fstat(stream.fileno())
+        if any(int(getattr(opened, field)) != expected[field] for field in expected):
+            raise ValueError("transcript changed before parsing")
+        for event, _end, raw in jsonl_records(stream, end=initial.st_size,
+                require_newline=False, max_records=MAX_LOCAL_TRANSCRIPT_SCAN_LINES,
+                max_retained_bytes=MAX_LOCAL_TRANSCRIPT_LINE_BYTES):
+            if not raw.blank and (event is not None or preserve_invalid):
                 yield event
-            elif preserve_invalid:
-                yield None
-        if stream.read(1):
-            raise ValueError(
-                f"transcript exceeds the {MAX_LOCAL_TRANSCRIPT_SCAN_LINES}-line import limit"
-            )
+        finished = os.fstat(stream.fileno())
+        if any(int(getattr(finished, field)) != expected[field] for field in expected):
+            raise ValueError("transcript changed during parsing")
 
 
 def bounded_jsonl_records_range(
-    path: Path,
-    start: int,
-    end: int,
-    *,
-    expected_stat: dict[str, int],
+    path: Path, start: int, end: int, *, expected_stat: dict[str, int],
+    require_newline: bool = True, allow_partial: bool = False,
 ) -> Iterator[tuple[dict[str, Any] | None, int]]:
     """Read every record and ending offset in one immutable JSONL range."""
-
-    if start < 0 or end < start or end > MAX_LOCAL_TRANSCRIPT_BYTES:
+    if start < 0 or end < start or end > expected_stat["st_size"]:
         raise ValueError("transcript cursor range is invalid")
-    remaining = end - start
-    if remaining == 0:
-        return
     with path.open("rb") as stream:
         before = os.fstat(stream.fileno())
-        if any(
-            int(getattr(before, field)) != int(expected_stat[field])
-            for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")
-        ):
+        if any(int(getattr(before, field)) != int(expected_stat[field]) for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")):
             raise ValueError("transcript changed before cursor parsing")
         stream.seek(start)
-        for line_number in range(1, MAX_LOCAL_TRANSCRIPT_SCAN_LINES + 1):
-            if remaining <= 0:
+        for count, (event, offset, _raw) in enumerate(jsonl_records(stream, end=end,
+                require_newline=require_newline, max_records=MAX_LOCAL_TRANSCRIPT_SCAN_LINES,
+                max_retained_bytes=MAX_LOCAL_TRANSCRIPT_LINE_BYTES), 1):
+            yield event, offset
+            if allow_partial and count >= MAX_LOCAL_TRANSCRIPT_SCAN_LINES:
                 break
-            raw_line = stream.readline(
-                min(MAX_LOCAL_TRANSCRIPT_LINE_BYTES + 1, remaining)
-            )
-            if not raw_line:
-                raise ValueError("transcript was truncated during cursor parsing")
-            remaining -= len(raw_line)
-            if len(raw_line) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError(
-                    f"transcript cursor line {line_number} exceeds the import limit"
-                )
-            if not raw_line.endswith(b"\n"):
-                raise ValueError("transcript cursor does not end on a complete line")
-            event: dict[str, Any] | None = None
-            if raw_line.strip():
-                try:
-                    loaded = json.loads(raw_line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    loaded = None
-                if isinstance(loaded, dict):
-                    event = loaded
-            yield event, int(stream.tell())
-        if remaining > 0:
-            raise ValueError(
-                f"transcript cursor range exceeds the {MAX_LOCAL_TRANSCRIPT_SCAN_LINES}-line import limit"
-            )
         after = os.fstat(stream.fileno())
-        if any(
-            int(getattr(after, field)) != int(expected_stat[field])
-            for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")
-        ):
+        if any(int(getattr(after, field)) != int(expected_stat[field]) for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns")):
             raise ValueError("transcript changed during cursor parsing")
 
 
@@ -46601,20 +47216,7 @@ def find_codex_history(provider_id: str) -> Path | None:
     clean_provider_id = provider_session_identifier(provider_id)
     if clean_provider_id is None:
         return None
-    if not CODEX_SESSIONS_ROOT.exists():
-        return None
-    selected: Path | None = None
-    selected_mtime = -1.0
-    for path in bounded_jsonl_paths(CODEX_SESSIONS_ROOT):
-        transcript_id, _cwd = codex_transcript_meta(path)
-        if transcript_id != clean_provider_id:
-            continue
-        with suppress(OSError):
-            mtime = path.stat().st_mtime
-            if mtime > selected_mtime:
-                selected = path
-                selected_mtime = mtime
-    return selected
+    return codex_rollout_path(clean_provider_id)
 
 
 def codex_compaction_count(sess: dict[str, Any]) -> int:
@@ -46656,7 +47258,7 @@ def codex_rollout_path(thread_id: str) -> Path | None:
     """Locate ``rollout-*-<thread_id>.jsonl`` under CODEX_SESSIONS_ROOT.
 
     Blocking filesystem work; call from a worker thread. Hits are cached per
-    thread id and re-validated with one stat. Misses are cached briefly so a
+    thread id and re-validated with a bounded metadata read. Misses are cached briefly so a
     thread whose rollout has not been flushed yet does not trigger a directory
     walk on every runtime snapshot.
     """
@@ -46666,7 +47268,7 @@ def codex_rollout_path(thread_id: str) -> Path | None:
         return None
     cached = CODEX_ROLLOUT_PATH_CACHE.get(clean_id)
     if cached is not None:
-        if cached.is_file():
+        if contained_jsonl_path(cached, CODEX_SESSIONS_ROOT) is not None and codex_transcript_meta(cached)[0] == clean_id:
             return cached
         CODEX_ROLLOUT_PATH_CACHE.pop(clean_id, None)
     missed_at = CODEX_ROLLOUT_PATH_MISSES.get(clean_id)
@@ -46679,17 +47281,29 @@ def codex_rollout_path(thread_id: str) -> Path | None:
     suffix = f"-{clean_id}.jsonl"
     selected: Path | None = None
     selected_mtime = -1.0
+    legacy_paths: list[Path] = []
     for path in bounded_jsonl_paths(CODEX_SESSIONS_ROOT):
         name = path.name
         if not (name.startswith("rollout-") and name.endswith(suffix)):
+            legacy_paths.append(path)
             continue
-        if not codex_rollout_head_matches(path, clean_id):
+        if codex_transcript_meta(path)[0] != clean_id:
             continue
         with suppress(OSError):
             mtime = path.stat().st_mtime
             if mtime > selected_mtime:
                 selected = path
                 selected_mtime = mtime
+    if selected is None:
+        # Preserve discovery of renamed/legacy transcripts without reading
+        # unrelated headers on the ordinary filename lookup path.
+        for path in legacy_paths:
+            if codex_transcript_meta(path)[0] != clean_id:
+                continue
+            with suppress(OSError):
+                mtime = path.stat().st_mtime
+                if mtime > selected_mtime:
+                    selected, selected_mtime = path, mtime
     if selected is None:
         CODEX_ROLLOUT_PATH_MISSES[clean_id] = now
         if len(CODEX_ROLLOUT_PATH_MISSES) > 1024:
@@ -47228,6 +47842,7 @@ LEGACY_PROVIDER_AUTHORITY_LABELS = frozenset({
     "cross_chat_routes=durable",
     "cross_chat_routes=job_grants",
     "emergency",
+    "notify",
     "jobs=blocked",
     "jobs=full",
     "jobs=read_only",
@@ -47880,6 +48495,8 @@ def session_provider_id(sess: dict[str, Any]) -> str | None:
         return sess.get("cursor_session_id") or sess.get("session_id")
     if backend == BACKEND_OPENCODE:
         return sess.get("opencode_session_id") or sess.get("session_id")
+    if backend == BACKEND_GEMINI:
+        return sess.get("gemini_session_id") or sess.get("session_id")
     return sess.get("session_id")
 
 
@@ -48019,6 +48636,12 @@ def read_native_session_title(sess: dict[str, Any]) -> str | None:
         return native_session_title(codex_session_index_thread_names().get(provider_id))
     if backend == BACKEND_CURSOR:
         return cursor_native_session_title(provider_id, sess.get("cwd"))
+    if backend == BACKEND_GEMINI:
+        from gemini_history import native_snapshot
+        from gemini_runtime import history_environment
+        env = history_environment(runner_env(), sess, PROVIDER_CONNECTION_STORE.for_session(sess), PROVIDER_CONNECTION_STORE.root)
+        record = native_snapshot(env, str(sess.get("cwd") or ""), provider_id)
+        return native_session_title(record.get("summary"))
     if backend == "opencode":
         # Current native storage. A schema change, missing store, or busy DB
         # fails closed. mode=ro must never create or migrate a provider DB.
@@ -48094,15 +48717,17 @@ def active_generated_title_work_labels() -> list[str]:
 
 def title_runtime_key(sess: dict[str, Any]) -> tuple:
     return (sess.get("backend") or DEFAULT_BACKEND, session_provider_id(sess),
-            sess.get("model"), sess.get("codex_provider"), sess.get("codex_provider_revision"),
-            sess.get("provider_connection"), sess.get("provider_connection_revision"))
+            sess.get("model"), codex_provider.session_choice(sess.get("codex_provider")),
+            sess.get("codex_provider_revision"), sess.get("provider_connection") or "default",
+            sess.get("provider_connection_revision"))
 
 
 def generated_title_eligible(sess: dict[str, Any], *, allow_attempted: bool = False) -> bool:
     return bool(
         os.environ.get("AGENTSDOCK_AUTO_TITLES", "1").strip().lower() not in {"0", "false", "off"}
         and not SERVER_SHUTTING_DOWN
-        and sess.get("backend") in {BACKEND_CODEX, BACKEND_CURSOR}
+        and (sess.get("backend") in {BACKEND_CODEX, BACKEND_CURSOR}
+             or (sess.get("backend") == BACKEND_GEMINI and sess.get("provider_connection") == "custom"))
         and sess.get("auto_title_enabled", True) is not False
         and not sess.get("archived") and not sess.get("parent_id") and not sess.get("fork_from")
         and sess.get("id") not in DELETING_SESSIONS
@@ -48129,6 +48754,9 @@ async def close_generated_session_titles() -> None:
 
 async def generate_session_title(session_id: str, snapshot: dict, reply: str) -> None:
     async with GENERATED_TITLE_SLOTS:
+        if snapshot["backend"] == BACKEND_GEMINI:
+            # A native summary may arrive while this optional task waits.
+            await refresh_native_session_title(session_id)
         # Persist the claim before spending any provider usage. A restart does
         # not retry an ambiguous request. This is one optional attempt per chat.
         async with STORE._lock:
@@ -48155,6 +48783,27 @@ async def generate_session_title(session_id: str, snapshot: dict, reply: str) ->
             options["model"] = codex_runtime_settings(snapshot)[0]
             options["executable"] = CODEX_BIN
             options["provider_selection"] = CODEX_PROVIDER_STORE.for_session(snapshot, include_key=True)
+        elif snapshot["backend"] == BACKEND_GEMINI:
+            from gemini_api import default_model
+            from gemini_history import native_snapshot
+            connection = PROVIDER_CONNECTION_STORE.for_session(snapshot)
+            model = default_model(connection)
+            if model == "auto":
+                from gemini_runtime import history_environment
+                env = history_environment(runner_env(), snapshot, connection, PROVIDER_CONNECTION_STORE.root)
+                native = await asyncio.wait_for(asyncio.to_thread(native_snapshot, env,
+                    str(snapshot.get("cwd") or ""), session_provider_id(snapshot)), timeout=1.0)
+                model = next((row.get("model") for row in reversed(native["messages"])
+                    if row.get("type") == "gemini" and row.get("model") and row.get("model") != "auto"), None)
+            # Recheck revocation after the awaited metadata read and before
+            # sending anything. Never take credentials from the current default.
+            connection = PROVIDER_CONNECTION_STORE.for_session(snapshot)
+            current = STORE.sessions.get(session_id)
+            if (not current or not generated_title_eligible(current, allow_attempted=True)
+                    or title_runtime_key(current) != title_runtime_key(snapshot)
+                    or current.get("title") != snapshot.get("title")):
+                return
+            options = {"model": model, "provider_selection": connection}
         else:
             options["executable"] = resolve_cursor_executable()
             if not options["executable"]:
@@ -48166,6 +48815,9 @@ async def generate_session_title(session_id: str, snapshot: dict, reply: str) ->
             snapshot["backend"], snapshot["_title_seed"], reply, **options,
         )
         if result:
+            if snapshot["backend"] == BACKEND_GEMINI:
+                await refresh_native_session_title(session_id)
+                PROVIDER_CONNECTION_STORE.for_session(snapshot)  # Forget also fences a pending result.
             changed = await STORE.adopt_auto_title(
                 session_id, result, source="generated", backend=snapshot["backend"],
                 provider_id=session_provider_id(snapshot), expected_title=snapshot.get("title"),
@@ -48316,7 +48968,7 @@ def codex_transcript_meta(
 ) -> tuple[str | None, str | None]:
     """Return (session_id, cwd) from a Codex transcript's session_meta record."""
     with suppress(OSError, ValueError):
-        for index, event in enumerate(bounded_jsonl_events(path)):
+        for index, event in enumerate(codex_transcript_metadata_records(path)):
             if index >= CODEX_TRANSCRIPT_SCAN_LINES:
                 break
             if event.get("type") != "session_meta":
@@ -48330,6 +48982,23 @@ def codex_transcript_meta(
             cwd = normalized_local_session_cwd(payload.get("cwd"))
             return session_id, cwd
     return None, None
+
+
+def codex_transcript_metadata_records(path: Path) -> Iterator[dict[str, Any]]:
+    """Discovery reads a bounded header, independent of total rollout size."""
+    remaining = 1024 * 1024
+    with path.open("rb") as stream:
+        for _ in range(CODEX_TRANSCRIPT_SCAN_LINES):
+            line = stream.readline(min(remaining, MAX_LOCAL_TRANSCRIPT_LINE_BYTES) + 1)
+            if not line or len(line) > remaining or not line.endswith(b"\n"):
+                return
+            remaining -= len(line)
+            try:
+                record = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(record, dict):
+                yield record
 
 
 def codex_transcript_preview(path: Path) -> str | None:
@@ -48564,6 +49233,7 @@ def local_session_candidates(
     known_provider_keys: set[tuple[str, str]] | None = None,
     *,
     include_cursor: bool = False,
+    include_gemini: bool = False,
 ) -> list[dict[str, Any]]:
     """Enumerate sessions not already used by this or another local instance."""
 
@@ -48591,6 +49261,11 @@ def local_session_candidates(
     if include_cursor:
         candidates.extend(local_cursor_session_candidates({
             provider_id for backend, provider_id in known_provider_keys if backend == BACKEND_CURSOR
+        }))
+    if include_gemini:
+        from gemini_import import candidates as gemini_candidates
+        candidates.extend(gemini_candidates(sys.modules[__name__], runner_env(), {
+            provider_id for backend, provider_id in known_provider_keys if backend == BACKEND_GEMINI
         }))
     candidates.sort(key=lambda c: c["updated_at"], reverse=True)
     return candidates[:max(1, min(limit, MAX_LOCAL_SESSION_LIST_ITEMS))]
@@ -48639,6 +49314,8 @@ def standalone_provider_session(sess: dict[str, Any]) -> dict[str, Any]:
     isolated["codex_thread_id"] = None
     isolated["cursor_session_id"] = None
     isolated["opencode_session_id"] = None
+    isolated["gemini_session_id"] = None
+    isolated.pop("gemini_session_cwd", None)
     isolated["backend_locked"] = False
     isolated.pop("cursor_instruction_hash", None)
     isolated.pop("cursor_instruction_version", None)
@@ -48678,6 +49355,12 @@ def provider_history_path(sess: dict[str, Any]) -> Path | None:
     if backend == BACKEND_CLAUDE:
         return find_claude_history(provider_id)
     if backend == BACKEND_CODEX:
+        cursor = normalized_history_sync_cursor(sess)
+        if cursor and cursor.get("provider_session_id") == provider_id:
+            path = contained_jsonl_path(Path(cursor["source_path"]), CODEX_SESSIONS_ROOT)
+            if path is not None and codex_transcript_meta(path)[0] == provider_id:
+                CODEX_ROLLOUT_PATH_CACHE[provider_id] = path
+                return path
         return find_codex_history(provider_id)
     return None
 
@@ -48770,7 +49453,6 @@ def normalized_history_sync_cursor(
             or int(raw.get(field, 0)) < 0
             for field in optional_integer_fields
         )
-        or int(raw["source_size"]) > MAX_LOCAL_TRANSCRIPT_BYTES
         or int(raw["source_offset"]) > int(raw["source_size"])
         or (
             timeline_pending_active
@@ -48801,6 +49483,8 @@ def normalized_history_sync_cursor(
             raw.get("timeline_pending_through_seq") or 0
         ),
         "timeline_pending_active": timeline_pending_active,
+        **({"bootstrap_timeline_seq": raw["bootstrap_timeline_seq"]}
+           if type(raw.get("bootstrap_timeline_seq")) is int and raw["bootstrap_timeline_seq"] >= 0 else {}),
         "checkpoint_seq": int(raw.get("checkpoint_seq", raw["timeline_seq"])),
     }
     # Distinguish a pre-feature cursor from an initialized conservative empty
@@ -48951,10 +49635,6 @@ def provider_history_source_snapshot(
     """Hash a stable transcript through its last complete JSONL record."""
 
     initial = path.stat()
-    if initial.st_size > MAX_LOCAL_TRANSCRIPT_BYTES:
-        raise ValueError(
-            f"transcript exceeds the {MAX_LOCAL_TRANSCRIPT_BYTES}-byte import limit"
-        )
     # Provider CLIs may rotate a JSONL file with atomic replacement or move it
     # between dated directories. Backend/provider identity is validated before
     # this helper; byte-for-byte prefix continuity is authoritative across a
@@ -48969,7 +49649,8 @@ def provider_history_source_snapshot(
     prefix_digest = hashlib.sha256() if verify_offset is not None else None
     prefix_hashed = 0
     complete_size = 0
-    pending = b""
+    running_digest = hashlib.sha256()
+    deadline = time.monotonic() + SCAN_SECONDS
     with path.open("rb") as stream:
         opened = os.fstat(stream.fileno())
         expected_identity = (
@@ -48985,7 +49666,12 @@ def provider_history_source_snapshot(
             int(opened.st_mtime_ns),
         ) != expected_identity:
             raise ValueError("transcript changed before cursor snapshot")
-        remaining = int(initial.st_size)
+        # Verify the existing prefix, then prepare at most one bounded suffix.
+        # Total file size is not an import limit. Prefix verification remains
+        # necessary: provider transcripts can be replaced or rewritten.
+        snapshot_limit = min(int(initial.st_size), (verify_offset or 0) + HISTORY_SYNC_BATCH_BYTES)
+        remaining = snapshot_limit
+        consumed = 0
         while remaining > 0:
             chunk = stream.read(min(1024 * 1024, remaining))
             if not chunk:
@@ -48995,15 +49681,20 @@ def provider_history_source_snapshot(
                 take = min(len(chunk), int(verify_offset) - prefix_hashed)
                 prefix_digest.update(chunk[:take])
                 prefix_hashed += take
-            pending += chunk
-            newline = pending.rfind(b"\n")
+            scan_check(deadline, budget_seconds=SCAN_SECONDS)
+            newline = chunk.rfind(b"\n")
             if newline >= 0:
-                complete = pending[:newline + 1]
-                complete_digest.update(complete)
-                complete_size += len(complete)
-                pending = pending[newline + 1:]
-            if len(pending) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError("incomplete transcript line exceeds the import limit")
+                running_digest.update(chunk[:newline + 1])
+                complete_digest = running_digest.copy()
+                complete_size = consumed + newline + 1
+                running_digest.update(chunk[newline + 1:])
+            else:
+                running_digest.update(chunk)
+            consumed += len(chunk)
+            # A single streamed record may exceed a batch. Extend only until
+            # at least one new complete record exists, under the scan deadline.
+            if remaining == 0 and complete_size <= (verify_offset or 0) and consumed < int(initial.st_size):
+                remaining = min(1024 * 1024, int(initial.st_size) - consumed)
         finished = os.fstat(stream.fileno())
         if (
             int(finished.st_dev),
@@ -49156,6 +49847,7 @@ def parse_provider_history_delta(
         start,
         end,
         expected_stat=expected_stat,
+        allow_partial=True,
     ):
         if blocked_on_unseen_message:
             # Exhaust the fixed range so its final fstat validation still
@@ -49286,51 +49978,27 @@ def load_provider_history_with_cursor(
             if "claude_interruption_context" in previous
             else seed_claude_interruption_context(path, start, expected_stat=snapshot["expected_stat"], provider_session_id=provider_id)
         )
-    if continued and previous:
-        (
-            items,
-            cursor_offset,
-            last_item_digest,
-            delta_overflow,
-        ) = parse_provider_history_delta(
-            path,
-            backend,
-            start,
-            end,
-            limit=limit,
-            expected_stat=snapshot["expected_stat"],
-            previous_last_item_digest=str(
-                previous.get("last_item_digest") or ""
-            ),
-            expected_session_id=str(sess.get("id") or "") or None,
-            interruption_context=interruption_context,
-            codex_phase_context=codex_phase_context,
-            source_text_context=source_text_context,
-        )
-        caught_up = not delta_overflow and cursor_offset == end
-    else:
-        events = bounded_jsonl_events_range(
-            path,
-            0,
-            end,
-            expected_stat=snapshot["expected_stat"],
-            preserve_invalid=backend == BACKEND_CLAUDE,
-        )
-        if backend == BACKEND_CLAUDE:
-            items = parse_claude_history_events(events, limit, expected_session_id=str(sess.get("id") or "") or None, interruption_context=interruption_context)
-        elif backend == BACKEND_CODEX:
-            items = parse_codex_history_events(events, limit, expected_session_id=str(sess.get("id") or "") or None)
-        else:
-            return None, [], None, False
-        cursor_offset = end
-        last_item_digest = (
-            history_item_cursor_digest(items[-1]) if items else ""
-        )
-        if items and items[-1].get("source_text_sha256"):
-            source_text_context["sha256"] = items[-1]["source_text_sha256"]
-        if backend == BACKEND_CODEX and items and items[-1].get("phase") in ("commentary", "final_answer"):
-            codex_phase_context["phase"] = items[-1]["phase"]
-        caught_up = True
+    (
+        items,
+        cursor_offset,
+        last_item_digest,
+        delta_overflow,
+    ) = parse_provider_history_delta(
+        path,
+        backend,
+        start,
+        end,
+        limit=limit,
+        expected_stat=snapshot["expected_stat"],
+        previous_last_item_digest=str(
+            (previous or {}).get("last_item_digest") or ""
+        ),
+        expected_session_id=str(sess.get("id") or "") or None,
+        interruption_context=interruption_context,
+        codex_phase_context=codex_phase_context,
+        source_text_context=source_text_context,
+    )
+    caught_up = not delta_overflow and cursor_offset == end and end == int(snapshot["source_size"])
     source_digest = (
         str(snapshot["source_digest"])
         if cursor_offset == end
@@ -49693,6 +50361,7 @@ def reconcile_cursor_history_items(
     *,
     timeline_after_seq: int,
     timeline_through_seq: int,
+    bootstrap: bool = False,
 ) -> tuple[list[dict[str, str]], int]:
     """Subtract timeline-owned occurrences from one exact provider delta.
 
@@ -49716,14 +50385,15 @@ def reconcile_cursor_history_items(
         timeline_after_seq=after_seq,
         timeline_through_seq=through_seq,
         tail=False,
-        include_imported=False,
+        include_imported=bootstrap,
         message_details=message_details,
     )
 
     fresh: list[dict[str, str]] = []
     timeline_index = 0
     consumed_seq = after_seq
-    for item in items:
+    last_match_index = -1
+    for item_index, item in enumerate(items):
         item_details = history_message_match_details(item.get("kind", ""), item.get("text", ""), item, provider_item=True)
         if (
             timeline_index < len(timeline_messages)
@@ -49733,6 +50403,7 @@ def reconcile_cursor_history_items(
         ):
             consumed_seq = timeline_messages[timeline_index][0]
             timeline_index += 1
+            last_match_index = item_index
         else:
             fresh.append(item)
 
@@ -49747,6 +50418,11 @@ def reconcile_cursor_history_items(
             if timeline_window_truncated and timeline_messages
             else through_seq
         )
+    if bootstrap:
+        # Initial backfill uses the same conservative tail semantics as a
+        # single full import. Old imported rows are credits too; keep only
+        # source items after the entire captured preexisting timeline.
+        fresh = items[last_match_index + 1:] if consumed_seq == through_seq and not timeline_window_truncated else []
     return fresh, consumed_seq
 
 
@@ -49868,10 +50544,48 @@ def unsynced_history_items(
     return items[last_matched + 1:]
 
 
+class HistoryPreparationStale(RuntimeError):
+    """The read-only plan lost its ownership or immutable input generation."""
+
+
+def history_file_stamp(path: Path) -> tuple[int, int, int, int] | None:
+    try:
+        value = path.stat()
+        return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns
+    except FileNotFoundError:
+        return None
+
+
+@asynccontextmanager
+async def history_commit_guard(sess, cursor, timeline_stamp, source_stamp, enabled):
+    if not enabled:
+        yield
+        return
+    session_id = str(sess["id"])
+    async with session_lifecycle_lock(session_id):
+        current = STORE.sessions.get(session_id)
+        if (not current or session_id in DELETING_SESSIONS
+                or session_id in DELETED_SESSION_TOMBSTONES
+                or session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None
+                or session_id in SERVER_MAINTENANCE_SESSIONS
+                or any(not task.done() for task in SESSION_TURN_TASKS.get(session_id, ()))
+                or current.get("backend") != sess.get("backend")
+                or session_provider_id(current) != session_provider_id(sess)
+                or normalized_history_sync_cursor(current) != cursor
+                or history_file_stamp(events_path(session_id)) != timeline_stamp):
+            raise HistoryPreparationStale("chat changed during history preparation")
+        if source_stamp is not None:
+            path, size, mtime, dev, ino = source_stamp
+            if history_file_stamp(Path(path)) != (dev, ino, size, mtime):
+                raise HistoryPreparationStale("provider transcript changed during history preparation")
+        yield
+
+
 async def sync_provider_history(
     sess: dict[str, Any],
     *,
     limit: int | None = None,
+    background: bool = False,
 ) -> dict[str, Any]:
     """Append provider messages added outside this chat since the last sync.
 
@@ -49892,6 +50606,7 @@ async def sync_provider_history(
         }
     live_session = STORE.sessions.get(session_id) or {}
     previous_cursor = normalized_history_sync_cursor(live_session)
+    timeline_stamp = history_file_stamp(events_path(session_id))
     # A durable cursor makes the unchanged fast path survive process restart;
     # all five stat/identity fields must still describe the fully-consumed
     # source before parsing can be skipped.
@@ -49914,6 +50629,10 @@ async def sync_provider_history(
             "source_path": None,
             "message": "No provider transcript found.",
         }
+    if (previous_cursor is not None and next_cursor is not None
+            and next_cursor["source_offset"] == previous_cursor["source_offset"]
+            and not next_cursor.get("source_caught_up", True)):
+        return {"imported": 0, "deferred": True, "reason": "incomplete_source_record"}
     if next_cursor is not None and previous_cursor is not None:
         recovered = await asyncio.to_thread(
             committed_history_sync_checkpoint,
@@ -49922,11 +50641,11 @@ async def sync_provider_history(
         )
         if recovered is not None:
             recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
+            async with history_commit_guard(sess, previous_cursor, timeline_stamp, stamp, background):
+                await persist_history_sync_cursor(
+                    sess, recovered_cursor,
+                    timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
+                )
             return {
                 "imported": 0,
                 "source_path": str(source_path),
@@ -49936,14 +50655,18 @@ async def sync_provider_history(
         last_event_seq_from_file,
         events_path(session_id),
     )
-    if continued and previous_cursor is not None:
-        timeline_scan_through_seq = timeline_latest_seq
+    bootstrap_boundary = (previous_cursor or {}).get("bootstrap_timeline_seq") if continued else None
+    if not continued and next_cursor is not None and not next_cursor.get("source_caught_up", True):
+        bootstrap_boundary = timeline_latest_seq
+    if (continued and previous_cursor is not None) or (next_cursor is not None and not next_cursor.get("source_caught_up", True)):
+        timeline_scan_through_seq = timeline_latest_seq if bootstrap_boundary is None else bootstrap_boundary
         fresh, consumed_timeline_seq = await asyncio.to_thread(
             reconcile_cursor_history_items,
             session_id,
             items,
-            timeline_after_seq=int(previous_cursor.get("timeline_seq") or 0),
+            timeline_after_seq=int((previous_cursor or {}).get("timeline_seq") or 0) if continued else 0,
             timeline_through_seq=timeline_scan_through_seq,
+            **({"bootstrap": True} if bootstrap_boundary is not None else {}),
         )
     else:
         # First sync or invalidated/rotated source: retain the conservative
@@ -49964,11 +50687,11 @@ async def sync_provider_history(
         )
         if recovered is not None:
             recovered_cursor, _terminal_seq = recovered
-            await persist_history_sync_cursor(
-                sess,
-                recovered_cursor,
-                timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
-            )
+            async with history_commit_guard(sess, previous_cursor, timeline_stamp, stamp, background):
+                await persist_history_sync_cursor(
+                    sess, recovered_cursor,
+                    timeline_seq=int(recovered_cursor.get("timeline_seq") or 0),
+                )
             return {
                 "imported": 0,
                 "source_path": str(source_path),
@@ -49979,6 +50702,8 @@ async def sync_provider_history(
     timeline_seq = timeline_latest_seq
     if next_cursor is not None:
         caught_up = bool(next_cursor.pop("source_caught_up", True))
+        if bootstrap_boundary is not None and not caught_up:
+            next_cursor["bootstrap_timeline_seq"] = bootstrap_boundary
         next_cursor["timeline_pending_through_seq"] = 0
         next_cursor["timeline_pending_active"] = False
         if not caught_up:
@@ -49994,50 +50719,59 @@ async def sync_provider_history(
             caught_up=caught_up,
         )
 
-    result: dict[str, Any]
-    if not fresh:
-        result = {
-            "imported": 0,
-            "source_path": str(source_path),
-            "message": "Already up to date with the provider transcript.",
-        }
-    else:
-        # The imported batch is fsynced atomically together with its exact next
-        # cursor. A cursor moves only after that authoritative commit; if the
-        # registry save then fails, retry recovers the embedded checkpoint
-        # without relying on ambiguous content alignment.
+    if background and fresh:
         try:
-            result = await append_imported_history(
-                sess,
-                source_path,
-                fresh,
-                sync_checkpoint=checkpoint,
-            )
+            fresh = await prepare_imported_history_items(sess, source_path, fresh, checkpoint)
         except CodexNativeHistoryProofUnavailable:
-            # Do not persist next_cursor: these source bytes have not yet been
-            # proven against native history. A later explicit sync can retry.
-            return {
-                "imported": 0, "source_path": str(source_path), "deferred": True,
-                "reason": "native_history_proof_unavailable",
-                "message": "History reconciliation deferred; no messages were imported.",
+            return {"imported": 0, "deferred": True, "reason": "native_history_proof_unavailable"}
+    async with history_commit_guard(sess, previous_cursor, timeline_stamp, stamp, background):
+        result: dict[str, Any]
+        if not fresh:
+            result = {
+                "imported": 0,
+                "source_path": str(source_path),
+                "message": "Already up to date with the provider transcript.",
             }
-    if next_cursor is not None:
-        if caught_up:
-            timeline_seq = max(
+        else:
+            # The imported batch is fsynced atomically together with its exact next
+            # cursor. A cursor moves only after that authoritative commit; if the
+            # registry save then fails, retry recovers the embedded checkpoint
+            # without relying on ambiguous content alignment.
+            try:
+                result = await append_imported_history(
+                    sess,
+                    source_path,
+                    fresh,
+                    sync_checkpoint=checkpoint,
+                    _prepared=background,
+                    _expected_timeline_stamp=timeline_stamp,
+                )
+            except CodexNativeHistoryProofUnavailable:
+                # Do not persist next_cursor: these source bytes have not yet been
+                # proven against native history. A later explicit sync can retry.
+                return {
+                    "imported": 0, "source_path": str(source_path), "deferred": True,
+                    "reason": "native_history_proof_unavailable",
+                    "message": "History reconciliation deferred; no messages were imported.",
+                }
+        if next_cursor is not None:
+            if caught_up:
+                timeline_seq = max(
+                    timeline_latest_seq,
+                    int(result.get("timeline_seq") or 0),
+                )
+            next_cursor["checkpoint_seq"] = max(
+                int(next_cursor.get("checkpoint_seq") or 0),
                 timeline_latest_seq,
                 int(result.get("timeline_seq") or 0),
             )
-        next_cursor["checkpoint_seq"] = max(
-            int(next_cursor.get("checkpoint_seq") or 0),
-            timeline_latest_seq,
-            int(result.get("timeline_seq") or 0),
-        )
-        await persist_history_sync_cursor(
-            sess,
-            next_cursor,
-            timeline_seq=timeline_seq,
-        )
-    return result
+            await persist_history_sync_cursor(
+                sess,
+                next_cursor,
+                timeline_seq=timeline_seq,
+            )
+        result["pending"] = not caught_up
+        return result
 
 
 def provider_history_source_stamp(sess: dict[str, Any]) -> list[Any] | None:
@@ -50119,73 +50853,115 @@ async def persist_history_sync_cursor(
     return True
 
 
-async def run_provider_history_sync(session_id: str) -> None:
-    """Sync one chat in the background; never surface failure to the opener."""
+HISTORY_MAINTENANCE_SLOTS = asyncio.Semaphore(2)
+HISTORY_MAINTENANCE_STATE: dict[str, dict[str, Any]] = {}
+HISTORY_MAINTENANCE_TASKS: dict[str, asyncio.Task] = {}
+HISTORY_PROJECTION_REVISIONS: dict[str, int] = {}
 
+
+def history_projection_notice(session_id: str) -> dict[str, Any]:
+    return {"type": "history_projection_changed", "session_id": session_id,
+            "revision": f"{SERVER_INSTANCE_ID}:{HISTORY_PROJECTION_REVISIONS.get(session_id, 0)}"}
+
+
+def history_maintenance_key(sess: dict[str, Any]) -> list[Any]:
+    provider_id = session_provider_id(sess)
+    cursor = normalized_history_sync_cursor(sess)
+    source = (Path(cursor["source_path"]) if cursor else CODEX_ROLLOUT_PATH_CACHE.get(provider_id))
+    return [2, sess.get("backend"), provider_id,
+            list(history_file_stamp(events_path(str(sess["id"]))) or ()),
+            str(source) if source else None,
+            list(history_file_stamp(source) or ()) if source else None]
+
+
+def history_maintenance_state(session_id: str) -> dict[str, Any]:
+    if session_id not in HISTORY_MAINTENANCE_STATE:
+        try:
+            raw = json.loads((events_path(session_id).parent / "history-maintenance.json").read_text())
+            HISTORY_MAINTENANCE_STATE[session_id] = raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            HISTORY_MAINTENANCE_STATE[session_id] = {}
+    return HISTORY_MAINTENANCE_STATE[session_id]
+
+
+def save_history_maintenance_state(session_id: str, value: dict[str, Any]) -> None:
+    path = events_path(session_id).parent / "history-maintenance.json"
+    if not path.parent.is_dir():
+        return
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, separators=(",", ":")))
+    temporary.replace(path)
+
+
+async def run_provider_history_sync(session_id: str) -> None:
+    """Prepare in the background; hold admission only for validated commit."""
+    state = history_maintenance_state(session_id)
+    key = None
+    pending = False
     try:
-        # Turn admission, deletion, backend changes, and provider-native
-        # controls use this same lifecycle lock. Revalidate after acquiring it
-        # so a sync scheduled while idle cannot import a transcript that a new
-        # live turn is concurrently extending.
-        async with session_lifecycle_lock(session_id):
+        async with HISTORY_MAINTENANCE_SLOTS:
             sess = STORE.sessions.get(session_id)
-            if (
-                not sess
-                or session_id in DELETING_SESSIONS
-                or session_id in DELETED_SESSION_TOMBSTONES
-            ):
+            if (not sess or session_id in DELETING_SESSIONS
+                    or session_id in DELETED_SESSION_TOMBSTONES
+                    or session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None
+                    or session_id in SERVER_MAINTENANCE_SESSIONS):
                 return
-            async with ACTIVE_LOCK:
-                if (
-                    session_id in BUSY_SESSIONS
-                    or ACTIVE.get(session_id) is not None
-                    or session_id in SERVER_MAINTENANCE_SESSIONS
-                    or any(
-                        task is not asyncio.current_task() and not task.done()
-                        for task in tuple(SESSION_TURN_TASKS.get(session_id) or ())
-                    )
-                ):
-                    return
+            key = history_maintenance_key(sess)
+            state.update(status="running", reason=None)
             await refresh_native_session_title(session_id)
-            result = await sync_provider_history(dict(sess))
-        if result.get("imported"):
-            logger.info(
-                "synced %d provider message(s) added outside session=%s",
-                result["imported"],
-                session_id,
-            )
+            repair_caches = (CLAUDE_METADATA_REPAIR_CACHE, CODEX_GOAL_HISTORY_REPAIR_CACHE,
+                             CODEX_NATIVE_HISTORY_REPAIR_CACHE)
+            before_repair = tuple(cache.signature(session_id) for cache in repair_caches)
+            result = await sync_provider_history(dict(sess), background=True)
+            pending = bool(result.get("pending")) and not result.get("deferred")
+            # Forward imports have already proved their own batch. Repair of
+            # older displayed rows must not starve the remaining source suffix.
+            repaired = None if pending else await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
+            if before_repair != tuple(cache.signature(session_id) for cache in repair_caches):
+                HISTORY_PROJECTION_REVISIONS[session_id] = HISTORY_PROJECTION_REVISIONS.get(session_id, 0) + 1
+                await HUB.broadcast(session_id, history_projection_notice(session_id))
+            deferred = result.get("deferred") or repaired is False
+            state.update(status="deferred" if deferred else "pending" if pending else "idle", deterministic=False,
+                         reason=result.get("reason") or ("native_history_proof_unavailable" if repaired is False else None))
+            if result.get("imported"):
+                logger.info("synced %d provider message(s) added outside session=%s", result["imported"], session_id)
     except asyncio.CancelledError:
+        state.update(status="deferred", reason="cancelled")
         raise
     except Exception as exc:
-        # A read-only catch-up must never break opening a chat.
-        logger.warning(
-            "provider history sync failed session=%s error=%s",
-            session_id,
-            type(exc).__name__,
-        )
+        state.update(status="deferred", reason=type(exc).__name__, deterministic=isinstance(exc, ValueError))
+        logger.warning("provider history sync deferred session=%s error=%s", session_id, type(exc).__name__)
     finally:
+        if key is not None:
+            # A changing input retries on its next open; unchanged failures
+            # survive reconnects and process restarts without a scan storm.
+            current = STORE.sessions.get(session_id)
+            state.update(key=history_maintenance_key(current) if current else key,
+                         retry_at=time.time() + (60 if state.get("status") == "deferred" else 1 if pending else 15))
+            with suppress(OSError):
+                await asyncio.to_thread(save_history_maintenance_state, session_id, dict(state))
         HISTORY_SYNC_SCHEDULED.discard(session_id)
+        HISTORY_MAINTENANCE_TASKS.pop(session_id, None)
+        if pending and state.get("status") == "pending" and not SERVER_SHUTTING_DOWN:
+            def continue_history():
+                current = STORE.sessions.get(session_id)
+                if current is not None:
+                    schedule_provider_history_sync(current)
+            asyncio.get_running_loop().call_later(1.1, continue_history)
 
 
 def schedule_provider_history_sync(sess: dict[str, Any]) -> None:
-    """Catch one chat's transcript up when opened, without blocking the open.
-
-    Opening a chat must stay fast, and the client is already subscribed to
-    the event stream, so recovered messages arrive live instead of delaying
-    the response.
-    """
-
     session_id = str(sess.get("id") or "")
-    if not session_id or session_id in HISTORY_SYNC_SCHEDULED:
+    if not session_id or session_id in HISTORY_SYNC_SCHEDULED or not session_provider_id(sess):
         return
-    if not session_provider_id(sess):
-        return
-    # A turn in flight is already streaming the provider's own output and its
-    # transcript writes are still landing.
     if session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None:
         return
+    state = history_maintenance_state(session_id)
+    if state.get("key") == history_maintenance_key(sess) and (
+            state.get("deterministic") or time.time() < state.get("retry_at", 0)):
+        return
     HISTORY_SYNC_SCHEDULED.add(session_id)
-    asyncio.create_task(run_provider_history_sync(session_id))
+    HISTORY_MAINTENANCE_TASKS[session_id] = asyncio.create_task(run_provider_history_sync(session_id))
 
 
 async def filter_codex_history_for_import(
@@ -50213,13 +50989,10 @@ async def filter_codex_history_for_import(
         raise
 
 
-async def append_imported_history(
-    sess: dict[str, Any],
-    source_path: Path,
-    items: list[dict[str, Any]],
-    *,
-    sync_checkpoint: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+async def prepare_imported_history_items(
+    sess: dict[str, Any], source_path: Path, items: list[dict[str, Any]],
+    sync_checkpoint: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
     session_id = str(sess["id"])
     provider_id = str(session_provider_id(sess) or "")
     backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
@@ -50246,6 +51019,23 @@ async def append_imported_history(
             normalize_user=normalize_wake_user, normalize_full_user=normalize_full_wake_user,
             normalize_assistant=clean_assistant_text,
         )
+    return items
+
+
+async def append_imported_history(
+    sess: dict[str, Any],
+    source_path: Path,
+    items: list[dict[str, Any]],
+    *,
+    sync_checkpoint: dict[str, Any] | None = None,
+    _prepared: bool = False,
+    _expected_timeline_stamp: tuple | None = None,
+) -> dict[str, Any]:
+    session_id = str(sess["id"])
+    provider_id = str(session_provider_id(sess) or "")
+    backend = str(sess.get("backend") or DEFAULT_BACKEND).lower()
+    if not _prepared:
+        items = await prepare_imported_history_items(sess, source_path, items, sync_checkpoint)
     metadata_only = bool(items) and all(item.get("kind") == "interruption" or (
         item.get("provider_history_repair") in {"source_proven_import", "source_proven_native_replay", "source_proven_assistant_replay"}
         and item.get("text") == ""
@@ -50335,7 +51125,13 @@ async def append_imported_history(
     imported_events.append(imported_history_terminal_event(
         run_id, backend, metadata_only=metadata_only, source_timestamp=last_source_timestamp,
     ))
-    committed = await append_durable_event_batch(session_id, imported_events)
+    if _prepared:
+        async with event_delivery_lock(session_id):
+            if history_file_stamp(events_path(session_id)) != _expected_timeline_stamp:
+                raise HistoryPreparationStale("timeline changed before history publication")
+            committed = await append_durable_event_batch_locked(session_id, imported_events)
+    else:
+        committed = await append_durable_event_batch(session_id, imported_events)
     if len(committed) != len(imported_events):
         raise RuntimeError("history event batch was not fully persisted")
     if backend == BACKEND_CODEX:
@@ -50473,6 +51269,12 @@ async def import_session_history(sess: dict[str, Any], *, force: bool = False, l
     backend = (sess.get("backend") or DEFAULT_BACKEND).lower()
     if not provider_id:
         return {"imported": 0, "source_path": None, "message": "No provider session ID set."}
+    if backend == BACKEND_GEMINI:
+        if await asyncio.to_thread(lambda: any(event.get("type") == "history_imported" for event in iter_session_events(session_id))):
+            return {"imported": 0, "source_path": None, "message": "Gemini initial text history already imported; automatic reconciliation is not supported."}
+        from gemini_import import initial_history
+        source, items = await asyncio.to_thread(initial_history, sys.modules[__name__], runner_env(), provider_id, str(sess.get("cwd") or ""), limit)
+        return await append_imported_history(sess, source, items)
     if backend == BACKEND_CURSOR:
         # Initial public-text snapshot only. The private native store, not these
         # display messages, supplies resume context. Cursor exports are rewritable
@@ -51328,6 +52130,50 @@ def is_codex_compaction_failure(message: str) -> bool:
     return "remote compact task" in lowered and "stream disconnected" in lowered
 
 
+def codex_compaction_retry_mode(turns: Any, failed_turn_id: str, run_id: str) -> str | None:
+    """Prove which input, if any, a same-thread compaction retry can use.
+
+    An empty/summary snapshot is not evidence. Unknown items, a later turn,
+    or any execution forbid recovery, even if no final reply was seen. When
+    Codex persisted this exact user message before failing, continue with empty
+    input: native turn/start supports that without adding another user item.
+    """
+    if not failed_turn_id or not isinstance(turns, list) or not turns:
+        return None
+    turn = turns[0]
+    if not isinstance(turn, dict) or (
+        turn.get("id") != failed_turn_id
+        or turn.get("status") != "failed"
+        or turn.get("itemsView") != "full"
+    ):
+        return None
+    items = turn.get("items")
+    if not isinstance(items, list) or not items or any(
+        not isinstance(item, dict) or item.get("type") not in {"contextCompaction", "userMessage"}
+        for item in items
+    ):
+        return None
+    users = [item for item in items if item.get("type") == "userMessage"]
+    if not users:
+        return "resubmit"
+    if len(users) == 1 and run_id and users[0].get("clientId") == run_id:
+        return "continue"
+    return None
+
+
+def codex_compaction_error_message(model: str, native_error: str) -> str:
+    # The native error may name the previous model even after native fallback.
+    # Do not invent its hidden fallback error or infer retirement from a stream error.
+    return (
+        f"Codex context compaction failed with {model or 'the current model'} selected. "
+        "The original conversation and history were kept. The provider error below "
+        "may refer to an earlier model; it does not mean your selection was ignored. "
+        "Any additional native fallback failure may not be exposed by Codex. "
+        "Try Compact context in Codex Thread Controls, then send again. "
+        f"Provider error: {native_error}"
+    )
+
+
 def is_codex_resume_failure(message: str) -> bool:
     lowered = str(message or "").lower()
     return any(
@@ -51383,11 +52229,14 @@ def should_recover_codex_resume(
         or stream_error
         or idle_killed
         or produced_activity
+        # Compaction is not evidence of a missing thread. Never silently
+        # replace original context with a bounded-memory fork on this error.
+        or is_codex_compaction_failure(terminal_error)
     ):
         return False
     if resume_stalled or returncode in (0, None):
         return True
-    return is_codex_resume_failure(terminal_error) or is_codex_compaction_failure(terminal_error)
+    return is_codex_resume_failure(terminal_error)
 
 
 async def rollover_codex_provider_session(
@@ -51508,9 +52357,10 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     detail_fields = () if summary else (
         "auto_title_enabled",
         "system_prompt", "session_id", "claude_session_id", "codex_thread_id",
-        "cursor_session_id", "opencode_session_id",
+        "cursor_session_id", "opencode_session_id", "gemini_session_id",
         "claude_permission_mode", "cursor_permission_mode",
         "opencode_permission_mode",
+        "gemini_permission_mode", "gemini_permission_modes",
         "codex_approval_policy", "codex_sandbox_mode",
         "codex_permission_profile", "codex_approvals_reviewer",
         "provider_jobs_access",
@@ -51531,6 +52381,30 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
             "last_read_agent_event_seq", "last_read_agent_event_at", "manual_unread",
         )
     }
+    unread_recovery_pending = str(sess.get("id") or "") in NON_JOB_AGENT_RECOVERY_PENDING
+    # Keep metadata-free summaries sparse, but retire any cached projection
+    # explicitly while recovery is pending or its checkpoint is unavailable.
+    if (not summary or unread_recovery_pending
+            or session_unread.COUNTER in sess or session_unread.CHECKPOINT in sess):
+        public[session_unread.COUNTER] = (
+            sess.get(session_unread.COUNTER)
+            if not unread_recovery_pending and session_unread.CHECKPOINT in sess else None
+        )
+    notification_fields = (
+        "unread_notification_level", "unread_notification_seq",
+        "latest_notification_level", "latest_notification_message",
+    )
+    for field in notification_fields:
+        if not summary or field in sess:
+            public[field] = sess.get(field)
+    if summary and "latest_notification_level" in sess:
+        public.setdefault("unread_notification_level", None)
+        public.setdefault("unread_notification_seq", None)
+    maintenance = HISTORY_MAINTENANCE_STATE.get(str(sess.get("id") or ""), {})
+    # Never-started maintenance adds no useful information to high-volume lists.
+    # Once observed, retain idle/cleared fields so caches can retire old errors.
+    if not summary or maintenance:
+        public["history_maintenance"] = {key: maintenance.get(key) for key in ("status", "reason", "retry_at")}
     # Omit only never-configured defaults from high-volume lists. A stored null
     # is a clear tombstone and must survive summary/cache merges.
     if not summary or "subagent_limit" in sess:
@@ -51547,7 +52421,14 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     # Provider ids are intentionally omitted from summary responses, but the
     # UI still needs the authoritative first-turn backend fence.
     public["backend_locked"] = session_backend_locked(sess)
+    # Capability, not proof of emptiness: dismiss-empty repeats the full proof.
+    if sess.get("title") == "New chat" and not public["backend_locked"]:
+        public["empty_chat_cleanup"] = "client-v1"
     public["codex_provider"] = codex_provider.session_choice(sess.get("codex_provider"))
+    if summary and "codex_goal" in sess:
+        goal = sess.get("codex_goal")
+        public["codex_goal_status"] = goal.get("status") if isinstance(goal, dict) else None
+        public["codex_goal_updated_at"] = goal.get("updatedAt") if isinstance(goal, dict) else None
     connection = sess.get("provider_connection") or "default"
     # Keep legacy native summaries sparse, but retain a stored default as the
     # tombstone that clears a previously selected custom API in client caches.
@@ -52417,6 +53298,7 @@ def agent_runner_env(
     env["AGENTSDOCK_CHATS_CLI"] = str(SERVER_ROOT / "agentsdock_chats.py")
     env["AGENTSDOCK_PUBLISH_CLI"] = str(SERVER_ROOT / "agentsdock_publish.py")
     env["AGENTSDOCK_EMERGENCY_CLI"] = str(SERVER_ROOT / "agentsdock_emergency.py")
+    env["AGENTSDOCK_NOTIFY_CLI"] = str(SERVER_ROOT / "agentsdock_notify.py")
     env["AGENTSDOCK_MAIL_CLI"] = str(SERVER_ROOT / "agentsdock_mail.py")
     env["AGENTSDOCK_TEAM_CLI"] = str(SERVER_ROOT / "agentsdock_team.py")
     env.update(validate_provider_runtime_env(provider_runtime_env))
@@ -52439,6 +53321,7 @@ def codex_app_server_env(selected: dict | None = None) -> dict[str, str]:
     env["AGENTSDOCK_CHATS_CLI"] = str(SERVER_ROOT / "agentsdock_chats.py")
     env["AGENTSDOCK_PUBLISH_CLI"] = str(SERVER_ROOT / "agentsdock_publish.py")
     env["AGENTSDOCK_EMERGENCY_CLI"] = str(SERVER_ROOT / "agentsdock_emergency.py")
+    env["AGENTSDOCK_NOTIFY_CLI"] = str(SERVER_ROOT / "agentsdock_notify.py")
     env["AGENTSDOCK_MAIL_CLI"] = str(SERVER_ROOT / "agentsdock_mail.py")
     env["AGENTSDOCK_TEAM_CLI"] = str(SERVER_ROOT / "agentsdock_team.py")
     scrub_provider_runtime_environment(env)
@@ -52781,41 +53664,6 @@ def claude_context_usage_snapshot(
     return {key: value for key, value in snapshot.items() if value is not None}
 
 
-async def evict_failed_idle_claude_context_sample(
-    session_id: str,
-    manager: Any,
-) -> None:
-    """Retire the sampled idle actor before releasing its lifecycle lock.
-
-    A canceled context-usage request can leave the SDK actor waiting on a
-    provider response. Remove only the manager instance that issued this
-    sample. The caller owns the session lifecycle lock, so this helper must
-    never leave a late eviction task that could race a replacement turn.
-    """
-
-    if globals().get("CLAUDE_SDK_MANAGER") is not manager:
-        return
-    evict = getattr(manager, "evict", None)
-    if not callable(evict):
-        return
-    try:
-        task = asyncio.create_task(evict(session_id, force=True))
-    except Exception:
-        return
-    try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # The caller still owns session_lifecycle_lock. Finish retirement
-        # before propagating cancellation so a queued start cannot bind a new
-        # actor and then be killed by this stale cleanup.
-        with suppress(BaseException):
-            await join_task_despite_caller_cancellation(task)
-        raise
-    except Exception:
-        # Cleanup is best-effort, but it is never detached.
-        return
-
-
 async def refresh_idle_claude_context_usage(session_id: str) -> bool:
     """Ask an already-loaded, idle Claude SDK client for fresh usage.
 
@@ -52935,11 +53783,6 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
                     None if completed.cancelled() else completed.exception()
                 )
             )
-            cleanup_task = asyncio.create_task(
-                evict_failed_idle_claude_context_sample(session_id, manager)
-            )
-            with suppress(BaseException):
-                await join_task_despite_caller_cancellation(cleanup_task)
             raise
         if sample_task not in done:
             sample_task.cancel()
@@ -52948,13 +53791,11 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
                     None if completed.cancelled() else completed.exception()
                 )
             )
-            await evict_failed_idle_claude_context_sample(session_id, manager)
             raise HTTPException(
                 status_code=504,
-                detail="Claude context sampling timed out; the idle SDK client was reset",
+                detail="Claude context sampling timed out; the provider remains connected",
             )
         if sample_task.cancelled():
-            await evict_failed_idle_claude_context_sample(session_id, manager)
             raise HTTPException(
                 status_code=502,
                 detail="Claude context sampling was canceled",
@@ -52962,7 +53803,6 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
         try:
             sampled = sample_task.result()
         except Exception as exc:
-            await evict_failed_idle_claude_context_sample(session_id, manager)
             raise HTTPException(
                 status_code=502,
                 detail=f"Claude context sampling failed: {concise_error_message(exc)}",
@@ -52973,7 +53813,6 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
             # Compatibility for early manager adapters.
             usage, provider_generation = sampled, 0
         else:
-            await evict_failed_idle_claude_context_sample(session_id, manager)
             raise HTTPException(
                 status_code=502,
                 detail="Claude did not return context usage",
@@ -52988,7 +53827,6 @@ async def refresh_idle_claude_context_usage(session_id: str) -> bool:
         except (TypeError, ValueError, OverflowError):
             snapshot = None
         if snapshot is None:
-            await evict_failed_idle_claude_context_sample(session_id, manager)
             raise HTTPException(
                 status_code=502,
                 detail="Claude returned invalid context usage",
@@ -54205,13 +55043,6 @@ async def handle_claude_tool_permission(
     """Bridge one Agent SDK permission callback to its opted-in desktop chat."""
     from claude_agent_sdk.types import PermissionResultAllow, PermissionResultDeny
 
-    scheduler_reason = claude_nondurable_scheduler_reason(tool_name)
-    if scheduler_reason is not None:
-        return PermissionResultDeny(
-            message=scheduler_reason,
-            interrupt=False,
-        )
-
     completion_event: asyncio.Event | None = None
     completion_task: asyncio.Task[Any] | None = None
     pending: dict[str, Any] | None = None
@@ -55072,6 +55903,34 @@ async def project_codex_notification(notification: dict[str, Any]) -> None:
             thread_id,
             turn_id,
         )
+        if completed_turn.get("status") in {"failed", "interrupted"}:
+            failed_compaction = None
+            async with ACTIVE_LOCK:
+                active = ACTIVE.get(session_id)
+                if (
+                    active and not active.get("codex_native_operation")
+                    and active.get("codex_compaction_in_progress")
+                    and active.get("provider_thread_id") == thread_id
+                    and active.get("codex_compaction_turn_id") == turn_id
+                ):
+                    failed_compaction = {
+                        "run_id": active.get("run_id"), "thread_id": thread_id,
+                        "turn_id": turn_id, "item_id": active.get("codex_compaction_item_id"),
+                        "token_usage_before": active.get("codex_compaction_token_usage_before"),
+                        "token_usage_after": None,
+                        "status": completed_turn["status"],
+                        "message": "Codex automatic context compaction did not complete.",
+                    }
+                    for key in ("codex_compaction_in_progress", "codex_compaction_turn_id",
+                                "codex_compaction_item_id", "codex_compaction_token_usage_before",
+                                "codex_compaction_token_usage_after"):
+                        active.pop(key, None)
+            if failed_compaction is not None:
+                item_id = failed_compaction["item_id"]
+                if not codex_native_compaction_was_terminal(session_id, thread_id, turn_id, item_id):
+                    failed_compaction["compaction_id"] = native_codex_compaction_id(thread_id, turn_id, item_id)
+                    await append_event(session_id, "codex_compaction_completed", failed_compaction)
+                    remember_codex_native_compaction_terminal(session_id, thread_id, turn_id, item_id)
         if turn_id is not None and run_id is not None:
             async with STORE._lock:
                 session = STORE.sessions.get(session_id)
@@ -55376,8 +56235,17 @@ def codex_manager_has_callers(manager: CodexAppServerManager, session_id: str | 
                for task, owner in tuple(getattr(manager, "_agentsdock_callers", {}).items()))
 
 
-def codex_manager_has_callbacks(manager: CodexAppServerManager) -> bool:
-    tasks = [task for task in manager.client._callback_tasks if not task.done()]
+def codex_manager_work_belongs_to_session(work: Any, session_id: str) -> bool:
+    thread_id = getattr(work, "_codex_thread_id", "")
+    owner = codex_session_id_for_thread(thread_id) if thread_id else None
+    # Unknown ownership stays process-wide. Work for a known different chat
+    # must not prevent an idle chat from releasing its own subscription.
+    return owner is None or owner == session_id
+
+
+def codex_manager_has_callbacks(manager: CodexAppServerManager, session_id: str | None = None) -> bool:
+    tasks = [task for task in manager.client._callback_tasks if not task.done()
+             and (session_id is None or codex_manager_work_belongs_to_session(task, session_id))]
     for task in tasks:
         if not getattr(task, "_agentsdock_drain_watched", False):
             task._agentsdock_drain_watched = True
@@ -55427,26 +56295,29 @@ async def refresh_codex_app_server_binary(*, force: bool = False) -> None:
     schedule_codex_manager_drain()
 
 
-async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> None:
+async def refresh_codex_app_server_login(*, request_handoff: bool = False, source: str = "manager_lookup") -> bool:
     """Change normal-Codex admission; never kill a credential-owning process.
 
-    Ordinary lookups use a conservative native file revision. Recheck CLIs is
-    an explicit handoff request, also covering keyring and same-account logins
-    without an OIDC auth_time. This is not a token refresh or login operation.
+    Ordinary lookups/catalog refreshes only observe native file revisions.
+    Explicit native-admin login reload also covers opaque credential stores.
+    This is not a token refresh or login operation.
     """
     global CODEX_APP_SERVER_MANAGER, CODEX_LOGIN_REVISION
     if CODEX_TRANSPORT == CODEX_TRANSPORT_EXEC or CODEX_AUTH_LOCK.locked() or CODEX_MANAGER_CLOSING:
-        return
+        return False
+    # Sources are server-owned labels, never request text, account IDs or keys.
+    if source not in {"manager_lookup", "turn_admission", "account_status", "catalog_refresh", "manual_login_reload"}:
+        source = "manager_lookup"
     async with CODEX_LOGIN_PROBE_LOCK:
         if not await asyncio.to_thread(codex_auth.native_login_handoff_supported,
                 codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD)):
-            return
+            return False
         revision = await asyncio.to_thread(codex_auth.native_login_revision,
             codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD))
         async with CODEX_GOALS_CONFIG_LOCK:
             async with CODEX_APP_SERVER_MANAGER_LOCK:
                 if CODEX_APP_SERVER_MANAGER_CLEANUP_EPOCH is not None or CODEX_AUTH_LOCK.locked() or CODEX_MANAGER_CLOSING:
-                    return
+                    return False
                 observed_change = revision is not None and revision != CODEX_LOGIN_REVISION
                 CODEX_LOGIN_REVISION = revision
                 if observed_change or request_handoff:
@@ -55456,13 +56327,23 @@ async def refresh_codex_app_server_login(*, request_handoff: bool = False) -> No
                         continue
                     previous = getattr(manager, "_agentsdock_login_revision", None)
                     changed = revision is not None and revision != previous
-                    if changed or request_handoff:
+                    # Recheck CLIs is observational when the native sign-in
+                    # revision is unchanged. Retiring a healthy writer here
+                    # strands its chats behind an unnecessary login handoff.
+                    if revision is not None and revision == previous:
+                        manager._agentsdock_login_superseded = False
+                    if changed or (request_handoff and revision is None):
+                        if getattr(manager, "_agentsdock_login_superseded", False) is not True:
+                            reason = "login_revision_changed" if changed else "explicit_reload_opaque_login"
+                            manager._agentsdock_login_handoff_source = source
+                            logger.info("Codex login handoff requested source=%s reason=%s manager=%x", source, reason, id(manager))
                         manager._agentsdock_login_superseded = True
                         if not any(manager is item for item in CODEX_RETIRED_APP_SERVER_MANAGERS):
                             CODEX_RETIRED_APP_SERVER_MANAGERS.append(manager)
                         if CODEX_APP_SERVER_MANAGER is manager:
                             CODEX_APP_SERVER_MANAGER = None
     schedule_codex_manager_drain()
+    return True
 
 
 def codex_manager_session_busy(manager: CodexAppServerManager, session_id: str, *, ignore_task=None, ignore_maintenance=False) -> bool:
@@ -55471,7 +56352,7 @@ def codex_manager_session_busy(manager: CodexAppServerManager, session_id: str, 
         session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None
         or (not ignore_maintenance and session_id in SERVER_MAINTENANCE_SESSIONS)
         or codex_manager_has_callers(manager, session_id, ignore_task=ignore_task)
-        or codex_manager_has_callbacks(manager)
+        or codex_manager_has_callbacks(manager, session_id)
         or any(task is not ignore_task and not task.done()
             for registry in (SESSION_TURN_TASKS, CODEX_NATIVE_ACTION_TASKS, CODEX_INTERACTION_HANDLER_TASKS)
             for task in registry.get(session_id, ()))
@@ -55485,13 +56366,27 @@ def codex_manager_session_busy(manager: CodexAppServerManager, session_id: str, 
 
 async def release_idle_codex_manager_session(manager: CodexAppServerManager, session_id: str, *, ignore_task=None) -> bool:
     """Called under the session lifecycle lock; retain ownership on any doubt."""
+    def retained(reason: str) -> bool:
+        if getattr(manager, "_agentsdock_login_superseded", False) is True:
+            reasons = getattr(manager, "_agentsdock_login_handoff_blockers", None)
+            if reasons is None:
+                reasons = manager._agentsdock_login_handoff_blockers = {}
+            if reasons.get(session_id) != reason:
+                reasons[session_id] = reason
+                logger.info("Codex login handoff waiting source=%s manager=%x session=%s reason=%s",
+                    getattr(manager, "_agentsdock_login_handoff_source", "unknown"), id(manager), session_id, reason)
+        return False
+
     def blocked(*, own_maintenance=False):
         return (codex_manager_session_busy(manager, session_id, ignore_task=ignore_task,
                     ignore_maintenance=own_maintenance)
-                or bool(manager.client._pending or manager.client._server_request_tasks))
+                or any(codex_manager_work_belongs_to_session(request[1], session_id)
+                       for request in manager.client._pending.values())
+                or any(codex_manager_work_belongs_to_session(task, session_id)
+                       for task in manager.client._server_request_tasks.values() if not task.done()))
 
     if blocked():
-        return False
+        return retained("owned_work")
     deadline = time.monotonic() + 8.0
     SERVER_MAINTENANCE_SESSIONS.add(session_id)
     try:
@@ -55499,10 +56394,10 @@ async def release_idle_codex_manager_session(manager: CodexAppServerManager, ses
                    if codex_session_id_for_thread(thread) == session_id]
         for thread in threads:
             if time.monotonic() >= deadline:
-                return False
+                return retained("metadata_deadline")
             if (thread in CODEX_APP_SERVER_PINNED_THREADS or thread in CODEX_INTERACTIVE_CONTROL_THREADS
                     or manager.active_turn(thread) is not None):
-                return False
+                return retained("active_or_pinned_thread")
             try:
                 goal = await asyncio.wait_for(manager.get_thread_goal(thread), timeout=min(3.0, deadline - time.monotonic()))
             except CodexAppServerRequestError as exc:
@@ -55510,7 +56405,7 @@ async def release_idle_codex_manager_session(manager: CodexAppServerManager, ses
                     raise
                 goal = None
             if isinstance(goal, dict) and goal.get("status") == "active":
-                return False
+                return retained("active_goal")
             try:
                 terminals = await asyncio.wait_for(manager.list_background_terminals(thread), timeout=min(3.0, deadline - time.monotonic()))
             except CodexAppServerRequestError as exc:
@@ -55520,20 +56415,23 @@ async def release_idle_codex_manager_session(manager: CodexAppServerManager, ses
             # Those metadata requests yielded. A new borrower or native
             # request may now own the process even without a registered turn.
             if terminals or blocked(own_maintenance=True):
-                return False
+                return retained("background_terminals" if terminals else "owned_work")
             evicted = await asyncio.wait_for(evict_codex_app_server_thread(manager, thread, reinsert_on_failure=True),
                 timeout=max(0.0, deadline - time.monotonic()))
             if not evicted or manager.is_thread_loaded(thread):
-                return False
+                return retained("thread_not_unloaded")
         if blocked(own_maintenance=True):
-            return False
+            return retained("owned_work")
         if CODEX_SESSION_APP_SERVER_MANAGERS.get(session_id) is manager:
             CODEX_SESSION_APP_SERVER_MANAGERS.pop(session_id, None)
             CODEX_GOAL_SYNC_GENERATIONS.pop(session_id, None)
+        if getattr(manager, "_agentsdock_login_superseded", False) is True:
+            getattr(manager, "_agentsdock_login_handoff_blockers", {}).pop(session_id, None)
+            logger.info("Codex login handoff released source=%s manager=%x session=%s",
+                getattr(manager, "_agentsdock_login_handoff_source", "unknown"), id(manager), session_id)
         return True
     except Exception:
-        logger.debug("Codex handoff retained an unverified idle owner", exc_info=True)
-        return False
+        return retained("metadata_or_unload_failed")
     finally:
         SERVER_MAINTENANCE_SESSIONS.discard(session_id)
 
@@ -55542,7 +56440,7 @@ async def prepare_codex_login_turn(session: dict[str, Any]) -> None:
     """Pre-admission handoff under the chat lock, before message acceptance."""
     if CODEX_TRANSPORT == CODEX_TRANSPORT_EXEC or codex_provider.session_choice(session.get("codex_provider")) == "custom":
         return
-    await refresh_codex_app_server_login()
+    await refresh_codex_app_server_login(source="turn_admission")
     session_id = str(session.get("id") or "")
     manager = existing_codex_app_server_manager(session)
     if getattr(manager, "_agentsdock_login_superseded", False) is not True:
@@ -55696,9 +56594,8 @@ async def codex_app_server_manager(sess: dict[str, Any] | None = None, *, allow_
     selected = CODEX_PROVIDER_STORE.for_session(sess, include_key=True) if sess is not None else None
     revision = selected["credential_id"] if selected else None
     session_id = str((sess or {}).get("id") or "")
-    # Goal enablement is a process launch flag. Manager lookup therefore takes
-    # the same barrier as configuration replacement, including the fast path;
-    # no caller can retain/create the old generation halfway through a toggle.
+    # Manager lookup shares the provider reconfiguration barrier, including the
+    # fast path, so a sign-in reload cannot race a retained/created generation.
     async with CODEX_GOALS_CONFIG_LOCK:
         ensure_provider_manager_factory_admission(codex=True)
         manager = existing_codex_app_server_manager(sess) if sess is not None else None
@@ -55781,7 +56678,7 @@ async def codex_app_server_manager(sess: dict[str, Any] | None = None, *, allow_
 
 
 async def claude_sdk_manager() -> ClaudeSDKSupervisorManager:
-    """Return the bounded registry of independent per-chat Claude clients."""
+    """Return independent per-chat clients with optional operator retention limits."""
 
     global CLAUDE_SDK_MANAGER
     ensure_provider_manager_factory_admission()
@@ -55794,7 +56691,7 @@ async def claude_sdk_manager() -> ClaudeSDKSupervisorManager:
         if manager is None:
             manager = ClaudeSDKSupervisorManager(
                 max_clients=CLAUDE_SDK_MAX_LOADED_CHATS,
-                idle_ttl_seconds=CLAUDE_SDK_IDLE_TTL_SECONDS,
+                idle_ttl_seconds=CLAUDE_SDK_IDLE_TTL_SECONDS or None,
                 connect_timeout_seconds=CLAUDE_SDK_CONNECT_TIMEOUT_SECONDS,
                 control_timeout_seconds=CLAUDE_MCP_CONTROL_TIMEOUT_SECONDS,
                 usage_observer=observe_claude_provider_usage,
@@ -56345,6 +57242,7 @@ async def acquire_codex_control_thread(
     *,
     reserve_session: bool = False,
     allow_active_goal_mutation: bool = False,
+    allow_active_control: bool = False,
 ) -> tuple[CodexAppServerManager, str, dict[str, Any]]:
     """Load and pin a Codex thread for an explicit desktop control."""
     reservation_task = asyncio.current_task() if reserve_session else None
@@ -56382,7 +57280,7 @@ async def acquire_codex_control_thread(
             managed_server_update_blocker()
             if (
                 session_id in BUSY_SESSIONS
-                and allow_active_goal_mutation
+                and (allow_active_goal_mutation or allow_active_control)
                 and not reserve_session
             )
             else managed_server_update_admission_blocker()
@@ -56405,7 +57303,7 @@ async def acquire_codex_control_thread(
             # to render approvals, not whether this loaded thread can accept a
             # goal mutation from another compatible client.
             if (
-                not allow_active_goal_mutation
+                not (allow_active_goal_mutation or (allow_active_control and not reserve_session))
                 or not active
                 or active.get("backend") != BACKEND_CODEX
                 or active.get("transport") != CODEX_TRANSPORT_APP_SERVER
@@ -57023,6 +57921,89 @@ async def commit_codex_goal_steer(
     }
 
 
+def codex_shell_intents_pending(active: dict[str, Any] | None) -> bool:
+    return bool(active and active.get("codex_shell_intents"))
+
+
+async def observe_codex_shell_notification(
+    session_id: str,
+    active: dict[str, Any] | None,
+    notification: dict[str, Any],
+    sequence: int,
+) -> None:
+    """Correlate admitted user shells without projecting their tools twice.
+
+    shellCommand acknowledges with {}, rather than an item/turn id. Its native
+    userShell items arrive on the already-owned, ordered thread subscription.
+    Only notifications after admission can bind an intent; model tools and old
+    shell items cannot extend this run. Keep it through both item and turn
+    completion, including a new shell turn after the parent completed.
+    """
+    if not active or ACTIVE.get(session_id) is not active:
+        return
+    intents = active.get("codex_shell_intents") or []
+    if not intents:
+        return
+    params = notification.get("params") or {}
+    if params.get("threadId") != active.get("provider_thread_id"):
+        return
+    method = notification.get("method")
+    native_turn = params.get("turn") or {}
+    turn_id = str(params.get("turnId") or native_turn.get("id") or "")
+    item = params.get("item") or {}
+    item_id = str(item.get("id") or "")
+    if method in {"item/started", "item/completed"} and (
+        item.get("type") == "commandExecution" and item.get("source") == "userShell"
+        and item_id and turn_id
+    ):
+        intent = next((entry for entry in intents if entry.get("item_id") == item_id), None)
+        if intent is None and method == "item/started":
+            intent = next((entry for entry in intents if (
+                not entry.get("item_id") and sequence > entry["after_sequence"]
+            )), None)
+            if intent is not None:
+                intent["item_id"] = item_id
+                intent["turn_id"] = turn_id
+                try:
+                    await append_event(session_id, "codex_shell_started", {
+                        "run_id": active.get("run_id"), "operation_id": intent["operation_id"],
+                        "provider_turn_id": turn_id, "item_id": item_id,
+                        "command": intent["command"], "unsandboxed": True,
+                        "message": "Codex started the confirmed unsandboxed shell command.",
+                    })
+                except Exception as exc:
+                    logger.warning("failed to persist Codex shell start session=%s: %s",
+                                   session_id, concise_error_message(exc))
+        if intent is not None and intent.get("turn_id") == turn_id and method == "item/completed":
+            intent["item_completed"] = True
+            intent["exit_code"] = item.get("exitCode")
+    elif method == "turn/completed" and turn_id:
+        for intent in intents:
+            if intent.get("turn_id") == turn_id:
+                intent["turn_completed"] = True
+                intent["status"] = native_turn.get("status") or "failed"
+    await publish_codex_shell_completions(session_id, active)
+
+
+async def publish_codex_shell_completions(session_id: str, active: dict[str, Any]) -> None:
+    if ACTIVE.get(session_id) is not active:
+        return
+    intents = active.get("codex_shell_intents") or []
+    finished = [entry for entry in intents if (
+        entry.get("item_completed") and entry.get("turn_completed")
+    )]
+    for intent in finished:
+        intents.remove(intent)
+        if intent.get("owner_operation"):
+            # The idle shell consumer publishes this operation's terminal.
+            continue
+        await append_event(session_id, "codex_shell_finished", {
+            "run_id": active.get("run_id"), "operation_id": intent["operation_id"],
+            "provider_turn_id": intent["turn_id"], "item_id": intent["item_id"],
+            "status": intent["status"], "exit_code": intent.get("exit_code"),
+        })
+
+
 async def consume_codex_native_turn(
     session_id: str,
     operation_id: str,
@@ -57047,6 +58028,13 @@ async def consume_codex_native_turn(
     terminal_error: str | None = None
     schedule_queue = True
     goal_resume = operation == "goal_resume"
+    shell_resume = operation == "shell_resume"
+    waiting_for_shell = False
+    shell_owner = ACTIVE.get(session_id)
+    if shell_owner is not None and shell_owner.get("run_id") == operation_id:
+        shell_owner["codex_shell_subscription"] = subscription
+    else:
+        shell_owner = None
     last_turn_id = turn_id
     result_text = ""
     goal_turn_running = bool(turn_id)
@@ -57056,7 +58044,7 @@ async def consume_codex_native_turn(
     seen_goal_turn_ids: set[str] = set()
     goal_activity_deadline = time.monotonic() + max(
         CODEX_APP_SERVER_LIFECYCLE_TIMEOUT_SECONDS, IDLE_KILL_SECONDS,
-    )
+    ) if IDLE_KILL_SECONDS > 0 else None
     goal_steer_queue = (ACTIVE.get(session_id) or {}).get("native_steer_queue") if goal_resume else None
     steer_task: asyncio.Task[Any] | None = None
     notification_task: asyncio.Task[Any] | None = None
@@ -57067,12 +58055,37 @@ async def consume_codex_native_turn(
     handled_sequence = initial_sequence
     synthetic_sequence = initial_sequence
 
-    async def next_goal_notification() -> tuple[int, dict[str, Any]]:
+    def adopt_shell_goal_locked() -> bool:
+        nonlocal goal_resume, goal_steer_queue
+        if not shell_resume or goal_resume or not CODEX_GOALS_ENABLED:
+            return False
+        active = ACTIVE.get(session_id)
+        goal = (STORE.sessions.get(session_id) or {}).get("codex_goal")
+        if not (
+            active is shell_owner and active is not None
+            and active.get("run_id") == operation_id
+            and active.get("provider_thread_id") == thread_id
+            and (not reservation_id or active.get("codex_control_reservation_id") == reservation_id)
+            and not active.get("stop_requested") and operation_id not in STOPPED_RUNS
+            and isinstance(goal, dict) and goal.get("status") == "active"
+        ):
+            return False
+        # A goal can be set while a manual shell retains the ordinary owner.
+        # Adopt its native continuation on this same subscription and queue;
+        # do not restart the goal or create another local/model turn.
+        goal_resume = True
+        active["codex_native_operation_kind"] = "goal_resume"
+        goal_steer_queue = active.get("native_steer_queue")
+        if goal_steer_queue is None:
+            goal_steer_queue = active["native_steer_queue"] = asyncio.Queue(maxsize=1)
+        return True
+
+    async def next_goal_notification(timeout: float | None = 0.5) -> tuple[int, dict[str, Any]]:
         nonlocal synthetic_sequence
         reader = getattr(subscription, "next_notification_with_sequence", None)
         if callable(reader):
-            return await reader(timeout=0.5)
-        notification = await subscription.next_notification(timeout=0.5)
+            return await reader(timeout=timeout)
+        notification = await subscription.next_notification(timeout=timeout)
         synthetic_sequence += 1
         return synthetic_sequence, notification
 
@@ -57090,7 +58103,11 @@ async def consume_codex_native_turn(
         if interrupted_before_start:
             raise asyncio.CancelledError
         while True:
-            if goal_resume:
+            if shell_resume and not goal_resume:
+                async with session_lifecycle_lock(session_id):
+                    async with ACTIVE_LOCK:
+                        adopt_shell_goal_locked()
+            if goal_resume or shell_resume or waiting_for_shell:
                 if pending_steer is None and steer_request is not None:
                     if not steer_request.get("expected_provider_turn_id"):
                         # Send now may arrive in the gap between native goal
@@ -57136,12 +58153,12 @@ async def consume_codex_native_turn(
                         pending_steer = None
                         steer_request = None
                 latest = STORE.sessions.get(session_id) or {}
-                goal = latest.get("codex_goal")
+                goal = latest.get("codex_goal") if goal_resume else None
                 goal_status = str(goal.get("status") or "") if isinstance(goal, dict) else ""
                 async with ACTIVE_LOCK:
                     active = ACTIVE.get(session_id)
                     stopped = bool(active and active.get("stop_requested"))
-                remaining = codex_goal_time_budget_remaining(latest)
+                remaining = codex_goal_time_budget_remaining(latest) if goal_resume else None
                 used = goal.get("timeUsedSeconds") if isinstance(goal, dict) else 0
                 used = float(used) if isinstance(used, (int, float)) and not isinstance(used, bool) else 0.0
                 identity = str(goal.get("id") or goal.get("objective") or "") if isinstance(goal, dict) else ""
@@ -57209,6 +58226,7 @@ async def consume_codex_native_turn(
                         # after this stream's consumer has exited.
                         async with session_lifecycle_lock(session_id):
                             async with ACTIVE_LOCK:
+                                adopt_shell_goal_locked()
                                 active = ACTIVE.get(session_id)
                                 latest_goal = (STORE.sessions.get(session_id) or {}).get("codex_goal")
                                 stopped = bool(
@@ -57217,27 +58235,36 @@ async def consume_codex_native_turn(
                                 )
                                 enqueued = getattr(subscription, "_last_enqueued_sequence", 0)
                                 pending_output = isinstance(enqueued, int) and enqueued > handled_sequence
+                                if (active is shell_owner
+                                        and codex_shell_intents_pending(active)):
+                                    continue
                                 if not stopped and (
                                     pending_output
-                                    or (isinstance(latest_goal, dict) and latest_goal.get("status") == "active")
+                                    or (goal_resume and isinstance(latest_goal, dict) and latest_goal.get("status") == "active")
                                 ):
                                     continue
                                 if active and active.get("run_id") == operation_id:
-                                    active["codex_goal_handoff_closed"] = True
+                                    active["codex_shell_handoff_closed"] = True
+                                    if goal_resume:
+                                        active["codex_goal_handoff_closed"] = True
                         terminal_status = "interrupted" if stopped else "completed"
                         break
-                    if time.monotonic() >= goal_activity_deadline:
+                    if goal_activity_deadline is not None and time.monotonic() >= goal_activity_deadline:
                         raise
                     continue
                 goal_activity_deadline = time.monotonic() + max(
                     CODEX_APP_SERVER_LIFECYCLE_TIMEOUT_SECONDS, IDLE_KILL_SECONDS,
-                )
+                ) if IDLE_KILL_SECONDS > 0 else None
             else:
-                notification = await subscription.next_notification(
+                handled_sequence, notification = await next_goal_notification(
                     timeout=max(
                         CODEX_APP_SERVER_LIFECYCLE_TIMEOUT_SECONDS,
                         IDLE_KILL_SECONDS,
-                    )
+                    ) if IDLE_KILL_SECONDS > 0 else None
+                )
+            if shell_owner is not None:
+                await observe_codex_shell_notification(
+                    session_id, shell_owner, notification, handled_sequence,
                 )
             method = str(notification.get("method") or "")
             params = (
@@ -57254,7 +58281,7 @@ async def consume_codex_native_turn(
                 )
                 or ""
             )
-            if goal_resume and method == "turn/started" and notification_turn_id:
+            if (goal_resume or shell_resume or waiting_for_shell) and method == "turn/started" and notification_turn_id:
                 if notification_turn_id in seen_goal_turn_ids:
                     continue
                 seen_goal_turn_ids.add(notification_turn_id)
@@ -57287,6 +58314,8 @@ async def consume_codex_native_turn(
                             # before RPC completion. A backlogged consumer must
                             # not replace that id with an earlier goal turn.
                             if not goal_resume:
+                                if active.get("provider_turn_id") != notification_turn_id:
+                                    active["native_interrupt_sent"] = False
                                 active["provider_turn_id"] = notification_turn_id
                                 active["provider_turn_ready"] = True
                             else:
@@ -57511,14 +58540,19 @@ async def consume_codex_native_turn(
                     # The provider's successful terminal packet supersedes
                     # transient error notices from this exact native turn.
                     terminal_error = None
-                if goal_resume:
+                pending_shell = (
+                    ACTIVE.get(session_id) is shell_owner
+                    and codex_shell_intents_pending(shell_owner)
+                )
+                if goal_resume or shell_resume or waiting_for_shell or pending_shell:
+                    waiting_for_shell = bool(pending_shell)
                     goal_turn_running = False
                     goal_clock_started = None
                     async with ACTIVE_LOCK:
                         active = ACTIVE.get(session_id)
                         if (
                             active and active.get("run_id") == operation_id
-                            and active.get("codex_control_reservation_id") == reservation_id
+                            and (not reservation_id or active.get("codex_control_reservation_id") == reservation_id)
                             and active.get("provider_turn_id") == notification_turn_id
                         ):
                             active["provider_turn_id"] = None
@@ -57528,9 +58562,30 @@ async def consume_codex_native_turn(
                     await manager.wait_for_notification_handler(
                         project_codex_notification, thread_id,
                     )
-                    if terminal_status == "completed" and not terminal_error:
+                    if pending_shell or ((goal_resume or shell_resume)
+                                         and terminal_status == "completed" and not terminal_error):
                         turn_id = None
                         continue
+                # The endpoint registers intents under this same lifecycle
+                # lock. Seal only after the final await above so an accepted
+                # shell cannot lose its receiver during terminal projection.
+                async with session_lifecycle_lock(session_id):
+                    async with ACTIVE_LOCK:
+                        if adopt_shell_goal_locked():
+                            goal_turn_running = False
+                            turn_id = None
+                            continue
+                        active = ACTIVE.get(session_id)
+                        if active is shell_owner:
+                            if codex_shell_intents_pending(active):
+                                waiting_for_shell = True
+                                goal_turn_running = False
+                                turn_id = None
+                                continue
+                            if active is not None:
+                                active["codex_shell_handoff_closed"] = True
+                                if goal_resume:
+                                    active["codex_goal_handoff_closed"] = True
                 break
     except (asyncio.TimeoutError, CodexAppServerSubscriptionClosed) as exc:
         terminal_status = "failed"
@@ -57543,6 +58598,10 @@ async def consume_codex_native_turn(
         terminal_status = "failed"
         terminal_error = concise_error_message(exc)
     finally:
+        if (shell_owner is not None and ACTIVE.get(session_id) is shell_owner
+                and shell_owner.get("codex_shell_subscription") is subscription):
+            shell_owner.pop("codex_shell_subscription", None)
+            shell_owner["codex_shell_handoff_closed"] = True
         summary_cleanup = asyncio.create_task(finish_reasoning_summary_stream(
             session_id, operation_id, completed_reasoning_items))
         try:
@@ -57909,6 +58968,8 @@ async def touch_codex_app_server_thread(
             return
         CODEX_APP_SERVER_THREAD_LRU.pop(thread_id, None)
         CODEX_APP_SERVER_THREAD_LRU[thread_id] = time.monotonic()
+        if CODEX_APP_SERVER_MAX_LOADED_THREADS <= 0:
+            return
         managers = (manager, *(
             current for current in codex_app_server_managers() if current is not manager
         ))
@@ -58285,6 +59346,9 @@ def resolve_cursor_executable(*, require_compatible: bool = True) -> str | None:
 
 
 def runtime_executable(backend: str) -> str:
+    if backend == BACKEND_GEMINI:
+        from gemini_runtime import resolve_executable
+        return resolve_executable(runner_env()) or "gemini"
     if backend == BACKEND_CLAUDE:
         return CLAUDE_BIN
     if backend == BACKEND_OPENCODE:
@@ -58303,6 +59367,8 @@ def runtime_executable(backend: str) -> str:
 
 
 def runtime_display_name(backend: str) -> str:
+    if backend == BACKEND_GEMINI:
+        return "Gemini CLI"
     if backend == BACKEND_CLAUDE:
         return "Claude Code"
     if backend == BACKEND_CURSOR:
@@ -58538,6 +59604,9 @@ def cursor_auth_failure_confirmed(executable: str) -> bool:
 
 
 def probe_runtime(backend: str) -> dict[str, Any]:
+    if backend == BACKEND_GEMINI:
+        from gemini_runtime import probe
+        return probe(runner_env(), timeout=runtime_probe_timeout(8.0))
     if backend == BACKEND_OPENCODE:
         (
             resolved,
@@ -58761,7 +59830,14 @@ def probe_runtime(backend: str) -> dict[str, Any]:
 
     combined = f"{auth_result.stdout}\n{auth_result.stderr}"
     if auth_result.returncode == 0:
-        return runtime_diagnostic_payload(backend, "ready", installed=True, authenticated=True, version=version)
+        result = runtime_diagnostic_payload(backend, "ready", installed=True, authenticated=True, version=version)
+        if backend == BACKEND_CODEX:
+            # Retain only the kind, never login-status output (which may show a
+            # masked API key). No additional auth/refresh subprocess is needed.
+            text = combined.lower()
+            result["_codex_auth_mode"] = "apiKey" if "api key" in text else "chatgpt" if "chatgpt" in text else "unknown"
+            result["_codex_auth_mode_checked_at_epoch"] = result["checked_at_epoch"]
+        return result
     if auth_failure_text(combined):
         return runtime_diagnostic_payload(backend, "unauthenticated", installed=True, authenticated=False, version=version)
     return runtime_diagnostic_payload(backend, "error", installed=True, authenticated=None, version=version)
@@ -58784,10 +59860,14 @@ def store_runtime_diagnostic(diagnostic: dict[str, Any], *, preserve_last_error:
 
 def expire_codex_login_diagnostic() -> None:
     """A login hint requires new native evidence, never reuse a cached denial."""
+    global CODEX_MODEL_MIGRATION_TARGET
     with RUNTIME_DIAGNOSTICS_LOCK:
+        CODEX_MODEL_MIGRATION_TARGET = "gpt-6-luna"
         current = dict(RUNTIME_DIAGNOSTICS.get(BACKEND_CODEX) or runtime_diagnostic_payload(
             BACKEND_CODEX, "unknown", installed=None, authenticated=None))
         current["checked_at_epoch"] = 0.0
+        current.pop("_codex_auth_mode", None)
+        current.pop("_codex_auth_mode_checked_at_epoch", None)
         store_runtime_diagnostic(current)
 
 
@@ -58796,6 +59876,8 @@ def runtime_diagnostic(backend: str, *, force: bool = False) -> dict[str, Any]:
         cached = dict(RUNTIME_DIAGNOSTICS.get(backend) or {})
         generation = RUNTIME_DIAGNOSTIC_GENERATIONS.get(backend, 0)
     checked_at = cached.get("_installation_checked_at_epoch", cached.get("checked_at_epoch"))
+    if backend == BACKEND_CODEX and cached.get("_codex_auth_mode_checked_at_epoch") is not None:
+        checked_at = min(checked_at or 0, cached["_codex_auth_mode_checked_at_epoch"])
     if not force and isinstance(checked_at, (int, float)) and time.time() - checked_at < RUNTIME_DIAGNOSTIC_TTL_SECONDS:
         return cached
     try:
@@ -58940,14 +60022,34 @@ def record_runtime_success(backend: str) -> None:
         version=previous.get("version"),
         executable=(
             str(previous.get("_executable") or "") or None
-            if backend in (BACKEND_CURSOR, BACKEND_OPENCODE)
+            if backend in (BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI)
             else None
         ),
     )
+    if backend == BACKEND_CODEX and previous.get("_codex_auth_mode"):
+        # A successful turn does not establish which login kind was used.
+        # Preserve the existing observation without extending its lifetime.
+        current["_codex_auth_mode"] = previous["_codex_auth_mode"]
+        current["_codex_auth_mode_checked_at_epoch"] = previous.get(
+            "_codex_auth_mode_checked_at_epoch", previous.get("checked_at_epoch", 0),
+        )
     store_runtime_diagnostic(current, preserve_last_error=False)
 
 
 async def ensure_runtime_available(backend: str, *, session: dict[str, Any] | None = None) -> dict[str, Any]:
+    if backend == BACKEND_GEMINI:
+        from gemini_runtime import probe, API_ONLY_MESSAGE
+        if (session or {}).get("provider_connection") != "custom":
+            raise HTTPException(409, API_ONLY_MESSAGE)
+        diagnostic = await asyncio.to_thread(probe, runner_env())
+        store_runtime_diagnostic(diagnostic)
+        if diagnostic.get("status") != "ready":
+            raise HTTPException(503, diagnostic.get("message"))
+        if (session or {}).get("provider_connection") == "custom":
+            from gemini_api import default_model
+            selected = PROVIDER_CONNECTION_STORE.for_session(session)
+            provider_connections.require_model({**selected, "model": default_model(selected)})
+        return diagnostic
     diagnostic = await asyncio.to_thread(runtime_diagnostic, backend)
     if (session or {}).get("provider_connection") == "custom":
         selected = PROVIDER_CONNECTION_STORE.for_session(session)
@@ -59103,6 +60205,26 @@ def codex_default_service_tier(model: str) -> str:
     return CODEX_FALLBACK_SERVICE_TIERS.get(str(model or "").strip(), "")
 
 
+def codex_retired_model_replacements() -> dict[str, str]:
+    """Scope retirement to native ChatGPT auth, never API/custom endpoints."""
+    with RUNTIME_DIAGNOSTICS_LOCK:
+        diagnostic = RUNTIME_DIAGNOSTICS.get(BACKEND_CODEX) or {}
+        checked_at = diagnostic.get("_codex_auth_mode_checked_at_epoch", diagnostic.get("checked_at_epoch")) or 0
+        observed = (str(diagnostic.get("_codex_auth_mode") or "")
+                    if time.time() - checked_at < RUNTIME_DIAGNOSTIC_TTL_SECONDS else "")
+        replacement = CODEX_MODEL_MIGRATION_TARGET
+    mode = codex_auth.native_model_auth_mode(
+        codex_app_server_env(), cwd=existing_cwd(DEFAULT_CWD), observed_mode=observed,
+    )
+    if mode != "chatgpt":
+        return {}
+    return {model: replacement for model in sorted(codex_auth.CHATGPT_RETIRED_MODELS)}
+
+
+def codex_available_model(model: str) -> str:
+    return codex_retired_model_replacements().get(model, model)
+
+
 # The Codex app-server's thread/start and turn-override JSON-RPC params only
 # accept a narrower serviceTier enum ("fast"/"flex") than the canonical
 # service_tier values used for `codex exec` CLI config overrides (see
@@ -59119,6 +60241,7 @@ def codex_app_server_service_tier(service_tier: str) -> str:
 
 
 def discover_codex_catalog() -> dict[str, Any]:
+    global CODEX_MODEL_MIGRATION_TARGET
     models: list[dict[str, Any]] = []
     model_options: list[dict[str, Any]] = []
     effort_options: list[dict[str, Any]] = []
@@ -59141,16 +60264,29 @@ def discover_codex_catalog() -> dict[str, Any]:
         model_source = f"{model_source} failed"
         effort_source = f"{effort_source} failed"
 
+    replacements = codex_retired_model_replacements()
     visible_models = [
         model for model in models
         if str(model.get("visibility") or "list") == "list" and model.get("supported_in_api", True) is not False
+        and str(model.get("slug") or model.get("id") or "").strip() not in replacements
     ]
     visible_models.sort(key=runtime_priority)
+    if replacements and visible_models:
+        # Use an available configured default, then the native default/priority.
+        # The fallback is only needed when the CLI cannot return a catalog.
+        slugs = [str(entry.get("slug") or entry.get("id") or "").strip() for entry in visible_models]
+        preferred = next((slug for slug in (configured_model, CODEX_DEFAULT_MODEL) if slug in slugs), None)
+        if preferred is None:
+            preferred = next((str(entry.get("slug") or entry.get("id")) for entry in visible_models if entry.get("is_default") is True or entry.get("isDefault") is True), slugs[0])
+        if preferred:
+            with RUNTIME_DIAGNOSTICS_LOCK:
+                CODEX_MODEL_MIGRATION_TARGET = preferred
+            replacements = {model: preferred for model in replacements}
     # The selectable "Server default" must describe the exact settings that
     # codex_runtime_settings() launches for a chat with no explicit override.
     # The CLI's discovered list can omit a configured/custom default (or a
     # legacy fallback), so the first discovered model is not a safe proxy.
-    default_model = configured_model or CODEX_DEFAULT_MODEL
+    default_model = replacements.get(configured_model or CODEX_DEFAULT_MODEL, configured_model or CODEX_DEFAULT_MODEL)
     default_effort = clamp_codex_runtime_effort(
         default_model,
         configured_effort or CODEX_DEFAULT_EFFORT,
@@ -59197,6 +60333,8 @@ def discover_codex_catalog() -> dict[str, Any]:
 
     if not model_options:
         for slug, label in CODEX_FALLBACK_MODELS:
+            if slug in replacements:
+                continue
             fallback_efforts = [
                 runtime_option(effort, title_effort_label(effort))
                 for effort in CODEX_FALLBACK_MODEL_EFFORTS.get(slug, CODEX_FALLBACK_EFFORTS)
@@ -59206,7 +60344,7 @@ def discover_codex_catalog() -> dict[str, Any]:
             model_options.append(runtime_option(slug, label, efforts=fallback_efforts, service_tier=service_tier or None))
     if not effort_options:
         effort_options.extend(runtime_option(effort, title_effort_label(effort)) for effort in CODEX_FALLBACK_EFFORTS)
-    if configured_model and not any(option.get("value") == configured_model for option in model_options):
+    if configured_model and configured_model not in replacements and not any(option.get("value") == configured_model for option in model_options):
         model_options.insert(0, runtime_option(configured_model, title_model_label(configured_model)))
     if configured_effort and not any(option.get("value") == configured_effort for option in effort_options):
         effort_options.append(runtime_option(configured_effort, title_effort_label(configured_effort)))
@@ -59229,6 +60367,7 @@ def discover_codex_catalog() -> dict[str, Any]:
         "default_model": default_model or None,
         "default_effort": default_effort or None,
         "default_service_tier": default_service_tier or None,
+        "model_replacements": replacements,
     }
 
 
@@ -59724,6 +60863,13 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
     diagnostic = runtime_diagnostic(backend, force=force_runtime_probe)
     ready = diagnostic.get("status") == "ready"
     executable = str(diagnostic.get("_executable") or "") or None
+    if backend == BACKEND_GEMINI:
+        return {"models": [], "default_model": None,
+                "efforts": [], "default_effort": None, "effort_source": "none",
+                "model_source": "Configure a Gemini API connection in My Agents",
+                "available": False, "diagnostic": public_runtime_diagnostic(diagnostic),
+                "native_credentials_present": False,
+                "custom_provider": PROVIDER_CONNECTION_STORE.catalog(backend, installed=ready)}
     if backend == BACKEND_CLAUDE:
         catalog = parse_claude_help_catalog()
     elif backend == BACKEND_CODEX:
@@ -59816,13 +60962,46 @@ def codex_runtime_settings(sess: dict[str, Any]) -> tuple[str, str, str]:
         catalog = CODEX_PROVIDER_STORE.cached_catalog(selected)
         return model, codex_provider.runtime_effort(selected, catalog, sess.get("effort")), ""
     configured_model, configured_effort, configured_service_tier = codex_user_config_defaults()
-    model = str(sess.get("model") or configured_model or CODEX_DEFAULT_MODEL).strip()
+    model = codex_available_model(str(sess.get("model") or configured_model or CODEX_DEFAULT_MODEL).strip())
     effort = clamp_codex_runtime_effort(
         model,
         sess.get("effort") or configured_effort or CODEX_DEFAULT_EFFORT,
     )
     service_tier = configured_service_tier or codex_default_service_tier(model)
     return model, effort, service_tier
+
+
+async def migrate_retired_codex_selection(
+    session_id: str, sess: dict[str, Any], *, standalone: bool = False,
+    previous_model: str | None = None,
+) -> dict[str, Any]:
+    """Migrate future work under the existing admission lock; retain history.
+
+    No native transcript edits, forks, auth changes, or retries. Native
+    compaction/recovery remains Codex-owned and can still fail independently.
+    """
+    if sess.get("backend") != BACKEND_CODEX or sess.get("codex_provider") == "custom":
+        return sess
+    configured_model, _effort, _tier = codex_user_config_defaults()
+    previous = str(previous_model or sess.get("model") or configured_model or CODEX_DEFAULT_MODEL).strip()
+    replacement = codex_available_model(previous)
+    if previous == replacement:
+        return sess
+    patch = {"model": replacement, "effort": clamp_codex_runtime_effort(replacement, sess.get("effort") or _effort or CODEX_DEFAULT_EFFORT)}
+    if standalone:
+        migrated = {**sess, **patch}
+    elif all(sess.get(key) == value for key, value in patch.items()):
+        migrated = sess
+    else:
+        migrated = await STORE.update(session_id, patch)
+    await append_event(session_id, "runtime_model_migrated", {
+        "backend": BACKEND_CODEX, "previous_model": previous, "model": replacement,
+        "standalone": standalone,
+        "message": (f"{previous} is no longer available with ChatGPT sign-in. "
+                    f"This {'scheduled run' if standalone else 'chat'} will use {replacement}. "
+                    "Conversation history is unchanged."),
+    })
+    return migrated
 
 
 def codex_goal_time_budget_remaining(sess: dict[str, Any]) -> float | None:
@@ -60597,7 +61776,6 @@ def build_claude_cmd(
         "AskUserQuestion",
         "EnterPlanMode",
         "ExitPlanMode",
-        *CLAUDE_NON_DURABLE_SCHEDULER_TOOLS,
         *(["Agent", "Task"] if disable_provider_subagents else []),
     ]
     if sess.get("model"):
@@ -60665,10 +61843,9 @@ def claude_sdk_configuration_key(
         "system_prompt": system_prompt,
         "permission_mode": effective_claude_permission_mode(sess),
         "setting_sources": ["user", "project", "local"],
-        "background_tracking_hooks": 2,
+        "background_tracking_hooks": 3,
         "allow_dangerously_skip_permissions": True,
         "replay_user_messages": True,
-        "disallowed_tools": list(CLAUDE_NON_DURABLE_SCHEDULER_TOOLS),
         "allowed_tools": [CLAUDE_PROVIDER_MCP_TOOL_NAME],
         "thinking": {"type": "adaptive", "display": "summarized"},
         "agentsdock_provider_tool": 1,
@@ -60731,9 +61908,6 @@ def build_claude_sdk_options(
         raise ValueError("The completed Claude fork snapshot is unavailable; refusing an empty resume.")
     permission_owner = {"token": ""}
     provider_tool_owner = {"ownership_token": "", "run_id": ""}
-    provider_tool_slots = asyncio.Semaphore(
-        PROVIDER_TOOL_MAX_CONCURRENT_PER_CLAUDE_CHAT
-    )
 
     async def can_use_tool(
         tool_name: str,
@@ -60763,45 +61937,34 @@ def build_claude_sdk_options(
                 "arguments": arguments,
                 **({"stdin": stdin} if stdin else {}),
             }
-            # Claude's SDK dispatches MCP calls concurrently. Fail fast above
-            # a small per-chat ceiling instead of allowing one adversarial or
-            # confused model response to spawn unbounded helper processes.
-            if provider_tool_slots.locked():
-                raise ProviderToolError(
-                    "too many AgentsDock provider actions are already running"
+            if provider_tool_call_is_read_only(helper, arguments):
+                # The in-process Claude MCP SDK does not expose a transport
+                # call ID. Identical reads must remain live rather than being
+                # mistaken for retries and replaying a stale mailbox/listing.
+                text, is_error = await execute_provider_tool(
+                    session_id,
+                    owner_run_id,
+                    bounded_input,
+                    backend=BACKEND_CLAUDE,
+                    claude_owner_token=ownership_token,
                 )
-            await provider_tool_slots.acquire()
-            try:
-                if provider_tool_call_is_read_only(helper, arguments):
-                    # The in-process Claude MCP SDK does not expose a transport
-                    # call ID. Identical reads must remain live rather than being
-                    # mistaken for retries and replaying a stale mailbox/listing.
-                    text, is_error = await execute_provider_tool(
-                        session_id,
-                        owner_run_id,
+            else:
+                replay_digest = hashlib.sha256(
+                    json.dumps(
                         bounded_input,
-                        backend=BACKEND_CLAUDE,
-                        claude_owner_token=ownership_token,
-                    )
-                else:
-                    replay_digest = hashlib.sha256(
-                        json.dumps(
-                            bounded_input,
-                            sort_keys=True,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    ).hexdigest()
-                    text, is_error = await execute_provider_tool_once(
-                        session_id,
-                        owner_run_id,
-                        bounded_input,
-                        replay_key="claude:" + replay_digest,
-                        backend=BACKEND_CLAUDE,
-                        claude_owner_token=ownership_token,
-                    )
-            finally:
-                provider_tool_slots.release()
+                        sort_keys=True,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()
+                text, is_error = await execute_provider_tool_once(
+                    session_id,
+                    owner_run_id,
+                    bounded_input,
+                    replay_key="claude:" + replay_digest,
+                    backend=BACKEND_CLAUDE,
+                    claude_owner_token=ownership_token,
+                )
         except ProviderToolError as exc:
             text, is_error = str(exc), True
         return {
@@ -60836,7 +61999,6 @@ def build_claude_sdk_options(
         permission_mode=effective_claude_permission_mode(sess),
         can_use_tool=can_use_tool,
         hooks=claude_background_tracking_hooks(),
-        disallowed_tools=list(CLAUDE_NON_DURABLE_SCHEDULER_TOOLS),
         # This internal tool performs its own exact live-run authorization.
         # Do not make the desktop ask the user to approve the transport
         # wrapper in normal Claude permission modes.
@@ -60922,7 +62084,7 @@ async def discover_session_provider_commands(
 
     backend = str(session.get("backend") or DEFAULT_BACKEND).strip().lower()
     requested_cwd = str(session.get("cwd") or DEFAULT_CWD)
-    if backend == BACKEND_OPENCODE:
+    if backend in {BACKEND_OPENCODE, BACKEND_GEMINI}:
         try:
             cwd = validated_opencode_cwd(requested_cwd)
         except HTTPException:
@@ -60936,7 +62098,7 @@ async def discover_session_provider_commands(
             support = provider_command_support(
                 False,
                 "unavailable",
-                "OpenCode local skills require the chat working directory to be available.",
+                f"{'Gemini' if backend == BACKEND_GEMINI else 'OpenCode'} local skills require the chat working directory to be available.",
             )
             return provider_command_snapshot(fallback_empty, support), fallback_empty
     else:
@@ -60976,7 +62138,7 @@ async def discover_session_provider_commands(
                 provider_command_snapshot(fallback_empty, support),
                 fallback_empty,
             )
-    elif backend == BACKEND_OPENCODE:
+    elif backend in {BACKEND_OPENCODE, BACKEND_GEMINI}:
         pass
     else:
         support = provider_command_support(
@@ -61070,6 +62232,26 @@ async def discover_session_provider_commands(
                 f"Showing the first {MAX_PROVIDER_COMMANDS} provider commands."
             )
         return provider_command_snapshot(inventory, support), inventory
+    if backend == BACKEND_GEMINI:
+        from gemini_runtime import build_environment, list_native_skills, resolve_executable, GeminiConfigurationError
+        def discover_gemini():
+            connection = PROVIDER_CONNECTION_STORE.for_session(session)
+            profile = PROVIDER_CONNECTION_STORE.root / ("gemini-runtime-" + connection["credential_id"]) if connection else None
+            env = build_environment(runner_env(), cwd=cwd, api_home=profile,
+                api_key=connection.get("api_key") if connection else None,
+                base_url=connection.get("base_url") if connection else None,
+                native_history=bool(session.get("gemini_native_history")))
+            executable = resolve_executable(env)
+            if not executable:
+                raise GeminiConfigurationError("Install Gemini CLI to discover its skills.")
+            return gemini_provider_skill_inventory(list_native_skills(executable, env, cwd),
+                cwd=cwd, selector_secret=identity, binding_context=session_id)
+        try:
+            inventory = await asyncio.to_thread(discover_gemini)
+        except (GeminiConfigurationError, ProviderCommandDiscoveryError, HTTPException, OSError, ValueError):
+            return provider_command_snapshot(empty, provider_command_support(False, "unavailable",
+                "Gemini skills could not be read. Check gemini skills list --all in this workspace and refresh.")), empty
+        return provider_command_snapshot(inventory, provider_command_support(True, "native_activation_request")), inventory
     if backend == BACKEND_OPENCODE:
         try:
             env = runner_env()
@@ -61147,6 +62329,8 @@ async def resolve_provider_command_selection(
         if backend == BACKEND_CLAUDE
         else OPENCODE_PROVIDER_COMMANDS_CLIENT_CAPABILITY
         if backend == BACKEND_OPENCODE
+        else GEMINI_CLIENT_CAPABILITY
+        if backend == BACKEND_GEMINI
         else None
     )
     if required_capability is None:
@@ -61584,7 +62768,9 @@ async def update_reasoning_summary_stream(
     phase: str = "summary",
 ) -> None:
     """Keep provider-exposed summary and plaintext reasoning channels distinct."""
-    if phase not in {"summary", "reasoning"}:
+    if phase not in {"summary", "reasoning", "assistant"}:
+        return
+    if phase == "assistant" and (metadata or {}).get("backend") != "gemini":
         return
     index = params.get("contentIndex" if phase == "reasoning" else "summaryIndex", 0)
     delta = params.get("delta", "")
@@ -61604,7 +62790,7 @@ async def update_reasoning_summary_stream(
                 after_seq = await asyncio.to_thread(last_event_seq_from_file, events_path(session_id))
             state = {"parts": {}, "item": {
                 **dict(metadata or {}), "run_id": run_id, "item_id": item_id,
-                "backend": BACKEND_CODEX, "phase": phase, "text": "",
+                "backend": (metadata or {}).get("backend", BACKEND_CODEX), "phase": phase, "text": "",
                 "ts": now_iso(), "after_seq": after_seq,
             }}
             streams[(run_id, item_id, phase)] = state
@@ -63563,7 +64749,7 @@ async def run_claude_print(
                 idle = time.time() - last_event
                 if idle >= IDLE_WARN_SECONDS:
                     await append_event(session_id, "idle_warning", {"run_id": run_id, "idle_seconds": int(idle)})
-                if idle >= IDLE_KILL_SECONDS:
+                if IDLE_KILL_SECONDS > 0 and idle >= IDLE_KILL_SECONDS:
                     idle_killed = True
                     await terminate_process_tree(proc)
                     break
@@ -64288,6 +65474,103 @@ async def acknowledge_claude_background_reconciliation(
     return []
 
 
+async def send_claude_followup(
+    session_id: str, run_id: str, manager: Any, handle: Any,
+    ownership_token: str, provider_id: str,
+    steer_queue: asyncio.Queue[dict[str, Any]], request: dict[str, Any],
+) -> dict[str, Any]:
+    """Send native input without replacing the process, run or child authority."""
+    selected = request["selected"]
+    attempted = False
+    acknowledged = False
+
+    async def before_send(actual_owner: str) -> None:
+        async with ACTIVE_LOCK:
+            active = ACTIVE.get(session_id) or {}
+            current = CURRENT_TURNS.get(session_id) or {}
+            valid = bool(
+                actual_owner == ownership_token
+                and active.get("claude_sdk_owner_token") == ownership_token
+                and active.get("claude_sdk_run") is handle
+                and active.get("claude_followup_queue") is steer_queue
+                and active.get("run_id") == run_id
+                and current.get("run_id") == run_id
+                and active.get("provider_turn_ready")
+                and not active.get("stop_requested")
+                and session_id in BUSY_SESSIONS
+                and session_id not in STOP_REQUESTS
+                and session_id not in DELETING_SESSIONS
+                and run_id not in STOPPED_RUNS
+                and codex_goal_steer_selection_is_plain(selected)
+            )
+        if not valid:
+            raise NativeSteerHandoffError(
+                "Claude finished or stopped before this message could be sent",
+                safe_to_requeue=True,
+            )
+
+    try:
+        await before_send(ownership_token)
+        prompt = build_user_provider_prompt(
+            session_id, str(selected.get("prompt") or ""), list(selected.get("file_ids") or []),
+        )
+        await fence_native_steer_delivery(session_id, selected, backend=BACKEND_CLAUDE)
+        attempted = True
+        request["_claude_followup_query_started"] = True
+        message_id = await manager.steer_run(
+            session_id, prompt, run_id=run_id, ownership_token=ownership_token,
+            query_session_id=provider_id or None, on_before_send=before_send,
+        )
+        acknowledged = True
+        display_prompt = str(selected.get("display_prompt") if selected.get("display_prompt") is not None else selected.get("prompt") or "")
+        display_files = list(selected.get("display_file_ids") if selected.get("display_file_ids") is not None else selected.get("file_ids") or [])
+        # One accepted user message, one retained logical run. In particular,
+        # do not terminalize the predecessor, clear its task ledger, rotate its
+        # MCP authority, cancel approvals or recreate its manifest watcher.
+        await append_durable_event_batch(session_id, [
+            ("turn_queue_run_now", {
+                "queued_id": selected.get("queued_id"), "run_id": run_id,
+                "backend": BACKEND_CLAUDE, "prompt": display_prompt,
+                "file_ids": display_files, "native_steer": True,
+                "native_followup": True, "interrupted": False,
+                "replays_interrupted_message": False,
+                "remaining": request.get("remaining", 0), "superseded_queued_ids": [],
+                "message": "Follow-up sent to Claude; running subagents remain active.",
+            }),
+            ("turn_steered", {
+                "run_id": run_id, "backend": BACKEND_CLAUDE,
+                "queued_id": selected.get("queued_id"), "prompt": display_prompt,
+                "file_ids": display_files, "native_steer": True,
+                "native_followup": True, "provider_user_authored": True,
+                "provider_message_id": message_id,
+                **queued_turn_run_metadata(selected),
+            }),
+        ])
+        async with ACTIVE_LOCK:
+            current = CURRENT_TURNS.get(session_id)
+            if current and current.get("run_id") == run_id:
+                lineage = turn_steering_lineage(current)
+                lineage.append({"prompt": str(selected.get("prompt") or ""), "file_ids": list(selected.get("file_ids") or [])})
+                current["steering_lineage"] = lineage
+        return {
+            "ok": True, "queued_id": selected.get("queued_id"), "run_id": run_id,
+            "interrupted": False, "native_steer": True, "native_followup": True,
+            "replays_interrupted_message": False, "superseded_queued_ids": [],
+        }
+    except NativeSteerHandoffError:
+        raise
+    except BaseException as exc:
+        # SDK pre-write failures explicitly report delivery_uncertain=False;
+        # cancellation or a post-ACK local failure can never authorize replay.
+        safe = not acknowledged and (
+            not attempted or getattr(exc, "delivery_uncertain", None) is False
+        )
+        raise NativeSteerHandoffError(
+            concise_error_message(exc) or "Claude follow-up delivery was interrupted",
+            safe_to_requeue=safe, delivery_uncertain=not safe,
+        ) from exc
+
+
 async def run_claude_sdk(
     session_id: str,
     run_id: str,
@@ -64360,14 +65643,15 @@ async def run_claude_sdk(
         "backend": BACKEND_CLAUDE,
         "transport": CLAUDE_TRANSPORT_AGENT_SDK,
         "claude_sdk_run": None,
-        # Authority-bearing runs receive a fresh provider-tool owner binding.
-        # Force Send therefore follows Stop -> queued start for those runs;
-        # retain the legacy native path only for callers without authority.
+        # Legacy logical-run transitions are kept separate from the native
+        # follow-up lane below. Real Force Send preserves this exact owner;
+        # it never tears down the connection or rebinds surviving children.
         "native_steer_queue": (
             None
             if provider_runtime_env or provider_command is not None
             else native_steer_queue
         ),
+        "claude_followup_queue": native_steer_queue,
         "interactive_agent_sdk": True,
         "provider_model": str(sess.get("model") or ""),
         "provider_effort": str(sess.get("effort") or ""),
@@ -64596,6 +65880,8 @@ async def run_claude_sdk(
     cancelled_error: asyncio.CancelledError | None = None
     retire_supervisor = False
     pending_steer: dict[str, Any] | None = None
+    followup_task: asyncio.Task[Any] | None = None
+    followup_request: dict[str, Any] | None = None
     message_task: asyncio.Task[Any] | None = None
     steer_task: asyncio.Task[Any] | None = None
     first_activity_task: asyncio.Task[bool] | None = None
@@ -64694,6 +65980,8 @@ async def run_claude_sdk(
         nonlocal first_activity_task
 
         await cancel_first_activity_watchdog()
+        if CLAUDE_SDK_POST_ACK_FIRST_ACTIVITY_TIMEOUT_SECONDS <= 0:
+            return
         first_activity_task = asyncio.create_task(
             first_activity_timeout_after_ack(logical_handle)
         )
@@ -64806,6 +66094,7 @@ async def run_claude_sdk(
         idle = observed_at - last_activity_monotonic
         if (
             not provider_acknowledged
+            and CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS > 0
             and elapsed >= CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS
         ):
             stream_error = (
@@ -64833,6 +66122,7 @@ async def run_claude_sdk(
             idle_warning_emitted = True
         if (
             provider_acknowledged
+            and CLAUDE_SDK_IDLE_TIMEOUT_SECONDS > 0
             and idle >= CLAUDE_SDK_IDLE_TIMEOUT_SECONDS
         ):
             stream_error = (
@@ -64876,13 +66166,15 @@ async def run_claude_sdk(
                 break
             if message_task is None:
                 message_task = asyncio.create_task(current_handle.__anext__())
-            if pending_steer is None and steer_task is None:
+            if pending_steer is None and followup_task is None and steer_task is None:
                 steer_task = asyncio.create_task(native_steer_queue.get())
             waiters = {message_task}
             if steer_task is not None:
                 waiters.add(steer_task)
             if first_activity_task is not None:
                 waiters.add(first_activity_task)
+            if followup_task is not None:
+                waiters.add(followup_task)
             elapsed = now_monotonic - logical_started_monotonic
             idle = now_monotonic - last_activity_monotonic
             timeout_candidates = [5.0]
@@ -64901,8 +66193,9 @@ async def run_claude_sdk(
                     if idle_warning_emitted
                     else CLAUDE_SDK_IDLE_WARN_SECONDS
                 )
-                timeout_candidates.append(max(0.01, idle_deadline - idle))
-            else:
+                if idle_deadline > 0:
+                    timeout_candidates.append(max(0.01, idle_deadline - idle))
+            elif CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS > 0:
                 timeout_candidates.append(
                     max(0.01, CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS - elapsed)
                 )
@@ -64946,6 +66239,30 @@ async def run_claude_sdk(
                         current_run_id,
                     )
                     break
+
+            if followup_task is not None and followup_task in done:
+                request = followup_request or {}
+                future = request.get("future")
+                try:
+                    result = followup_task.result()
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_result(result)
+                except Exception as exc:
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_exception(exc)
+                followup_task = None
+                followup_request = None
+
+            if steer_task is not None and steer_task in done:
+                request = steer_task.result()
+                if request.get("preserve_claude_run"):
+                    steer_task = None
+                    mark_native_steer_accepted(request)
+                    followup_request = request
+                    followup_task = asyncio.create_task(send_claude_followup(
+                        session_id, current_run_id, manager, current_handle,
+                        sdk_ownership_token, provider_id, native_steer_queue, request,
+                    ))
 
             if steer_task is not None and steer_task in done:
                 request = steer_task.result()
@@ -65070,6 +66387,11 @@ async def run_claude_sdk(
                 result_details = None
             else:
                 message_task = None
+                if isinstance(message, ClaudeSDKGoalReceipt):
+                    await settle_claude_goal_command(
+                        session_id, current_run_id, message, provider_id=provider_id,
+                    )
+                    continue
                 last_activity_monotonic = time.monotonic()
                 provider_acknowledged = bool(
                     getattr(current_handle, "acknowledged", False)
@@ -65114,6 +66436,22 @@ async def run_claude_sdk(
                     continue
                 result_details = projected_result
 
+            if result_details is not None and followup_task is not None:
+                # The provider may finish in the same batch as its replay ACK.
+                # Persist the accepted human input before projecting completion;
+                # cancelling here would strand an already delivered queue row.
+                request = followup_request or {}
+                future = request.get("future")
+                try:
+                    result = await asyncio.shield(followup_task)
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_result(result)
+                except Exception as exc:
+                    if isinstance(future, asyncio.Future) and not future.done():
+                        future.set_exception(exc)
+                followup_task = None
+                followup_request = None
+
             if result_details and result_details.get("session_id"):
                 provider_id = str(result_details["session_id"])
             if provider_id and provider_id != provider_persisted_id:
@@ -65148,6 +66486,7 @@ async def run_claude_sdk(
                     ):
                         active["provider_turn_ready"] = False
                         active["native_steer_queue"] = None
+                        active["claude_followup_queue"] = None
                         active["claude_permissions_open"] = False
                 break
 
@@ -65724,6 +67063,22 @@ async def run_claude_sdk(
     async def cleanup_live_sdk_state() -> None:
         nonlocal retire_supervisor, stream_error
         unhandled_steer: dict[str, Any] | None = None
+        if followup_task is not None:
+            if not followup_task.done():
+                followup_task.cancel()
+            outcome = (await asyncio.gather(followup_task, return_exceptions=True))[0]
+            future = (followup_request or {}).get("future")
+            if isinstance(future, asyncio.Future) and not future.done():
+                if isinstance(outcome, dict):
+                    future.set_result(outcome)
+                elif isinstance(outcome, NativeSteerHandoffError):
+                    future.set_exception(outcome)
+                else:
+                    attempted = bool((followup_request or {}).get("_claude_followup_query_started"))
+                    future.set_exception(NativeSteerHandoffError(
+                        "Claude follow-up delivery ended before acknowledgement; it was not replayed",
+                        safe_to_requeue=not attempted, delivery_uncertain=attempted,
+                    ))
         readiness_tasks = tuple(provider_ready_tasks)
         for task in readiness_tasks:
             if not task.done():
@@ -66615,7 +67970,7 @@ async def run_codex_exec(
                 idle = time.time() - last_event
                 if idle >= IDLE_WARN_SECONDS:
                     await append_event(session_id, "idle_warning", {"run_id": run_id, "idle_seconds": int(idle)})
-                if idle >= IDLE_KILL_SECONDS:
+                if IDLE_KILL_SECONDS > 0 and idle >= IDLE_KILL_SECONDS:
                     idle_killed = True
                     await terminate_process_tree(proc)
                     break
@@ -66933,7 +68288,7 @@ async def write_cursor_process_stdin(
         writer.write(prompt.encode("utf-8"))
         await asyncio.wait_for(
             writer.drain(),
-            timeout=CURSOR_STARTUP_TIMEOUT_SECONDS,
+            timeout=CURSOR_STARTUP_TIMEOUT_SECONDS or 120.0,
         )
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise RuntimeError("Cursor closed stdin before accepting the prompt") from exc
@@ -67301,6 +68656,7 @@ async def run_cursor_process(
             if (
                 not pending_live_wait
                 and not provider_started
+                and CURSOR_STARTUP_TIMEOUT_SECONDS > 0
                 and elapsed >= CURSOR_STARTUP_TIMEOUT_SECONDS
             ):
                 timeout_error = (
@@ -67311,6 +68667,7 @@ async def run_cursor_process(
                 break
             if (
                 not pending_live_wait
+                and CURSOR_TURN_TIMEOUT_SECONDS > 0
                 and elapsed >= CURSOR_TURN_TIMEOUT_SECONDS
             ):
                 timeout_error = (
@@ -67319,32 +68676,21 @@ async def run_cursor_process(
                 )
                 await terminate_process_tree(proc)
                 break
-            startup_remaining = (
-                CURSOR_STARTUP_TIMEOUT_SECONDS - elapsed
-                if not provider_started and not pending_live_wait
-                else CURSOR_TURN_TIMEOUT_SECONDS
-            )
-            turn_remaining = (
-                CURSOR_TURN_TIMEOUT_SECONDS
-                if pending_live_wait
-                else CURSOR_TURN_TIMEOUT_SECONDS - elapsed
-            )
             idle_elapsed = now_monotonic - last_event_monotonic
             idle_deadline = (
                 CURSOR_IDLE_TIMEOUT_SECONDS
                 if idle_warning_emitted
                 else CURSOR_IDLE_WARN_SECONDS
             )
-            idle_remaining = max(0.01, idle_deadline - idle_elapsed)
-            wait_seconds = max(
-                0.01,
-                min(
-                    5.0,
-                    startup_remaining,
-                    turn_remaining,
-                    idle_remaining,
-                ),
-            )
+            remaining_deadlines = [5.0]
+            if not pending_live_wait:
+                if CURSOR_TURN_TIMEOUT_SECONDS > 0:
+                    remaining_deadlines.append(CURSOR_TURN_TIMEOUT_SECONDS - elapsed)
+                if not provider_started and CURSOR_STARTUP_TIMEOUT_SECONDS > 0:
+                    remaining_deadlines.append(CURSOR_STARTUP_TIMEOUT_SECONDS - elapsed)
+                if idle_deadline > 0:
+                    remaining_deadlines.append(idle_deadline - idle_elapsed)
+            wait_seconds = max(0.01, min(remaining_deadlines))
             try:
                 raw = await asyncio.wait_for(
                     proc.stdout.readline(),  # type: ignore[union-attr]
@@ -67373,6 +68719,7 @@ async def run_cursor_process(
                 idle = now_monotonic - last_event_monotonic
                 if (
                     not provider_started
+                    and CURSOR_STARTUP_TIMEOUT_SECONDS > 0
                     and elapsed >= CURSOR_STARTUP_TIMEOUT_SECONDS
                 ):
                     timeout_error = (
@@ -67381,7 +68728,10 @@ async def run_cursor_process(
                     )
                     await terminate_process_tree(proc)
                     break
-                if elapsed >= CURSOR_TURN_TIMEOUT_SECONDS:
+                if (
+                    CURSOR_TURN_TIMEOUT_SECONDS > 0
+                    and elapsed >= CURSOR_TURN_TIMEOUT_SECONDS
+                ):
                     timeout_error = (
                         "Cursor exceeded the absolute turn timeout of "
                         f"{CURSOR_TURN_TIMEOUT_SECONDS:g} seconds."
@@ -67391,7 +68741,10 @@ async def run_cursor_process(
                 if idle >= CURSOR_IDLE_WARN_SECONDS and not idle_warning_emitted:
                     await append_event(session_id, "idle_warning", {"run_id": run_id, "idle_seconds": int(idle)})
                     idle_warning_emitted = True
-                if idle >= CURSOR_IDLE_TIMEOUT_SECONDS:
+                if (
+                    CURSOR_IDLE_TIMEOUT_SECONDS > 0
+                    and idle >= CURSOR_IDLE_TIMEOUT_SECONDS
+                ):
                     timeout_error = (
                         "Cursor produced no output for "
                         f"{CURSOR_IDLE_TIMEOUT_SECONDS:g} seconds."
@@ -67950,7 +69303,7 @@ async def write_opencode_process_stdin(
         writer.write(prompt.encode("utf-8"))
         await asyncio.wait_for(
             writer.drain(),
-            timeout=OPENCODE_STARTUP_TIMEOUT_SECONDS,
+            timeout=OPENCODE_STARTUP_TIMEOUT_SECONDS or 120.0,
         )
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise RuntimeError(
@@ -68421,8 +69774,8 @@ async def run_opencode_process(
       - The workspace is explicitly passed as ``--dir`` as well as cwd.
       - There is no init event. Every event already carries the sessionID, so
         the session is considered started at the first event of any kind.
-      - The turn ends at a ``step_finish`` whose reason is not ``tool-calls``;
-        there is no separate terminal result event.
+      - An explicit completion ``step_finish`` ends the turn; ``tool-calls``
+        continues it and invalid/unknown finishes fail closed.
       - Usage is reported per step and must be accumulated, not overwritten.
     """
     from opencode_agent_client import (
@@ -68967,6 +70320,7 @@ async def run_opencode_process(
             if (
                 not pending_live_wait
                 and not provider_started
+                and OPENCODE_STARTUP_TIMEOUT_SECONDS > 0
                 and elapsed >= OPENCODE_STARTUP_TIMEOUT_SECONDS
             ):
                 timeout_error = (
@@ -68982,7 +70336,11 @@ async def run_opencode_process(
                 )
                 await terminate_process_tree(proc)
                 break
-            if not pending_live_wait and elapsed >= OPENCODE_TURN_TIMEOUT_SECONDS:
+            if (
+                not pending_live_wait
+                and OPENCODE_TURN_TIMEOUT_SECONDS > 0
+                and elapsed >= OPENCODE_TURN_TIMEOUT_SECONDS
+            ):
                 timeout_error = (
                     "OpenCode exceeded the absolute turn timeout of "
                     f"{OPENCODE_TURN_TIMEOUT_SECONDS:g} seconds."
@@ -68995,10 +70353,13 @@ async def run_opencode_process(
                 if idle_warning_emitted
                 else OPENCODE_IDLE_WARN_SECONDS
             )
-            remaining_deadlines = [5.0, idle_deadline - idle_elapsed]
+            remaining_deadlines = [5.0]
             if not pending_live_wait:
-                remaining_deadlines.append(OPENCODE_TURN_TIMEOUT_SECONDS - elapsed)
-                if not provider_started:
+                if idle_deadline > 0:
+                    remaining_deadlines.append(idle_deadline - idle_elapsed)
+                if OPENCODE_TURN_TIMEOUT_SECONDS > 0:
+                    remaining_deadlines.append(OPENCODE_TURN_TIMEOUT_SECONDS - elapsed)
+                if not provider_started and OPENCODE_STARTUP_TIMEOUT_SECONDS > 0:
                     remaining_deadlines.append(OPENCODE_STARTUP_TIMEOUT_SECONDS - elapsed)
             wait_seconds = max(
                 0.01,
@@ -69020,8 +70381,15 @@ async def run_opencode_process(
                     continue
                 elapsed = now_monotonic - started_monotonic
                 if (
-                    (not provider_started and elapsed >= OPENCODE_STARTUP_TIMEOUT_SECONDS)
-                    or elapsed >= OPENCODE_TURN_TIMEOUT_SECONDS
+                    (
+                        not provider_started
+                        and OPENCODE_STARTUP_TIMEOUT_SECONDS > 0
+                        and elapsed >= OPENCODE_STARTUP_TIMEOUT_SECONDS
+                    )
+                    or (
+                        OPENCODE_TURN_TIMEOUT_SECONDS > 0
+                        and elapsed >= OPENCODE_TURN_TIMEOUT_SECONDS
+                    )
                 ):
                     # Apply the earliest startup/absolute deadline at the top
                     # of the loop instead of misreporting it as idle expiry.
@@ -69033,7 +70401,10 @@ async def run_opencode_process(
                         "idle_seconds": int(idle),
                     })
                     idle_warning_emitted = True
-                if idle >= OPENCODE_IDLE_TIMEOUT_SECONDS:
+                if (
+                    OPENCODE_IDLE_TIMEOUT_SECONDS > 0
+                    and idle >= OPENCODE_IDLE_TIMEOUT_SECONDS
+                ):
                     timeout_error = (
                         "OpenCode produced no output for "
                         f"{OPENCODE_IDLE_TIMEOUT_SECONDS:g} seconds."
@@ -69331,10 +70702,24 @@ async def run_opencode_process(
                     opencode_usage,
                     normalized.get("usage") or {},
                 )
-                # A turn is a sequence of steps. "tool-calls" means another
-                # step follows; anything else ends the turn, and there is no
-                # separate terminal result event to wait for.
-                if str(normalized.get("reason") or "") != "tool-calls":
+                # Only explicit completion reasons end a turn. In particular,
+                # HTML-200/empty streams can yield "unknown" while the CLI
+                # immediately requests another step; waiting for exit lets it
+                # loop and hides the invalid response behind a cleanup error.
+                finish_reason = str(normalized.get("reason") or "")
+                if finish_reason not in {"tool-calls", "stop", "length", "content-filter"}:
+                    stream_error = (
+                        "OpenCode did not receive a valid completion from the "
+                        "model API. Check the endpoint URL, selected protocol "
+                        "and streaming support. The run was stopped to prevent "
+                        "repeated requests."
+                    )
+                    await terminate_process_tree(
+                        proc,
+                        grace=OPENCODE_GUARD_TEARDOWN_GRACE_SECONDS,
+                    )
+                    break
+                if finish_reason != "tool-calls":
                     await flush_opencode_reasoning()
                     terminal_event_seen = True
                     try:
@@ -69742,6 +71127,7 @@ async def retain_codex_goal_run_owner(
     session_id: str, run_id: str, manager: CodexAppServerManager,
     thread_id: str,
     *, subscription: Any = None, handled_sequence: int = 0,
+    allow_goal_continuation: bool = True,
 ) -> bool:
     """Keep an ordinary runner supervised when its native goal continues.
 
@@ -69765,27 +71151,31 @@ async def retain_codex_goal_run_owner(
             goal = (STORE.sessions.get(session_id) or {}).get("codex_goal")
             enqueued = getattr(subscription, "_last_enqueued_sequence", 0)
             pending_output = isinstance(enqueued, int) and enqueued > handled_sequence
-            retain = bool(
-                CODEX_GOALS_ENABLED
+            retain_goal = bool(
+                allow_goal_continuation and CODEX_GOALS_ENABLED
                 and isinstance(goal, dict)
                 and (goal.get("status") == "active" or pending_output)
                 and not active.get("stop_requested")
                 and run_id not in STOPPED_RUNS
             )
+            retain_shell = codex_shell_intents_pending(active)
+            retain = retain_goal or retain_shell
             active["codex_goal_handoff_closed"] = not retain
+            active["codex_shell_handoff_closed"] = not retain
             if not retain:
                 return False
             # Same supervised task, authority, runtime lease and thread pin.
             # Do not create a synthetic user message or a detached successor.
             active["codex_native_operation"] = True
-            active["codex_native_operation_kind"] = "goal_resume"
+            active["codex_native_operation_kind"] = "goal_resume" if retain_goal else "shell_resume"
             active["codex_control_reservation_id"] = run_id
             active["codex_app_server_turn"] = None
             active["provider_turn_id"] = None
             active["provider_turn_ready"] = False
             active["native_interrupt_sent"] = False
             active["native_steer_queue"] = asyncio.Queue(maxsize=1)
-            CURRENT_TURNS[session_id]["purpose"] = "codex_goal_resume"
+            if retain_goal:
+                CURRENT_TURNS[session_id]["purpose"] = "codex_goal_resume"
             CURRENT_TURNS[session_id]["codex_control_reservation_id"] = run_id
             # Register the existing supervisor, not a new task, so Delete and
             # server drain see the same native owner as Stop and Force Send.
@@ -69793,6 +71183,35 @@ async def retain_codex_goal_run_owner(
             if owner is not None:
                 register_codex_native_action(session_id, run_id, owner)
             return True
+
+
+def codex_native_archive_rejection(exc: BaseException, thread_id: str) -> bool:
+    """Only the owning native resume RPC can report this state, not chat text."""
+    return bool(
+        thread_id and isinstance(exc, CodexAppServerRequestError)
+        and exc.method == "thread/resume" and isinstance(exc.error, dict)
+        and exc.error.get("message") == (
+            f"session {thread_id} is archived. Run `codex unarchive {thread_id}` to unarchive it first."
+        )
+    )
+
+
+async def archive_rejected_codex_session(session_id: str, thread_id: str, run_id: str) -> None:
+    """Mirror a confirmed native archive through the normal local archive path.
+
+    This never archives/unarchives/deletes the native thread. It retires local
+    routes and jobs exactly like the user's Archive action, preserving history.
+    Identity is stable while this run owns the chat; ignore stale/deleted runs.
+    """
+    current = STORE.sessions.get(session_id)
+    active = ACTIVE.get(session_id) or {}
+    if (not current or current.get("archived") or session_id in DELETING_SESSIONS
+            or current.get("backend") != BACKEND_CODEX
+            or str(session_provider_id(current) or "") != thread_id
+            or active.get("run_id") != run_id):
+        return
+    await _update_session(session_id, UpdateSessionRequest(archived=True),
+                          native_archive_owner=(thread_id, run_id))
 
 
 async def run_codex_app_server(
@@ -69805,6 +71224,8 @@ async def run_codex_app_server(
     allow_exec_fallback: bool,
     interactive_app_server: bool = False,
     allow_resume_rollover: bool = True,
+    allow_compaction_retry: bool = True,
+    compaction_continuation: bool = False,
     diff_baseline: dict[str, Any] | None = None,
     standalone_provider_context: bool = False,
     provider_command: ProviderCommandRecord | None = None,
@@ -69859,6 +71280,9 @@ async def run_codex_app_server(
     turn_start_epoch = 0.0
     terminal_status = "failed"
     terminal_error: str | None = None
+    pending_compaction_items: set[str] = set()
+    compaction_failed = False
+    compaction_execution_seen = False
     error_emitted = False
     cancelled_provisional_turn = False
     provisional_thread_invalidated = False
@@ -71247,6 +72671,10 @@ async def run_codex_app_server(
         nonlocal pending_unknown_message, pending_unknown_item_id
         nonlocal ambiguous_turn_start, error_emitted
         nonlocal native_answer_turn_id, waiting_for_child_continuation
+        nonlocal compaction_failed, compaction_execution_seen
+        await observe_codex_shell_notification(
+            session_id, ACTIVE.get(session_id), notification, handled_notification_sequence,
+        )
         method = str(notification.get("method") or "")
         params = (
             notification.get("params")
@@ -71255,6 +72683,9 @@ async def run_codex_app_server(
         )
         item = params.get("item") if isinstance(params.get("item"), dict) else {}
         item_id = str(params.get("itemId") or item.get("id") or "")
+        if method.startswith(("item/agentMessage/", "item/reasoning/", "item/plan/",
+                              "item/commandExecution/", "item/fileChange/")):
+            compaction_execution_seen = True
 
         native_turn = params.get("turn") if isinstance(params.get("turn"), dict) else {}
         native_turn_id = str(params.get("turnId") or native_turn.get("id") or "")
@@ -71264,6 +72695,8 @@ async def run_codex_app_server(
             return False
         if method == "turn/started" and native_turn_id:
             waiting_for_child_continuation = False
+            if native_answer_turn_id != native_turn_id:
+                pending_compaction_items.clear()
             if native_answer_turn_id and native_answer_turn_id != native_turn_id:
                 # Preserve previous answers as their original timeline events;
                 # only the latest native answer belongs in terminal result_text.
@@ -71335,12 +72768,20 @@ async def run_codex_app_server(
             append_tool_output_delta(item_id, params.get("delta"))
             return False
         if method == "item/started" and item:
+            if item.get("type") == "contextCompaction" and item_id:
+                pending_compaction_items.add(item_id)
+            elif item.get("type") != "userMessage":
+                compaction_execution_seen = True
             tool = codex_app_server_tool(item)
             if tool:
                 await emit_tool_started(tool)
             changed_paths.update(codex_app_server_changed_paths(item))
             return False
         if method == "item/completed" and item:
+            if item.get("type") == "contextCompaction":
+                pending_compaction_items.discard(item_id)
+            elif item.get("type") != "userMessage":
+                compaction_execution_seen = True
             if codex_app_server_tool(item):
                 await maybe_notify_chat_mailbox_codex(session_id)
             item_type = str(item.get("type") or "")
@@ -71403,6 +72844,7 @@ async def run_codex_app_server(
                 else {}
             )
             terminal_status = str(completed_turn.get("status") or "failed")
+            compaction_failed = terminal_status == "failed" and bool(pending_compaction_items)
             if completed_turn.get("error"):
                 terminal_error = concise_error_message(completed_turn.get("error"))
             elif terminal_status == "completed":
@@ -71763,12 +73205,14 @@ async def run_codex_app_server(
                     overrides["serviceTier"] = codex_app_server_service_tier(service_tier)
 
                 turn_start_attempted = True
+                if compaction_continuation:
+                    overrides.pop("clientUserMessageId", None)
                 turn_start_epoch = time.time()
                 install_child_continuation_observer()
                 try:
                     turn = await manager.start_turn(
                         provider_id,
-                        codex_provider_command_turn_input(
+                        [] if compaction_continuation else codex_provider_command_turn_input(
                             prompt,
                             provider_command,
                         ),
@@ -71830,6 +73274,7 @@ async def run_codex_app_server(
                     )
                     if active_owned:
                         active["codex_app_server_turn"] = turn
+                        active["codex_shell_subscription"] = turn._subscription
                         if not native_answer_turn_id:
                             native_answer_turn_id = str(turn.turn_id or "")
                         active["provider_thread_id"] = provider_id
@@ -71915,6 +73360,7 @@ async def run_codex_app_server(
                             idle = time.monotonic() - last_activity
                             if (
                                 not first_activity_seen
+                                and CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS > 0
                                 and idle >= CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS
                             ):
                                 # turn/start was accepted but nothing at all
@@ -71952,7 +73398,7 @@ async def run_codex_app_server(
                                     "run_id": current_run_id,
                                     "idle_seconds": int(idle),
                                 })
-                            if idle >= IDLE_KILL_SECONDS:
+                            if IDLE_KILL_SECONDS > 0 and idle >= IDLE_KILL_SECONDS:
                                 terminal_error = "Codex app-server turn exceeded the idle timeout."
                                 if turn.turn_id:
                                     with suppress(CodexAppServerError):
@@ -72143,12 +73589,13 @@ async def run_codex_app_server(
                             )
 
                 if (
-                    turn_completed and terminal_status == "completed"
+                    turn_completed
                     and not standalone_provider_context
                     and await retain_codex_goal_run_owner(
                         session_id, current_run_id, manager, provider_id,
                         subscription=turn._subscription,
                         handled_sequence=handled_notification_sequence,
+                        allow_goal_continuation=terminal_status == "completed",
                     )
                 ):
                     # Complete the initial answer, but not the supervised run.
@@ -72162,8 +73609,10 @@ async def run_codex_app_server(
                         goal_time_budget_task.cancel()
                         await asyncio.gather(goal_time_budget_task, return_exceptions=True)
                         goal_time_budget_task = None
+                    continuation_kind = str((ACTIVE.get(session_id) or {}).get(
+                        "codex_native_operation_kind") or "goal_resume")
                     goal_continuation_result = await consume_codex_native_turn(
-                        session_id, current_run_id, "goal_resume", manager,
+                        session_id, current_run_id, continuation_kind, manager,
                         provider_id, current_run_id, turn._subscription,
                         finalize_operation=False,
                         initial_sequence=handled_notification_sequence,
@@ -72173,7 +73622,8 @@ async def run_codex_app_server(
                     terminal_error = goal_continuation_result["error"]
                     # Never overwrite a later goal answer with the first reply
                     # in the terminal payload when the goal eventually ends.
-                    text_parts[:] = [goal_continuation_result["result_text"]]
+                    if continuation_kind != "shell_resume" or goal_continuation_result["result_text"]:
+                        text_parts[:] = [goal_continuation_result["result_text"]]
 
         stopped = (
             terminal_status in {"interrupted", "cancelled", "canceled"}
@@ -72218,6 +73668,7 @@ async def run_codex_app_server(
             thread_pinned = False
         can_fallback = (
             allow_exec_fallback
+            and not codex_native_archive_rejection(exc, str(session_provider_id(sess) or ""))
             and codex_provider.session_choice(sess.get("codex_provider")) == "default"
             and provider_command is None
             and not stop_requested
@@ -72282,6 +73733,15 @@ async def run_codex_app_server(
                 **current_metadata(),
             })
             error_emitted = True
+            if codex_native_archive_rejection(exc, str(session_provider_id(sess) or "")):
+                try:
+                    await archive_rejected_codex_session(
+                        session_id, str(session_provider_id(sess)), current_run_id,
+                    )
+                except Exception:
+                    # Preserve the actual provider error if local retirement
+                    # fails. Never pretend the native thread was unarchived.
+                    logger.exception("Could not mirror native Codex archive session=%s", session_id)
     finally:
         async def settle_transport_finalizer() -> None:
             """Retire every owner before cancellation can escape the runner."""
@@ -72389,6 +73849,80 @@ async def run_codex_app_server(
         or finished_tools
         or seen_artifacts
     )
+    compaction_failed = terminal_status == "failed" and (
+        compaction_failed or is_codex_compaction_failure(terminal_error or "")
+    )
+    async def prepare_compaction_retry() -> str | None:
+        nonlocal thread_pinned
+        if not (
+            compaction_failed and allow_compaction_retry and not stopped
+            and not standalone_provider_context and resumed_provider_id == provider_id
+            and not produced_activity and not compaction_execution_seen
+            and not delivery_unknown and not ambiguous_turn_start
+            and not goal_steer_recovery_fenced and not child_continuation_attempts
+            and goal_continuation_result is None and turn_completed
+            and current_run_id == run_id and turn is not None
+        ):
+            return None
+        # The ordered stream alone is insufficient: corroborate it with a
+        # full, terminal native snapshot. Unsupported/failed reads fail closed.
+        retry_mode = None
+        try:
+            turns = await asyncio.wait_for(
+                manager.list_turns(provider_id, limit=1, items_view="full", sort_direction="desc"),
+                timeout=5.0,
+            )
+            retry_mode = codex_compaction_retry_mode(turns, turn.turn_id, current_run_id)
+        except Exception:
+            pass
+        if (retry_mode and await turn_slot_is_owned(session_id, current_run_id)
+                and not stop_requested_for_current_run()):
+            await append_event(session_id, "codex_compaction_retry", {
+                "run_id": current_run_id, "backend": BACKEND_CODEX,
+                "provider_thread_id": provider_id, "model": model,
+                "message": (
+                    f"Context compaction failed before a reply. Retrying once with {model} "
+                    "in the same Codex conversation, without duplicating the message or tool execution."
+                ),
+            })
+            if thread_pinned:
+                await unpin_codex_app_server_thread(manager, provider_id)
+                thread_pinned = False
+            return retry_mode
+        return None
+
+    retry_mode = None
+    try:
+        retry_mode = await prepare_compaction_retry()
+    except asyncio.CancelledError:
+        # Recovery runs after the original stream has closed. Stop/restart
+        # must still release the same run's slot and exact thread lease.
+        cleanup = asyncio.create_task(reconcile_cancelled_runner_exit())
+        await join_task_despite_caller_cancellation(cleanup)
+        raise
+    except Exception:
+        # Failed recovery preparation must leave the original failure visible,
+        # not skip the normal terminal/lease finalizer below.
+        pass
+    if retry_mode:
+        # The continuation owns terminal cleanup. Do not catch its failure and
+        # finalize the original attempt a second time.
+        await run_codex_app_server(
+            session_id, current_run_id, current_provider_prompt, sess, manifest_path,
+            allow_exec_fallback=False, interactive_app_server=interactive_app_server,
+            allow_resume_rollover=False, allow_compaction_retry=False,
+            compaction_continuation=retry_mode == "continue",
+            diff_baseline=current_diff_baseline,
+            standalone_provider_context=standalone_provider_context,
+            provider_command=provider_command, provider_runtime_env=runtime_env,
+        )
+        return
+    if stop_requested_for_current_run():
+        stopped = True
+        terminal_status = "interrupted"
+        terminal_error = None
+    if compaction_failed and terminal_error:
+        terminal_error = codex_compaction_error_message(model, terminal_error)
     if selected_provider and not produced_activity and not stopped and (
         first_activity_stalled or terminal_status == "completed"
     ):
@@ -72400,6 +73934,7 @@ async def run_codex_app_server(
         )
     recover_resume = (
         not delivery_unknown
+        and not compaction_failed
         and not (selected_provider and (first_activity_stalled or not produced_activity))
         and not goal_steer_recovery_fenced
         and not child_continuation_attempts
@@ -72467,7 +74002,7 @@ async def run_codex_app_server(
     try:
         if terminal_status == "failed":
             terminal_error = terminal_error or "Codex app-server turn failed."
-            if selected_provider:
+            if selected_provider and not compaction_failed:
                 failure_kind = codex_provider.classify_failure(terminal_error)
                 if failure_kind != "failed":
                     terminal_error = codex_provider.test_result(failure_kind)["message"]
@@ -72677,7 +74212,7 @@ async def start_turn(
     scheduled_job_revision: str | None = None,
     scheduled_job_manual_run: bool = False,
 ) -> dict[str, Any]:
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if queue_if_busy and provider_context_mode == "chat":
         await reconcile_idle_queue_session(
             session_id,
@@ -72750,7 +74285,7 @@ async def _start_turn_locked(
     # Internal delivery paths can enter with the lifecycle lock already held
     # and intentionally bypass ``start_turn``. They still must not start or
     # queue ahead of an undiscovered durable startup row.
-    await wait_for_queue_recovery_admission()
+    await wait_for_queue_recovery_admission(session_id)
     if (
         req.purpose == SECURE_PEER_DELIVERY_PURPOSE
         and not SECURE_PEER_AGENT_RELAY_ENABLED
@@ -72772,6 +74307,8 @@ async def _start_turn_locked(
         raise HTTPException(status_code=404, detail="session not found")
     if sess.get("archived"):
         raise HTTPException(status_code=409, detail="archived chats cannot start turns")
+    if sess.get("gemini_cleanup_pending_run_id"):
+        raise HTTPException(status_code=409, detail="Gemini runtime cleanup is unconfirmed. Retry Stop; after a server restart, server-side runtime verification is required before this chat can continue.")
     if req.purpose == "chat_mailbox_wake" or mailbox_wake_claim is not None:
         if (req.purpose != "chat_mailbox_wake" or mailbox_wake_claim is None
                 or mailbox_wake_claim.get("target_session_id") != session_id
@@ -73151,6 +74688,9 @@ async def _start_turn_locked(
         ),
         runtime_validation_patch,
     )
+    if runtime_preview_session.get("backend") == BACKEND_GEMINI:
+        if GEMINI_CLIENT_CAPABILITY not in req.client_capabilities:
+            raise HTTPException(409, "Update AgentsDock to a Gemini-capable client before sending messages.")
     if str(runtime_preview_session.get("backend") or DEFAULT_BACKEND).strip().lower() == BACKEND_CODEX:
         await prepare_codex_login_turn(runtime_preview_session)
     opencode_cwd: str | None = None
@@ -73197,6 +74737,10 @@ async def _start_turn_locked(
             session_id,
             list(item.get("file_ids") or []),
         )
+    if runtime_preview_session.get("backend") == BACKEND_GEMINI:
+        from gemini_content import attachments as gemini_attachments
+        await asyncio.to_thread(gemini_attachments, sys.modules[__name__], session_id,
+            list(normalized_lineage[-1].get("file_ids") or []) if len(normalized_lineage) >= 2 else list(req.file_ids))
     # OpenCode's native --file path has no provider-side size ceiling and can
     # eagerly ingest local data. Resolve and bound the exact current message
     # before either reserving a slot or durably accepting it into the queue.
@@ -73410,6 +74954,9 @@ async def _start_turn_locked(
             if team_mail_grant_mutation:
                 team_mail_route_snapshot = team_mail_grants.admission_snapshot(team_mail_grant_mutation, sess)
         fields_set = runtime_fields_set
+        migration_previous_model = str(
+            req.model if "model" in fields_set and req.model else sess.get("model") or ""
+        ).strip() or None
         runtime_patch: dict[str, Any] = {}
         if req.backend:
             runtime_patch["backend"] = req.backend
@@ -73438,14 +74985,20 @@ async def _start_turn_locked(
 
         backend = sess.get("backend") or DEFAULT_BACKEND
         runtime_status = await ensure_runtime_available(backend, session=sess)
+        if backend == BACKEND_CODEX:
+            sess = await migrate_retired_codex_selection(
+                session_id, sess, standalone=provider_context_mode == "standalone",
+                previous_model=migration_previous_model,
+            )
         if provider_context_mode == "chat":
             sess = await STORE.mark_backend_started(session_id, str(backend))
-        if backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
+        if backend in (BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI):
             # Keep the exact compatibility-probed executable pinned through
             # admission; mark_backend_started returns a fresh durable snapshot.
             sess = dict(sess)
             executable_key = (
-                "_opencode_executable" if backend == BACKEND_OPENCODE
+                "_gemini_executable" if backend == BACKEND_GEMINI
+                else "_opencode_executable" if backend == BACKEND_OPENCODE
                 else "_cursor_executable"
             )
             sess[executable_key] = runtime_status.get("_executable")
@@ -73648,7 +75201,7 @@ async def _start_turn_locked(
         )
         provider_actions = {"publish"}
         if provider_turn_may_raise_emergency(req.purpose):
-            provider_actions.add("emergency")
+            provider_actions.update({"emergency", "notify"})
         if req.purpose == "cross_chat_handoff_delivery":
             if exchange_response_grant is not None:
                 provider_actions.add("cross_chat_response")
@@ -73756,7 +75309,7 @@ async def _start_turn_locked(
                     else None
                 ),
             )
-        if turn_obligation_ids and backend in (BACKEND_CURSOR, BACKEND_OPENCODE):
+        if turn_obligation_ids and backend in (BACKEND_CURSOR, BACKEND_OPENCODE, BACKEND_GEMINI):
             provider_authority_context += (
                 "\n\n[AgentsDock final-result handoff]\n"
                 "Your successful non-empty final answer will be delivered once to the explicitly referenced chat. "
@@ -73786,7 +75339,7 @@ async def _start_turn_locked(
             prompt,
         )
         provider_prompt = provider_turn_payload.user_prompt
-        if backend == BACKEND_CURSOR or (
+        if backend in {BACKEND_CURSOR, BACKEND_GEMINI} or (
             backend == BACKEND_OPENCODE and resolved_provider_command is None
         ):
             # These print-mode CLIs have no separate system/application-context
@@ -73856,6 +75409,8 @@ async def _start_turn_locked(
         else:
             started_payload["model"] = sess.get("model")
             started_payload["effort"] = sess.get("effort")
+        if getattr(req, "client_request_id", None):
+            started_payload["client_request_id"] = req.client_request_id
         if queued_id:
             started_payload["queued_id"] = queued_id
         run_metadata = {
@@ -73935,6 +75490,7 @@ async def _start_turn_locked(
                     or mailbox_wake_claim is not None
                     or getattr(req, "shared_chat_id", None) is not None
                     or queued_id is not None
+                    or getattr(req, "client_request_id", None) is not None
                 )
                 else append_event(session_id, "turn_started", started_payload)
             )
@@ -74108,6 +75664,21 @@ async def _start_turn_locked(
                     else {}
                 ),
             )
+        elif backend == BACKEND_GEMINI:
+            from gemini_runner import run as run_gemini
+            task = run_gemini(sys.modules[__name__], session_id, run_id, provider_prompt,
+                             dict(sess), manifest_path,
+                             file_ids=prompt_file_ids,
+                             communication_required=bool(
+                                 any(reference.action in {"route", "direct_message", "instruction", "request_reply"}
+                                     for reference in req.chat_references)
+                                 or req.team_references or team_mail_command
+                                 or mailbox_wake_claim is not None
+                                 or req.purpose in {"cross_chat_handoff_delivery", "secure_peer_handoff_delivery"}
+                             ),
+                             provider_command=resolved_provider_command,
+                             provider_runtime_env=provider_turn_payload.runtime_env,
+                             standalone_provider_context=provider_context_mode == "standalone")
         elif backend == BACKEND_OPENCODE:
             task = run_opencode(
                 session_id,
@@ -74671,22 +76242,14 @@ def managed_server_update_scheduled_job_blocker(
     *,
     manual: bool = False,
 ) -> str | None:
-    """Fence autonomous job admission while an idle update is reserved.
+    """Apply the same update admission policy to scheduled and manual work.
 
-    A pending reservation deliberately stays invisible to ordinary user turns,
-    Force Send, provider controls, and manual Run Now. Automatic job
-    dispatches are durable and retryable, so deferring only that autonomous
-    admission path prevents recurring jobs from starving the updater without
-    reviving the global pending fence that locked operators out on
-    2026-09-04.
+    Waiting for idle must not manufacture idle by suspending recurring jobs.
+    Only an actual replacement/restart (or an explicitly confirmed force
+    update) fences new work, just as it does for ordinary user turns.
     """
 
-    blocker = managed_server_update_blocker()
-    if blocker:
-        return blocker
-    if not manual and managed_server_update_is_pending():
-        return MANAGED_SERVER_UPDATE_PENDING_DETAIL
-    return None
+    return managed_server_update_admission_blocker()
 
 
 def live_unsafe_http_mutation_ids_locked() -> list[str]:
@@ -74906,10 +76469,8 @@ def macos_launchd_owns_current_process() -> bool | None:
 
 
 def detect_managed_server_service_kind() -> str | None:
-    """Prove that an official user service will relaunch this process."""
+    """Prove that a user service will relaunch this process."""
 
-    if not official_server_release_tree():
-        return None
     if sys.platform.startswith("linux"):
         return "systemd-user" if agents_server_systemd_cgroup() else None
     if sys.platform == "darwin":
@@ -77305,7 +78866,7 @@ def ensure_managed_update_service_cgroup_clear(
     *,
     service_cgroup: str | None = None,
 ) -> dict[str, Any]:
-    """Fail closed unless only this server remains in its service cgroup."""
+    """Require no children, or prove this worker's stop policy preserves them."""
 
     state = managed_update_service_cgroup_state(
         service_cgroup=service_cgroup,
@@ -78193,6 +79754,7 @@ async def lifespan(app: FastAPI):
         SERVER_STATE_PROCESS_LOCK = server_instances.acquire_state_lock(STATE_DIR)
     SERVER_SHUTTING_DOWN = False
     await STORE.load()
+    non_job_agent_recovery_items = prepare_non_job_agent_recovery()
     # Prime the managed-service ownership proof once, off the loop, so the
     # restart controls never depend on a fresh launchctl/cgroup probe later.
     with suppress(Exception):
@@ -78273,13 +79835,12 @@ async def lifespan(app: FastAPI):
             startup_update_status = read_server_update_status()
     active_update_schedule_id = (
         str(startup_update_status.get("schedule_id") or "").strip()
-        if managed_server_update_is_pending(startup_update_status)
+        if managed_server_force_update_is_pending(startup_update_status)
         else None
     )
-    # A completed/failed update, an offline cancellation, or replacement by a
-    # new reservation may leave exact automatic occurrences parked in the
-    # durable job registry. Rearm untouched revisions except those owned by
-    # the one reservation that is still live.
+    # Older releases parked automatic jobs while merely waiting for idle.
+    # Restore those unchanged occurrences even if that reservation still exists.
+    # Preserve only an explicitly confirmed force update's admission fence.
     await JOBS.resume_update_parked(
         active_schedule_id=active_update_schedule_id,
     )
@@ -78317,6 +79878,10 @@ async def lifespan(app: FastAPI):
         name="queued-turn-startup-recovery",
     )
     QUEUE_RECOVERY_TASK = queue_recovery_task
+    non_job_agent_recovery_task = asyncio.create_task(
+        recover_non_job_agent_metadata(non_job_agent_recovery_items),
+        name="unread-provenance-recovery",
+    )
     server_update_pending_waiter_task = asyncio.create_task(
         server_update_pending_waiter_loop(),
         name="server-update-pending-waiter",
@@ -78407,6 +79972,7 @@ async def lifespan(app: FastAPI):
         cleanup_abandoned_fork_provider_threads(startup_abandoned_fork_threads)
     )
     host_monitor_task = asyncio.create_task(host_monitor_loop())
+    queue_checkpoint_task = asyncio.create_task(queue_checkpoint_loop())
     history_search_task = asyncio.create_task(history_search_index_loop())
     runtime_probe_task = asyncio.create_task(asyncio.to_thread(refresh_runtime_diagnostics, force=True))
     if CONFIG_ENV_APPLIED:
@@ -78484,6 +80050,11 @@ async def lifespan(app: FastAPI):
         cross_chat_expiry_task.cancel()
         digest_recovery_task.cancel()
         queue_recovery_task.cancel()
+        non_job_agent_recovery_task.cancel()
+        queue_checkpoint_task.cancel()
+        history_tasks = (*HISTORY_MAINTENANCE_TASKS.values(), *(item[1] for item in TURN_RECEIPT_TASKS.values()))
+        for task in history_tasks:
+            task.cancel()
         server_update_pending_waiter_task.cancel()
         await bounded_shutdown_phase(
             "startup-reconciliation",
@@ -78492,6 +80063,9 @@ async def lifespan(app: FastAPI):
                 cross_chat_expiry_task,
                 digest_recovery_task,
                 queue_recovery_task,
+                non_job_agent_recovery_task,
+                queue_checkpoint_task,
+                *history_tasks,
                 server_update_pending_waiter_task,
                 *(
                     (health_queue_reconcile_task,)
@@ -78737,6 +80311,7 @@ AGENT_HELPER_ROUTE_RULES: tuple[tuple[str, re.Pattern[str], int], ...] = (
         16 * 1024 * 1024,
     ),
     ("POST", re.compile(r"^/api/agent/sessions/[^/]+/emergency-alerts$"), 8 * 1024),
+    ("POST", re.compile(r"^/api/agent/sessions/[^/]+/notifications$"), 8 * 1024),
     ("GET", re.compile(r"^/api/agent/team-mail/routes$"), 0),
     (
         "POST",
@@ -79277,6 +80852,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/goals", "/api/admin/codex/subagents",
         "/api/admin/codex/auth", "/api/admin/codex/auth/api-key",
         "/api/admin/codex/auth/import", "/api/admin/cursor/auth/import",
+        "/api/admin/codex/auth/reload",
         "/api/admin/codex/provider", "/api/admin/codex/provider/test",
         "/api/admin/codex/provider/models",
         "/api/admin/provider-connections/claude", "/api/admin/provider-connections/claude/check",
@@ -79513,7 +81089,7 @@ async def require_agent_token(request: Request, call_next):
             if body_error is not None:
                 status_code, detail = body_error
                 return JSONResponse({"detail": detail}, status_code=status_code)
-        elif request.url.path == "/api/admin/codex/auth/api-key" and request.method.upper() == "POST":
+        elif request.url.path in {"/api/admin/codex/auth/api-key", "/api/admin/codex/auth/reload"} and request.method.upper() == "POST":
             declared_size, transport_error = privileged_native_json_transport(
                 request, max_body_bytes=codex_auth.MAX_BODY_BYTES,
                 label="Codex authentication", require_content_length=True,
@@ -81829,6 +83405,22 @@ async def codex_provider_mcp(request: Request) -> Response:
     })
 
 
+@app.get("/api/connection-addresses")
+async def connection_addresses(request: Request) -> dict[str, Any]:
+    require_native_admin_control(request)
+    # Discover only on explicit QR sharing, never on the frequently polled health path.
+    from server_instances import candidate_addresses, connection_choices, tailscale_status
+
+    def discover() -> list[str]:
+        choices = connection_choices(
+            SERVER_BIND_ADDRESS, SERVER_PORT,
+            candidate_addresses(SERVER_BIND_ADDRESS, SERVER_PORT), tailscale_status(),
+        )
+        return list(dict.fromkeys(filter(None, [choices["tailscale"], *choices["lan"]])))[:6]
+
+    return {"version": 1, "server_identity": server_identity(), "urls": await asyncio.to_thread(discover)}
+
+
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     await reconcile_idle_queued_turns_from_health_poll()
@@ -81847,6 +83439,7 @@ async def health() -> dict[str, Any]:
     team_hub_capability = await team_hub_capability_for_health()
     return {
         "ok": True,
+        "chat_readiness": queue_recovery_readiness(),
         "server_version": SERVER_VERSION,
         "api_contract_version": API_CONTRACT_VERSION,
         "server_identity": server_identity(),
@@ -81868,7 +83461,7 @@ async def health() -> dict[str, Any]:
             "side_questions": side_questions.capability(),
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
             "codex_provider_v1": {"available": bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC, "wire_api": "responses", "per_chat": True, "per_chat_models": True, "model_discovery": True, "model_compatibility": True},
-            "provider_connections_v1": {"available": bool(AGENT_TOKEN), "per_chat": True, "backends": [BACKEND_CLAUDE, BACKEND_OPENCODE, BACKEND_CURSOR]},
+            "provider_connections_v1": {"available": bool(AGENT_TOKEN), "per_chat": True, "backends": [BACKEND_CLAUDE, BACKEND_OPENCODE, BACKEND_CURSOR, BACKEND_GEMINI]},
             "team_mail_hints_v1": SECURE_PEER_RUNTIME.team_mail_hint_capability(),
             "team_mail_hints_v2": SECURE_PEER_RUNTIME.team_notification_hint_capability(),
             "websocket_auth_v1": {
@@ -81883,6 +83476,7 @@ async def health() -> dict[str, Any]:
                 "event_protocol": EVENTS_WEBSOCKET_PROTOCOL,
                 "terminal_protocol": TERMINAL_WEBSOCKET_PROTOCOL,
             },
+            "event_stream_liveness_v1": {"available": True, "version": 1},
             "team_hub_v1": team_hub_capability,
             "team_hub_host_control_v1": team_hub_host_control_capability(),
             "agent_team_mail_routes_v1": {
@@ -81989,16 +83583,19 @@ async def health() -> dict[str, Any]:
                     BACKEND_CODEX,
                     BACKEND_CLAUDE,
                     BACKEND_OPENCODE,
+                    BACKEND_GEMINI,
                 ],
                 "client_capability_by_backend": {
                     BACKEND_CODEX: CODEX_INTERACTIVE_CLIENT_CAPABILITY,
                     BACKEND_CLAUDE: CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY,
                     BACKEND_OPENCODE: OPENCODE_PROVIDER_COMMANDS_CLIENT_CAPABILITY,
+                    BACKEND_GEMINI: GEMINI_CLIENT_CAPABILITY,
                 },
                 "supported_kinds_by_backend": {
                     BACKEND_CODEX: ["skill"],
                     BACKEND_CLAUDE: ["command"],
                     BACKEND_OPENCODE: ["skill"],
+                    BACKEND_GEMINI: ["skill"],
                 },
                 "opencode_scope": {
                     "discovery": "bounded_documented_default_skill_roots",
@@ -82068,6 +83665,25 @@ async def health() -> dict[str, Any]:
                 ),
                 "max_client_frame_bytes": PORT_TUNNEL_MAX_CLIENT_FRAME_BYTES,
                 **port_tunnel_status,
+            },
+            "gemini_backend": {
+                # Server support is always advertised; CLI installation and
+                # API connection readiness are checked separately at runtime.
+                "available": True, "required": False, "version": 1, "transport": "acp",
+                "permission_modes": ["default", "autoEdit", "yolo"],
+                "default_permission_mode": "default",
+                "message": "Gemini requires a compatible Gemini CLI and a configured API connection in My Agents.", "action": None,
+                "client_capability": GEMINI_CLIENT_CAPABILITY,
+                "history_mode": "initial_text_snapshot",
+                "features": {"resume": True, "external_import": True, "fork": False,
+                             "native_import_api": True,
+                             "history_reconciliation": False,
+                             "approvals": True, "skills_picker": True, "custom_api": True,
+                             "attachments": True, "live_text": True, "token_usage": True,
+                             "scheduled_jobs": True, "interactive_shares": True,
+                             "native_goals": False, "native_side_questions": False,
+                             "managed_subagents": False, "native_compaction_control": False,
+                             "permission_mode_control": True},
             },
             "opencode_backend": {
                 # ``available`` advertises the server contract. Runtime
@@ -82224,6 +83840,17 @@ async def health() -> dict[str, Any]:
                 "max_active_alerts": EMERGENCY_ACTIVE_ALERT_LIMIT,
                 "stream_path": "/api/emergency-alerts/events",
                 "stream_protocol": EMERGENCY_WEBSOCKET_PROTOCOL,
+                "acknowledge_through_alert_id": True,
+            },
+            "agent_notification_levels_v1": {
+                "available": bool(AGENT_TOKEN),
+                "required": False,
+                "message": "Agents can choose durable normal, important, or emergency notification levels.",
+                "action": None if AGENT_TOKEN else "Configure an AgentsServer client token.",
+                "version": 1,
+                "levels": ["normal", "important", "emergency"],
+                "max_message_chars": EMERGENCY_MESSAGE_MAX_CHARS,
+                "max_requests_per_run": NOTIFICATION_REQUESTS_PER_RUN,
             },
             "cross_chat_handoffs_v1": cross_chat_handoffs_capability(),
             "codex_controls": {
@@ -82279,11 +83906,9 @@ async def health() -> dict[str, Any]:
                 ),
                 "permission_modes": list(CLAUDE_PERMISSION_MODE_OPTIONS),
                 "features": {
-                    # Every real turn now carries run-scoped out-of-band
-                    # authority. In-place provider steering cannot prove that
-                    # a delayed pre-steer tool call belongs to the successor
-                    # run, so Force Send deliberately uses Stop -> fresh turn.
-                    "native_steer": False,
+                    # Native input keeps the current run and tool owner, so
+                    # delayed child callbacks never acquire a successor owner.
+                    "native_steer": True,
                     "force_send": True,
                     "interrupt": True,
                     "approvals": True,
@@ -82320,15 +83945,11 @@ def codex_goals_admin_status() -> dict[str, Any]:
     enabled = bool(CODEX_GOALS_ENABLED)
     return {
         "enabled": enabled,
-        "configurable": True,
+        "configurable": False,
         "default_enabled": bool(CODEX_GOALS_DEFAULT_ENABLED),
         "scope": "server",
         "reconfiguring": bool(CODEX_GOALS_RECONFIGURING),
-        "message": (
-            "Persistent Codex goals are enabled for this server."
-            if enabled
-            else "Persistent Codex goals are disabled for this server."
-        ),
+        "message": "Persistent Codex goals are always available. Manage each goal in its chat.",
     }
 
 
@@ -82812,6 +84433,16 @@ def claude_event_file_fingerprints(
     return tuple(fingerprints)
 
 
+def claude_native_background_work_state(manager: Any) -> tuple:
+    inspect = getattr(manager, "background_work_snapshot", None)
+    value = inspect() if callable(inspect) else ()
+    return value if isinstance(value, tuple) else ()
+
+
+def claude_native_background_work_labels(state: tuple) -> list[str]:
+    return [f"Claude background command in {row[0]}" for row in state if row[4]]
+
+
 def active_provider_background_work_labels() -> list[str]:
     """Return bounded provider-owned work that survives its parent turn.
 
@@ -82825,6 +84456,7 @@ def active_provider_background_work_labels() -> list[str]:
 
     labels = sorted(set(
         active_codex_work_labels() + active_generated_title_work_labels()
+        + claude_native_background_work_labels(claude_native_background_work_state(CLAUDE_SDK_MANAGER))
         + SIDE_QUESTIONS.active_work_labels()
     ))[:SERVER_UPDATE_PROVIDER_WORK_LABEL_LIMIT]
     remaining = SERVER_UPDATE_PROVIDER_WORK_LABEL_LIMIT - len(labels)
@@ -82900,6 +84532,10 @@ async def prepare_provider_background_work_snapshot(
     global CLAUDE_BACKGROUND_WORK_CACHE_KEY
     global CLAUDE_BACKGROUND_WORK_CACHE_LABELS
 
+    side_snapshot = await SIDE_QUESTIONS.prepare_background_work_snapshot(
+        timeout_seconds=5.0 if timeout_seconds is None else max(0.0, timeout_seconds),
+    )
+    native_work_before = claude_native_background_work_state(CLAUDE_SDK_MANAGER)
     codex_snapshot = await prepare_codex_subagent_terminal_snapshot(
         timeout_seconds=timeout_seconds,
     )
@@ -82934,7 +84570,7 @@ async def prepare_provider_background_work_snapshot(
                 )
             )
             return {
-                "codex": codex_snapshot,
+                "codex": codex_snapshot, "side": side_snapshot, "claude_native_work": native_work_before,
                 "manager": manager,
                 "session_ids": session_ids,
                 "unknown_labels": unknown_labels,
@@ -82945,7 +84581,7 @@ async def prepare_provider_background_work_snapshot(
             }
         except Exception:
             return {
-                "codex": codex_snapshot,
+                "codex": codex_snapshot, "side": side_snapshot, "claude_native_work": native_work_before,
                 "manager": manager,
                 "session_ids": session_ids,
                 "unknown_labels": unknown_labels,
@@ -82959,12 +84595,13 @@ async def prepare_provider_background_work_snapshot(
         claude_event_file_fingerprints,
         session_ids,
     )
-    consistent = fingerprints_before == fingerprints_after
+    consistent = (fingerprints_before == fingerprints_after
+                  and native_work_before == claude_native_background_work_state(CLAUDE_SDK_MANAGER))
     if consistent:
         CLAUDE_BACKGROUND_WORK_CACHE_KEY = cache_key
         CLAUDE_BACKGROUND_WORK_CACHE_LABELS = tuple(claude_labels)
     return {
-        "codex": codex_snapshot,
+        "codex": codex_snapshot, "side": side_snapshot, "claude_native_work": native_work_before,
         "manager": manager,
         "session_ids": session_ids,
         "unknown_labels": unknown_labels,
@@ -83002,6 +84639,8 @@ def provider_background_work_labels_from_snapshot(
             labels = [label for label in labels if label not in terminal_labels]
     labels = sorted(set(
         labels + active_generated_title_work_labels() + SIDE_QUESTIONS.active_work_labels()
+        + SIDE_QUESTIONS.background_work_labels_from_snapshot(snapshot.get("side") or {})
+        + claude_native_background_work_labels(claude_native_background_work_state(CLAUDE_SDK_MANAGER))
     ))[:SERVER_UPDATE_PROVIDER_WORK_LABEL_LIMIT]
     remaining = SERVER_UPDATE_PROVIDER_WORK_LABEL_LIMIT - len(labels)
     if remaining <= 0:
@@ -83013,6 +84652,7 @@ def provider_background_work_labels_from_snapshot(
     snapshot_is_current = (
         snapshot.get("consistent") is True
         and manager is snapshot.get("manager")
+        and claude_native_background_work_state(manager) == snapshot.get("claude_native_work", ())
         and session_ids == tuple(snapshot.get("session_ids") or ())
         and unknown_labels == tuple(snapshot.get("unknown_labels") or ())
         and fingerprints == tuple(snapshot.get("fingerprints") or ())
@@ -83145,36 +84785,14 @@ async def get_codex_goals_admin() -> dict[str, Any]:
 async def put_codex_goals_admin(
     req: CodexGoalsAdminRequest,
 ) -> dict[str, Any]:
-    global CODEX_GOALS_ENABLED
-    async with CODEX_GOALS_CONFIG_LOCK:
-        requested = bool(req.enabled)
-        if requested == CODEX_GOALS_ENABLED:
-            return codex_goals_admin_status()
-        settings = read_codex_admin_settings()
-        await reserve_codex_goals_reconfiguration()
-        transition: dict[str, int] = {
-            "paused_goal_count": 0,
-            "fenced_goal_count": 0,
-        }
-        try:
-            if not requested:
-                transition = await pause_idle_codex_goals_before_disable()
-            # The feature flag is a process-level Codex setting. Replacing the
-            # shared, idle manager is the only way to make it authoritative for
-            # every loaded and future thread.
-            await close_codex_app_server_manager()
-            atomic_update_json(
-                CODEX_SETTINGS_FILE,
-                {
-                    **settings,
-                    "goals_enabled": requested,
-                    "updated_at": update_utc_now(),
-                },
-            )
-            CODEX_GOALS_ENABLED = requested
-        finally:
-            await release_codex_goals_reconfiguration()
-        return {**codex_goals_admin_status(), **transition}
+    # Preserve the authenticated legacy route without allowing an older client
+    # to disable goals for every chat or restart the shared provider manager.
+    if not req.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="Persistent Codex goals cannot be disabled server-wide. Pause individual goals in their chats.",
+        )
+    return codex_goals_admin_status()
 
 
 def require_native_admin_control(request: Request) -> None:
@@ -83226,7 +84844,7 @@ def require_native_admin_control(request: Request) -> None:
 async def codex_auth_operation(*, mutate: bool, existing_only: bool = False, start_manager: bool = True):
     """Fence native authentication changes with the existing Codex admission barrier."""
     if not mutate:
-        await refresh_codex_app_server_login()
+        await refresh_codex_app_server_login(source="account_status")
     async with CODEX_AUTH_LOCK:
         reserved = False
         try:
@@ -83266,6 +84884,15 @@ async def codex_auth_operation(*, mutate: bool, existing_only: bool = False, sta
                 await release_codex_goals_reconfiguration()
 
 
+async def reload_codex_login() -> bool:
+    logger.info("Codex login reload requested source=manual_login_reload")
+    if not await refresh_codex_app_server_login(request_handoff=True, source="manual_login_reload"):
+        logger.info("Codex login reload deferred source=manual_login_reload reason=unavailable_or_busy")
+        raise HTTPException(409, "Codex sign-in cannot be reloaded now. Its credential store is unsupported or maintenance is active.")
+    return any(getattr(manager, "_agentsdock_login_superseded", False) is True
+               for manager in codex_app_server_managers())
+
+
 app.include_router(codex_auth.create_router(
     authorize=require_native_admin_control,
     operation=codex_auth_operation,
@@ -83273,6 +84900,7 @@ app.include_router(codex_auth.create_router(
     import_auth=lambda document: codex_auth.install_chatgpt_auth(
         codex_app_server_env(), existing_cwd(DEFAULT_CWD), document),
     refresh_login=lambda: refresh_codex_app_server_login(request_handoff=True),
+    reload_login=reload_codex_login,
 ))
 import cursor_desktop_login as cursor_cli_login
 app.include_router(cursor_cli_login.create_import_router(authorize=require_native_admin_control))
@@ -83363,6 +84991,9 @@ app.include_router(provider_connections.create_router(
         command=lambda cmd: runtime_command(cmd, timeout_seconds=4),
     ),
 ))
+
+from gemini_runner import router as gemini_router
+app.include_router(gemini_router(sys.modules[__name__]))
 
 app.include_router(codex_provider.create_router(
     authorize=require_native_admin_control,
@@ -83501,8 +85132,7 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                             except side_questions.SideQuestionError:
                                 return False
                             return bool(self.codex is not None and not self.codex.closed
-                                        and self.codex.thread_id
-                                        and str(params.get("threadId") or "") == self.codex.thread_id)
+                                        and self.codex.owns_thread(str(params.get("threadId") or "")))
                         return await handle_codex_server_request(request_id, method, params,
                             side_session_id=session_id, side_owner_is_current=is_current,
                             side_approval_policy=approval_policy)
@@ -83528,6 +85158,12 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                           "context_note": "Native Codex context from when Side chat started, including tool results. Clear Side chat to use the latest main context."}
             self.current()
             return {"backend": backend, **result}
+
+        def background_work_scope(self):
+            return self.codex.background_work_scope() if self.codex is not None else None
+
+        async def has_background_work(self):
+            return await self.codex.has_background_work() if self.codex is not None else False
 
         async def close(self):
             if self.codex is not None:
@@ -83747,6 +85383,7 @@ async def submit_interactive_chat_prompt(
     result = await post_turn(session_id, TurnRequest(
         prompt=prompt, file_ids=file_ids, shared_chat_id=share_id,
         shared_chat_request_id=request_id,
+        client_capabilities=(["gemini_acp_v1"] if (STORE.sessions.get(session_id) or {}).get("backend") == "gemini" else []),
     ))
     if not isinstance(result, dict) or type(result.get("queued")) is not bool:
         raise HTTPException(503, "Message acceptance could not be confirmed")
@@ -83853,13 +85490,21 @@ async def interactive_chat_native_snapshot(session_id: str) -> dict[str, Any]:
                 projected[key] = strip_agentsdock_generated_user_text(projected[key], expected_session_id=session_id)
         queue.append(projected)
     model, effort = str(session.get("model") or ""), str(session.get("effort") or "")
+    gemini_fields = {}
+    if backend == "gemini":
+        from gemini_runner import PERMISSIONS, owns
+        gemini_fields["gemini_runtime"] = {"available": True, "pending_interactions": [
+            shared_native_value(row["public"]) for row in PERMISSIONS.values()
+            if row["public"]["session_id"] == session_id and owns(sys.modules[__name__], session_id, row["run_id"])]}
     snapshot = shared_native_value({
         "session": public, "events": page["events"], "queue": queue, "active": active,
         "hasMoreEvents": page["has_more"], "nextTimelineBefore": page.get("next_before"),
         "eventsTotal": page.get("semantic_total"), "goal": goal,
         "jobs": (await list_session_jobs(session_id))["jobs"],
         "codex_runtime": codex_runtime, "claude_runtime": claude_runtime,
+        **gemini_fields,
         "health": {"capabilities": {
+            **({"gemini_backend": {"available": True, "version": 1}} if backend == "gemini" else {}),
             "codex_controls": {"available": codex_available},
             "claude_controls": {"available": claude_available,
                                 "interactive_client_capability": CLAUDE_SDK_INTERACTIVE_CLIENT_CAPABILITY},
@@ -83890,6 +85535,7 @@ async def interactive_chat_native_snapshot(session_id: str) -> dict[str, Any]:
 async def steer_interactive_chat_prompt(session_id: str, prompt: str, *, share_id: str, request_id: str) -> dict[str, Any]:
     receipt = await post_turn(session_id, TurnRequest(
         prompt=prompt, shared_chat_id=share_id, shared_chat_request_id=request_id,
+        client_capabilities=(["gemini_acp_v1"] if (STORE.sessions.get(session_id) or {}).get("backend") == "gemini" else []),
     ))
     if not isinstance(receipt, dict) or type(receipt.get("queued")) is not bool:
         raise HTTPException(503, "Message acceptance could not be confirmed")
@@ -83986,6 +85632,9 @@ async def control_interactive_chat(session_id: str, action: str, payload: dict[s
                     INTERACTIVE_CHAT_CATALOG = (time.monotonic(), shared_native_value(await runtime_catalog()))
                 value = INTERACTIVE_CHAT_CATALOG[1]
         return shared_native_value(value)
+    async def shared_gemini_approval(sid, interaction_id, response):
+        from gemini_runner import resolve_permission
+        return await resolve_permission(sys.modules[__name__], sid, interaction_id, response)
     callbacks = {
         "turn.stop": stop_turn_endpoint, "turn.steer": steer_interactive_chat_prompt,
         "queue.run_now": post_run_queued_turn_now, "queue.edit": patch_queued_turn,
@@ -83995,6 +85644,7 @@ async def control_interactive_chat(session_id: str, action: str, payload: dict[s
         "job.create": create_session_job, "job.update": update_session_job,
         "job.toggle": update_session_job, "job.delete": delete_session_job, "job.run": run_interactive_chat_job,
         "approval.codex": post_codex_interaction_response, "approval.claude": post_claude_interaction_response,
+        "approval.gemini": shared_gemini_approval,
     }
     models = {model.__name__: model for model in (
         UpdateSessionRequest, CodexGoalRequest, CreateScopedJobRequest, UpdateJobRequest,
@@ -84799,33 +86449,6 @@ async def _restart_server_endpoint_impl(
                     retryable=True,
                 ),
             )
-        terminal_restart = str(restart_status.get("phase") or "") in {
-            "complete",
-            "failed",
-        }
-        cooldown_remaining = (
-            max(
-                0,
-                math.ceil(
-                    SERVER_RESTART_COOLDOWN_SECONDS
-                    - server_restart_status_age_seconds(restart_status)
-                ),
-            )
-            if terminal_restart
-            else 0
-        )
-        if terminal_restart and cooldown_remaining > 0:
-            raise HTTPException(
-                status_code=409,
-                detail=server_restart_error_detail(
-                    "server_restart_cooldown",
-                    "AgentsServer was restarted recently.",
-                    action="Wait briefly before requesting another restart.",
-                    retryable=True,
-                    retry_after_seconds=cooldown_remaining,
-                ),
-            )
-
         current_server_identity = server_identity()
         if (
             body.expected_server_identity != current_server_identity
@@ -85111,7 +86734,7 @@ async def server_update_status(
         # second update attempt before reconnecting.
         public_status = public_server_update_status(status)
         await TERMINAL_ATTACHMENTS.reopen_if_update_inactive(public_status)
-        if managed_server_update_is_pending(status):
+        if managed_server_force_update_is_pending(status):
             await JOBS.resume_update_parked(
                 active_schedule_id=str(status.get("schedule_id") or "").strip(),
             )
@@ -85669,7 +87292,14 @@ async def _start_server_update(
                     active_session_ids = (
                         server_update_active_session_ids_locked()
                     )
-                    queued_turn_count = update_blocking_queued_turn_count_locked()
+                    # An idle update waits behind queued work too; persistence
+                    # across restart is not permission to jump ahead of it.
+                    queued_turn_count = (
+                        sum(len(queue) for queue in QUEUED_TURNS.values())
+                        + len(RUN_NOW_TURNS)
+                        if body.when_idle and not managed_server_force_update_is_pending(status)
+                        else update_blocking_queued_turn_count_locked()
+                    )
                     mutation_count = unsafe_http_mutation_count_locked()
                     duplicate_provider_labels = {
                         *(f"active chat {session_id}" for session_id in BUSY_SESSIONS),
@@ -86598,7 +88228,7 @@ async def host_diagnostics(limit: int = 40) -> dict[str, Any]:
 async def runtime_catalog(refresh: bool = False) -> dict[str, Any]:
     if refresh:
         await refresh_codex_app_server_binary(force=True)
-        await refresh_codex_app_server_login(request_handoff=True)
+        await refresh_codex_app_server_login(source="catalog_refresh")
     return await asyncio.to_thread(discover_runtime_catalog, force_runtime_probe=refresh)
 
 
@@ -86719,12 +88349,13 @@ async def tail_session_process_log(session_id: str, path: str, lines: int = 200)
 
 
 @app.get("/api/sessions")
-async def list_sessions(summary: bool = False) -> dict[str, Any]:
+async def list_sessions(summary: bool = False, placeholder_client_id: str = "") -> dict[str, Any]:
     await STORE.ensure_sort_orders()
     sessions = [
         public_session(session, summary=summary)
         for session in sorted_sessions(list(STORE.sessions.values()))
         if not session.get("_fork_initializing")
+        and not empty_chat_dismissed_for(session, placeholder_client_id)
     ]
     return {"sessions": sessions}
 
@@ -86779,6 +88410,7 @@ async def create_session_with_history(req: CreateSessionRequest) -> dict[str, An
 async def get_local_sessions(
     limit: int = Query(default=200, ge=1, le=MAX_LOCAL_SESSION_LIST_ITEMS),
     include_cursor: bool = False,
+    include_gemini: bool = False,
 ) -> dict[str, Any]:
     """List main conversations unused by any installed same-user local instance."""
 
@@ -86789,6 +88421,8 @@ async def get_local_sessions(
             for key in local_session_ownership.provider_session_keys(session, DEFAULT_BACKEND)
         }
     options = {"include_cursor": True} if include_cursor else {}
+    if include_gemini:
+        options["include_gemini"] = True
     sessions = await asyncio.to_thread(local_session_candidates, limit, known_provider_keys, **options)
     return {"sessions": sessions}
 
@@ -86862,6 +88496,7 @@ async def bulk_import_sessions_guarded(
             MAX_LOCAL_SESSION_LIST_ITEMS,
             set(),
             **({"include_cursor": True} if any(item.backend == BACKEND_CURSOR for item in req.items) else {}),
+            **({"include_gemini": True} if any(item.backend == BACKEND_GEMINI for item in req.items) else {}),
         )
         candidate_by_key = {
             (str(candidate["backend"]), str(candidate["provider_session_id"])): candidate
@@ -86871,6 +88506,10 @@ async def bulk_import_sessions_guarded(
         results: list[dict[str, Any]] = []
         for item in req.items:
             key = (item.backend, item.provider_session_id)
+            if item.provider_connection and item.backend != BACKEND_GEMINI:
+                results.append(bulk_import_result(item, ok=False, code="invalid_connection",
+                    error="API binding on import is only supported for Gemini."))
+                continue
             if key in requested_keys:
                 results.append(bulk_import_result(
                     item,
@@ -86911,7 +88550,11 @@ async def bulk_import_sessions_guarded(
 
             staged_session: dict[str, Any] | None = None
             try:
-                if item.backend == BACKEND_CURSOR:
+                if item.backend == BACKEND_GEMINI:
+                    from gemini_import import initial_history
+                    source_path, history_items = await asyncio.to_thread(initial_history,
+                        sys.modules[__name__], runner_env(), item.provider_session_id, candidate_cwd or "")
+                elif item.backend == BACKEND_CURSOR:
                     source_path, history_items = await asyncio.to_thread(
                         cursor_initial_history, item.provider_session_id, candidate_cwd or "",
                     )
@@ -86953,6 +88596,7 @@ async def bulk_import_sessions_guarded(
                 staged_session = await STORE.create(
                     CreateSessionRequest(
                         backend=item.backend,
+                        provider_connection=item.provider_connection,
                         provider_session_id=item.provider_session_id,
                         cwd=candidate_cwd or DEFAULT_CWD,
                         title=(item.title or str(candidate.get("label") or "")).strip()
@@ -87022,7 +88666,9 @@ async def get_session_subagents(
     session = STORE.sessions[session_id]
     if str(session.get("backend") or "") == BACKEND_CODEX and session_provider_id(session):
         try:
-            manager = await codex_app_server_manager(session)
+            # Inspect the process which still owns the children during login
+            # handoff. This read must not be rejected as a new model turn.
+            manager = await codex_app_server_manager(session, allow_retired_login=True)
             await reconcile_codex_subagents(session_id, manager)
         except Exception as exc:
             logger.warning(
@@ -87204,8 +88850,6 @@ async def get_session(
     normalized_page_mode = str(page_mode or "").strip().lower()
     if normalized_page_mode not in {"", "semantic"}:
         raise HTTPException(status_code=400, detail="page_mode must be semantic")
-    if normalized_page_mode != "semantic":
-        await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
     page_tail = tail and after <= 0
     semantic_page: dict[str, Any] | None = None
     if normalized_page_mode == "semantic":
@@ -87269,6 +88913,23 @@ async def get_session(
             "next_semantic_before": semantic_page["next_semantic_before"],
         })
     return response
+
+
+@app.post("/api/sessions/{session_id}/history/maintenance", status_code=202)
+async def retry_history_maintenance(session_id: str) -> dict[str, Any]:
+    """Explicit retry clears backoff, never provenance or lifecycle guards."""
+    ensure_session_not_initializing(session_id)
+    ensure_session_not_deleting(session_id)
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="session not found")
+    if session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None:
+        raise HTTPException(status_code=409, detail="history maintenance waits for this chat to become idle")
+    if session_id not in HISTORY_SYNC_SCHEDULED:
+        history_maintenance_state(session_id).clear()
+        schedule_provider_history_sync(sess)
+    return {"scheduled": session_id in HISTORY_SYNC_SCHEDULED,
+            "history_maintenance": dict(history_maintenance_state(session_id))}
 
 
 @app.post("/api/sessions/{session_id}/import-history")
@@ -87566,6 +89227,68 @@ async def ensure_backend_update_allowed(
 
 @app.patch("/api/sessions/{session_id}")
 async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str, Any]:
+    if req.gemini_connect_api:
+        if set(req.model_dump(exclude_unset=True)) != {"gemini_connect_api"}:
+            raise HTTPException(400, "Connect the Gemini API separately from other chat edits.")
+        return await connect_gemini_import_api(session_id)
+    return await _update_session(session_id, req)
+
+
+async def connect_gemini_import_api(session_id: str) -> dict[str, Any]:
+    """Explicit one-way binding of a native import, not general account switching."""
+    from gemini_import import initial_history
+    from gemini_history import native_snapshot, snapshot_replay
+    from gemini_acp_client import GeminiProtocolError
+    ensure_session_not_initializing(session_id)
+    async with session_lifecycle_lock(session_id):
+        current = STORE.sessions.get(session_id)
+        if not current:
+            raise HTTPException(404, "session not found")
+        if current.get("backend") != BACKEND_GEMINI or not session_provider_id(current):
+            raise HTTPException(400, "Only an imported Gemini conversation can use this action.")
+        if current.get("archived") or session_id in DELETING_SESSIONS:
+            raise HTTPException(409, "Unarchive this chat before connecting its API.")
+        if (session_id in BUSY_SESSIONS or session_id in ACTIVE or QUEUED_TURNS.get(session_id)
+                or current.get("gemini_cleanup_pending_run_id")
+                or any(not task.done() for task in SESSION_TURN_TASKS.get(session_id, ()))):
+            raise HTTPException(409, "Stop active work and clear queued messages before connecting this API.")
+        if current.get("provider_connection") == "custom":
+            PROVIDER_CONNECTION_STORE.for_session(current)  # No silent rebind on Forget.
+            return {"session": public_session(current)}
+        provider_id, cwd = session_provider_id(current), str(current.get("cwd") or "")
+        def validate():
+            initial_history(sys.modules[__name__], runner_env(), provider_id, cwd)
+            snapshot_replay(native_snapshot(runner_env(), cwd, provider_id))
+        try:
+            await asyncio.to_thread(validate)
+        except (GeminiProtocolError, OSError, ValueError):
+            raise HTTPException(409, "The original Gemini history is unavailable or changed; refresh Import Chat.") from None
+        async with STORE._lock:
+            if (STORE.sessions.get(session_id) is not current or session_id in DELETING_SESSIONS
+                    or current.get("archived") or session_id in BUSY_SESSIONS or session_id in ACTIVE
+                    or QUEUED_TURNS.get(session_id) or current.get("gemini_cleanup_pending_run_id")
+                    or any(not task.done() for task in SESSION_TURN_TASKS.get(session_id, ()))):
+                raise HTTPException(409, "This chat changed while connecting; wait for active work to finish and retry.")
+            previous = dict(current)
+            selected = PROVIDER_CONNECTION_STORE.bind({"backend": BACKEND_GEMINI, "provider_connection": "custom"})
+            current.update(provider_connection="custom", provider_connection_revision=selected["credential_id"],
+                gemini_native_history=True, gemini_session_cwd=cwd, model=selected.get("model"), updated_at=now_iso())
+            try:
+                await STORE.save(durable=True)
+            except BaseException:
+                current.clear(); current.update(previous)
+                raise
+        return {"session": public_session(current)}
+
+
+async def _update_session(
+    session_id: str, req: UpdateSessionRequest, *,
+    native_archive_owner: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+    # Internal provenance is not an HTTP parameter. Recheck after acquiring
+    # the same lock as Stop, replacement and new-turn admission.
+    if native_archive_owner is not None and req.archived is not True:
+        raise ValueError("native archive ownership only applies to archive")
     ensure_session_not_initializing(session_id)
     patch = req.model_dump(exclude_unset=True)
     if SESSION_LIFECYCLE_UPDATE_FIELDS.intersection(patch):
@@ -87573,6 +89296,12 @@ async def update_session(session_id: str, req: UpdateSessionRequest) -> dict[str
             current = STORE.sessions.get(session_id)
             if not current:
                 raise HTTPException(status_code=404, detail="session not found")
+            if native_archive_owner is not None:
+                thread_id, run_id = native_archive_owner
+                if (session_id in DELETING_SESSIONS or current.get("backend") != BACKEND_CODEX
+                        or str(session_provider_id(current) or "") != thread_id
+                        or (ACTIVE.get(session_id) or {}).get("run_id") != run_id):
+                    return {"session": public_session(current)}
             if req.archived is False and current.get("archived"):
                 try:
                     # An earlier archive may have failed to save jobs.json
@@ -88937,6 +90666,23 @@ CLAUDE_GOAL_PROJECTIONS: dict[str, ClaudeGoalProjection] = {}
 CLAUDE_GOAL_PATHS: dict[str, Path] = {}
 CLAUDE_GOAL_LOCKS: dict[str, asyncio.Lock] = {}
 CLAUDE_GOAL_PENDING: dict[str, dict[str, Any]] = {}
+CLAUDE_GOAL_ERRORS: dict[str, str] = {}
+
+
+async def settle_claude_goal_command(
+    session_id: str, run_id: str, receipt: ClaudeSDKGoalReceipt,
+    *, provider_id: str | None = None,
+) -> None:
+    pending = CLAUDE_GOAL_PENDING.get(session_id)
+    if not pending or pending.get("run_id") != run_id or pending.get("command_id") != receipt.command_id:
+        return
+    CLAUDE_GOAL_PENDING.pop(session_id, None)
+    if receipt.error and not receipt.cancelled_by_user:
+        CLAUDE_GOAL_ERRORS[session_id] = receipt.error
+    else:
+        CLAUDE_GOAL_ERRORS.pop(session_id, None)
+    await refresh_claude_goal(session_id, provider_id=provider_id, notify=False)
+    await append_event(session_id, "claude_goal_changed", {})
 
 
 async def refresh_claude_goal(
@@ -88972,7 +90718,8 @@ async def refresh_claude_goal(
         changed = changed or not was_caught_up
         goal = projection.goal
         pending = CLAUDE_GOAL_PENDING.get(session_id)
-        if pending and goal and goal.get("set_at") != pending.get("previous_set_at"):
+        if (pending and not pending.get("command_id") and goal
+                and goal.get("set_at") != pending.get("previous_set_at")):
             CLAUDE_GOAL_PENDING.pop(session_id, None)
             changed = True
         if changed and notify:
@@ -88998,6 +90745,52 @@ async def start_claude_goal_command(session_id: str, argument: str) -> dict[str,
                     if record.public.get("invocation") == "/goal"), None)
     if snapshot["support"].get("available") is not True or command is None:
         raise HTTPException(status_code=409, detail="This Claude installation does not offer /goal. Update Claude Code to use Goals.")
+    if argument != "clear":
+        async with session_lifecycle_lock(session_id):
+            ensure_session_not_deleting(session_id)
+            async with ACTIVE_LOCK:
+                active = dict(ACTIVE.get(session_id) or {})
+                if session_id in CLAUDE_GOAL_PENDING:
+                    raise HTTPException(status_code=409, detail="Claude is already applying a goal")
+            if active.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
+                run_id = str(active.get("run_id") or "")
+                owner = str(active.get("claude_sdk_owner_token") or "")
+                handle = active.get("claude_sdk_run")
+                command_id = str(uuid.uuid4())
+
+                async def before_send(actual_owner: str) -> None:
+                    async with ACTIVE_LOCK:
+                        current = ACTIVE.get(session_id) or {}
+                        if (not owner or actual_owner != owner or current.get("run_id") != run_id
+                                or current.get("claude_sdk_run") is not handle
+                                or current.get("claude_sdk_owner_token") != owner
+                                or current.get("stop_requested") or session_id in STOP_REQUESTS
+                                or session_id in DELETING_SESSIONS or run_id in STOPPED_RUNS):
+                            raise ClaudeSDKGenerationChanged("Claude finished or stopped before the goal could be queued")
+
+                operation = {"run_id": run_id, "command_id": command_id, "condition": argument}
+                CLAUDE_GOAL_PENDING[session_id] = operation
+                CLAUDE_GOAL_ERRORS.pop(session_id, None)
+                try:
+                    manager = await claude_sdk_manager()
+                    await manager.queue_goal(
+                        session_id, argument, run_id=run_id, ownership_token=owner,
+                        command_id=command_id,
+                        expected_generation=command.native.get("control_generation"),
+                        on_before_send=before_send,
+                    )
+                except BaseException as exc:
+                    if CLAUDE_GOAL_PENDING.get(session_id) is operation:
+                        if getattr(exc, "delivery_uncertain", False):
+                            operation["delivery_uncertain"] = True
+                            CLAUDE_GOAL_ERRORS[session_id] = str(exc)
+                        else:
+                            CLAUDE_GOAL_PENDING.pop(session_id, None)
+                    if isinstance(exc, ClaudeSDKSupervisorError):
+                        raise HTTPException(status_code=409, detail=str(exc)) from exc
+                    raise
+                await append_event(session_id, "claude_goal_changed", {})
+                return {"run_id": run_id, "native_queued": True}
     return await start_turn(session_id, TurnRequest(
         prompt=f"/goal {argument}",
         skill_selection=SkillSelection(id=command.public["id"], revision=inventory.revision),
@@ -89013,14 +90806,16 @@ class ClaudeGoalRequest(BaseModel):
 async def put_claude_goal(session_id: str, req: ClaudeGoalRequest) -> dict[str, Any]:
     require_claude_goal_session(session_id)
     condition = req.condition.strip()
-    if not condition or condition.lower() == "clear":
+    if not condition or condition.lower() in {"clear", "stop", "off", "reset", "none", "cancel"}:
         raise HTTPException(status_code=400, detail="Enter a completion condition for Claude")
     previous = await refresh_claude_goal(session_id, notify=False)
     accepted = await start_claude_goal_command(session_id, condition)
     # Bind pending display state only after actual admission. A competing
     # request or an older run's cleanup cannot clear the winner's operation.
     async with ACTIVE_LOCK:
-        if str((ACTIVE.get(session_id) or {}).get("run_id") or "") == accepted.get("run_id"):
+        if (not accepted.get("native_queued")
+                and str((ACTIVE.get(session_id) or {}).get("run_id") or "") == accepted.get("run_id")):
+            CLAUDE_GOAL_ERRORS.pop(session_id, None)
             CLAUDE_GOAL_PENDING[session_id] = {
                 "run_id": accepted["run_id"],
                 "previous_set_at": (previous or {}).get("set_at"),
@@ -89039,14 +90834,31 @@ async def delete_claude_goal(session_id: str) -> dict[str, Any]:
         async with ACTIVE_LOCK:
             active = dict(ACTIVE.get(session_id) or {})
         if active.get("transport") == CLAUDE_TRANSPORT_AGENT_SDK:
-            manager = await claude_sdk_manager()
-            try:
-                await manager.clear_goal(session_id, run_id=str(active.get("run_id") or ""))
-            except ClaudeSDKSupervisorError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            cleared_live = True
+            pending_goal = CLAUDE_GOAL_PENDING.get(session_id)
+            if pending_goal and pending_goal.get("command_id"):
+                # A native priority-now goal yields after the current tool.
+                # Explicit Clear & stop must instead complete owned teardown,
+                # then clear through the ordinary native idle-command path.
+                stopped = await stop_turn(
+                    session_id, expected_run_id=str(active.get("run_id") or ""),
+                    schedule_queue=False,
+                )
+                if stopped.get("pending") or stopped.get("superseded") or not stopped.get("stopped"):
+                    raise HTTPException(status_code=409, detail="Claude is still stopping; retry clearing the goal shortly")
+            else:
+                manager = await claude_sdk_manager()
+                try:
+                    await manager.clear_goal(session_id, run_id=str(active.get("run_id") or ""))
+                except ClaudeSDKSupervisorError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
+                cleared_live = True
+            if CLAUDE_GOAL_PENDING.get(session_id) is pending_goal:
+                CLAUDE_GOAL_PENDING.pop(session_id, None)
+            CLAUDE_GOAL_ERRORS.pop(session_id, None)
     if not cleared_live:
         await start_claude_goal_command(session_id, "clear")
+        if session_id not in CLAUDE_GOAL_PENDING:
+            CLAUDE_GOAL_ERRORS.pop(session_id, None)
     await refresh_claude_goal(session_id)
     return await claude_runtime_snapshot(session_id)
 
@@ -89096,7 +90908,9 @@ async def claude_runtime_snapshot(session_id: str) -> dict[str, Any]:
         "persisted_session": bool(claude_provider_id_for_session(session)),
         "session_loaded": loaded,
         "goal": goal,
-        "goal_starting": session_id in CLAUDE_GOAL_PENDING,
+        "goal_starting": bool(session_id in CLAUDE_GOAL_PENDING
+                              and not CLAUDE_GOAL_PENDING[session_id].get("delivery_uncertain")),
+        "goal_error": CLAUDE_GOAL_ERRORS.get(session_id),
         "goal_loading": bool(is_claude and claude_provider_id_for_session(session)
                              and not getattr(CLAUDE_GOAL_PROJECTIONS.get(session_id), "caught_up", False)),
         "stop_fence_pending": session_id in CLAUDE_STOP_FENCE_SESSIONS,
@@ -89407,7 +91221,7 @@ async def _put_codex_goal_locked(
     if req.status == "active":
         if (STORE.sessions.get(session_id) or {}).get("archived"):
             raise HTTPException(status_code=409, detail="archived chats cannot resume goals")
-        await wait_for_queue_recovery_admission()
+        await wait_for_queue_recovery_admission(session_id)
     manager, thread_id, control_session = await acquire_codex_control_thread(
         session_id,
         reserve_session=req.status == "active",
@@ -89959,6 +91773,9 @@ async def _post_codex_shell_command_locked(
                 "confirmed=true"
             ),
         )
+    if (session_id in BUSY_SESSIONS
+            and (ACTIVE.get(session_id) or {}).get("codex_shell_subscription") is not None):
+        return await post_codex_active_shell_command(session_id, req)
     manager, thread_id, control_session = await acquire_codex_control_thread(
         session_id,
         reserve_session=True,
@@ -89976,6 +91793,14 @@ async def _post_codex_shell_command_locked(
                 active["codex_native_operation_kind"] = "shell"
                 active["provider_turn_id"] = None
                 active["provider_turn_ready"] = False
+                watermark = getattr(subscription, "_last_enqueued_sequence", 0)
+                active.setdefault("codex_shell_intents", []).append({
+                    "operation_id": operation_id, "owner_operation": True,
+                    "command": req.command,
+                    "after_sequence": watermark if isinstance(watermark, int) else 0,
+                    "item_id": "", "turn_id": "",
+                    "item_completed": False, "turn_completed": False,
+                })
         await manager.run_thread_shell_command(thread_id, req.command)
         task = asyncio.create_task(
             consume_codex_native_turn(
@@ -89989,25 +91814,6 @@ async def _post_codex_shell_command_locked(
             )
         )
         register_codex_native_action(session_id, operation_id, task)
-        try:
-            await append_event(
-                session_id,
-                "codex_shell_started",
-                {
-                    "operation_id": operation_id,
-                    "command": req.command,
-                    "unsandboxed": True,
-                    "message": (
-                        "Codex started the confirmed unsandboxed shell command."
-                    ),
-                },
-            )
-        except Exception as exc:
-            logger.warning(
-                "failed to persist Codex shell start session=%s: %s",
-                session_id,
-                concise_error_message(exc),
-            )
         return {"accepted": True, "operation_id": operation_id}
     except Exception as exc:
         subscription.close()
@@ -90021,6 +91827,88 @@ async def _post_codex_shell_command_locked(
         raise codex_control_http_error(exc) from exc
 
 
+async def post_codex_active_shell_command(
+    session_id: str, req: CodexShellCommandRequest,
+) -> dict[str, Any]:
+    """Submit into the existing owner; its stream supervises any late shell turn.
+
+    The route's lifecycle lock orders registration/RPC with the consumer's
+    terminal decision. Never replace ACTIVE or add a second tool consumer.
+    """
+    manager, thread_id, _session = await acquire_codex_control_thread(
+        session_id, allow_active_control=True,
+    )
+    intent: dict[str, Any] | None = None
+    active: dict[str, Any] | None = None
+    try:
+        async with ACTIVE_LOCK:
+            active = ACTIVE.get(session_id)
+            subscription = (active or {}).get("codex_shell_subscription")
+            if not (
+                active and session_id in BUSY_SESSIONS
+                and active.get("provider_thread_id") == thread_id
+                and (active.get("run_id") == (CURRENT_TURNS.get(session_id) or {}).get("run_id")
+                    or (active.get("codex_native_operation")
+                        and active.get("codex_control_reservation_id")
+                        == (CURRENT_TURNS.get(session_id) or {}).get("codex_control_reservation_id")))
+                and subscription is not None
+                and not active.get("codex_shell_handoff_closed")
+                and not active.get("codex_goal_handoff_closed")
+                and not active.get("stop_requested")
+                and active.get("run_id") not in STOPPED_RUNS
+            ):
+                raise HTTPException(status_code=409, detail="The Codex owner is starting or finishing; retry the command.")
+            watermark = getattr(subscription, "_last_enqueued_sequence", 0)
+            intent = {
+                "operation_id": f"codexop_{uuid.uuid4().hex[:16]}",
+                "command": req.command,
+                "after_sequence": watermark if isinstance(watermark, int) else 0,
+                "item_id": "", "turn_id": "",
+                "item_completed": False, "turn_completed": False,
+            }
+            active.setdefault("codex_shell_intents", []).append(intent)
+        generation = manager.generation
+        delivery_attempted = False
+
+        def before_send() -> bool:
+            nonlocal delivery_attempted
+            if not (ACTIVE.get(session_id) is active
+                    and active.get("codex_shell_subscription") is subscription
+                    and active.get("provider_thread_id") == thread_id
+                    and manager.generation == generation
+                    and not active.get("codex_shell_handoff_closed")
+                    and not active.get("stop_requested")):
+                return False
+            # Exclude older buffered items at the actual stdin boundary. The
+            # transport calls this synchronously immediately before writing.
+            watermark = getattr(subscription, "_last_enqueued_sequence", 0)
+            if isinstance(watermark, int):
+                intent["after_sequence"] = watermark
+            delivery_attempted = True
+            return True
+
+        try:
+            await manager.run_thread_shell_command(thread_id, req.command, before_send=before_send)
+        except BaseException as exc:
+            # An explicit native rejection or proven pre-write failure cannot
+            # create work. Unknown delivery remains on the original receiver;
+            # neither this endpoint nor its caller replays it automatically.
+            if not intent.get("item_id") and (
+                not delivery_attempted or isinstance(exc, CodexAppServerRequestError)
+                or not getattr(exc, "request_sent", True)
+            ):
+                if intent in active.get("codex_shell_intents", []):
+                    active["codex_shell_intents"].remove(intent)
+            raise
+        return {"accepted": True, "operation_id": intent["operation_id"]}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise codex_control_http_error(exc) from exc
+    finally:
+        await release_codex_control_thread(session_id, manager, thread_id)
+
+
 @app.get("/api/sessions/{session_id}/codex/background-terminals")
 async def get_codex_background_terminals(session_id: str) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
@@ -90032,7 +91920,9 @@ async def _get_codex_background_terminals_locked(
     session_id: str,
 ) -> dict[str, Any]:
     global CODEX_BACKGROUND_TERMINALS_SUPPORTED
-    manager, thread_id, _session = await acquire_codex_control_thread(session_id)
+    manager, thread_id, _session = await acquire_codex_control_thread(
+        session_id, allow_active_control=True,
+    )
     try:
         terminals = await manager.list_background_terminals(thread_id)
         CODEX_BACKGROUND_TERMINALS_SUPPORTED = True
@@ -90076,7 +91966,7 @@ async def _post_codex_background_terminal_terminate_locked(
                 "and requires explicit confirmed=true"
             ),
         )
-    manager, thread_id, _session = await acquire_codex_control_thread(session_id)
+    manager, thread_id, _session = await acquire_codex_control_thread(session_id, allow_active_control=True)
     try:
         terminated = await manager.terminate_background_terminal(
             thread_id,
@@ -90114,7 +92004,7 @@ async def _post_codex_background_terminals_clean_locked(
                 "background terminal and requires explicit confirmed=true"
             ),
         )
-    manager, thread_id, _session = await acquire_codex_control_thread(session_id)
+    manager, thread_id, _session = await acquire_codex_control_thread(session_id, allow_active_control=True)
     try:
         await manager.clean_background_terminals(thread_id)
         return {"cleaned": True}
@@ -90167,6 +92057,26 @@ async def acknowledge_session_emergency(
         sess = STORE.sessions.get(session_id)
         if not sess:
             raise HTTPException(status_code=404, detail="session not found")
+        if req.through_alert_id is not None:
+            boundary, alert_ids = await asyncio.to_thread(
+                emergency_alert_batch_through, session_id, req.through_alert_id,
+            )
+            if boundary is None:
+                raise HTTPException(status_code=409, detail="that emergency alert boundary was not found")
+            if alert_ids:
+                events = await append_durable_event_batch(session_id, [
+                    ("emergency_alert_acknowledged", {
+                        "emergency_alert_id": alert_id,
+                        "message": "Emergency acknowledged by the user.",
+                    })
+                    for alert_id in alert_ids
+                ])
+                committed = events[-1]
+            else:
+                committed = boundary
+            sess = await project_committed_emergency_event(session_id, committed)
+            return {"session": public_session(sess), "acknowledged": bool(alert_ids),
+                    "acknowledged_count": len(alert_ids)}
         alert_id = req.expected_alert_id
         acknowledged_event = await asyncio.to_thread(
             find_emergency_acknowledgement_event,
@@ -90252,6 +92162,74 @@ async def ensure_discardable_empty_session(session_id: str, expected_updated_at:
         raise HTTPException(status_code=409, detail="Chat has content or resources; it was preserved.")
 
 
+def empty_chat_revision(session: dict[str, Any]) -> str:
+    # Use durable content/settings, not public runtime projections, read cursors
+    # or sort order. Reconnecting, reading or normalizing runtime metadata on
+    # startup must not resurrect an unchanged blank row.
+    revision = {key: session.get(key) for key in (
+        "created_at", "updated_at", "title", "folder", "cwd", "backend",
+        "model", "effort", "system_prompt", "_title_source",
+        "codex_provider", "provider_connection", "parent_id",
+        "codex_goal", "claude_goal",
+    )}
+    revision["latest_event_seq"] = int(session.get("latest_event_seq") or 0)
+    for key in ("backend_locked", "pinned", "archived", "manual_unread"):
+        revision[key] = bool(session.get(key))
+    return hashlib.sha256(json.dumps(revision, sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def empty_chat_dismissed_for(session: dict[str, Any], client_id: str) -> bool:
+    if not client_id or session_backend_locked(session):
+        return False
+    state = session.get("_empty_chat_cleanup") or {}
+    return (isinstance(state, dict) and state.get("version") == 1
+            and isinstance(state.get("dismissed_by"), dict)
+            and state["dismissed_by"].get(client_id) == empty_chat_revision(session))
+
+
+@app.post("/api/sessions/{session_id}/dismiss-empty")
+async def dismiss_empty_session(session_id: str, expected_updated_at: str,
+                                placeholder_client_id: str) -> dict[str, Any]:
+    """Remove an unused row from one desktop's list without deleting its identity.
+
+    Another/offline desktop may own an unsent draft. Its list is unaffected;
+    subsequent real changes also invalidate this desktop's dismissal. No draft
+    content leaves a desktop, and no native history/process is touched.
+    """
+    if not re.fullmatch(r"[a-zA-Z0-9_-]{16,80}", placeholder_client_id):
+        raise HTTPException(400, "Invalid placeholder client identity")
+    await wait_for_queue_recovery_admission()
+    async with session_lifecycle_lock(session_id):
+        ensure_session_not_initializing(session_id)
+        if session_id in DELETING_SESSIONS or session_id in DELETED_SESSION_TOMBSTONES:
+            raise HTTPException(409, "Chat deletion is already in progress")
+        # Existing admission, uploads, jobs and terminal routes use this fence.
+        DELETING_SESSIONS.add(session_id)
+        try:
+            await ensure_discardable_empty_session(session_id, expected_updated_at)
+            async with STORE._lock:
+                session = STORE.sessions[session_id]
+                previous = session.get("_empty_chat_cleanup")
+                state = previous if isinstance(previous, dict) else {}
+                dismissed = dict(state.get("dismissed_by") or {})
+                if placeholder_client_id not in dismissed and len(dismissed) >= 256:
+                    raise HTTPException(409, "Too many desktop cleanup identities; chat preserved")
+                dismissed[placeholder_client_id] = empty_chat_revision(session)
+                session["_empty_chat_cleanup"] = {"version": 1, "dismissed_by": dismissed}
+                try:
+                    await STORE.save()
+                except BaseException:
+                    if previous is None:
+                        session.pop("_empty_chat_cleanup", None)
+                    else:
+                        session["_empty_chat_cleanup"] = previous
+                    raise
+            return {"ok": True, "dismissed": True}
+        finally:
+            DELETING_SESSIONS.discard(session_id)
+
+
 @app.post("/api/sessions/{session_id}/discard-empty")
 async def discard_empty_session(session_id: str, expected_updated_at: str) -> dict[str, Any]:
     # A separate route makes old servers fail safely with 404, rather than
@@ -90264,6 +92242,13 @@ async def discard_empty_session(session_id: str, expected_updated_at: str) -> di
 async def delete_session(session_id: str, discard_updated_at: str | None = None) -> dict[str, Any]:
     async with session_lifecycle_lock(session_id):
         ensure_session_not_initializing(session_id)
+        pending_gemini_cleanup = (STORE.sessions.get(session_id) or {}).get("gemini_cleanup_pending_run_id")
+        live_gemini_owner = ACTIVE.get(session_id) or {}
+        if pending_gemini_cleanup and (
+            live_gemini_owner.get("run_id") != pending_gemini_cleanup
+            or not callable(live_gemini_owner.get("gemini_cleanup"))
+        ):
+            raise HTTPException(409, "Gemini runtime cleanup requires server-side verification after restart; the chat and native history were not deleted.")
         if session_id in DELETED_SESSION_TOMBSTONES:
             # A previous delete can have committed before its request was
             # canceled. Retry any tracked bridge retirement on idempotent
@@ -90431,6 +92416,16 @@ async def delete_session(session_id: str, discard_updated_at: str | None = None)
                                 "shortly."
                             ),
                         )
+                elif active.get("backend") == BACKEND_GEMINI:
+                    cleanup = active.get("gemini_cleanup")
+                    try:
+                        if not callable(cleanup):
+                            raise RuntimeError("Missing Gemini cleanup owner")
+                        await cleanup()
+                    except Exception:
+                        raise HTTPException(status_code=409, detail=(
+                            "Gemini runtime cleanup could not be verified; the chat was not deleted. Retry Stop."
+                        )) from None
                 elif proc:
                     await terminate_process_tree(proc)
 
@@ -90529,6 +92524,17 @@ async def delete_session(session_id: str, discard_updated_at: str | None = None)
             # initial session record but before its task acknowledges stop.
             # The task registry is now drained, so this reread is stable.
             late_session = STORE.sessions.get(session_id) or {}
+            gemini_active = ACTIVE.get(session_id) or {}
+            if gemini_active.get("backend") == BACKEND_GEMINI and gemini_active.get("gemini_cleanup_failed"):
+                # A completed consumer task does not prove its owned runtime
+                # was reaped. Retry only this chat's cleanup, before deletion.
+                try:
+                    await gemini_active["gemini_cleanup"]()
+                    from gemini_runner import clear_cleanup_fence
+                    await clear_cleanup_fence(sys.modules[__name__], session_id, str(gemini_active.get("run_id") or ""))
+                except Exception:
+                    raise HTTPException(409, "Gemini runtime cleanup is incomplete; the chat was not deleted. Retry after stopping its runtime.") from None
+                gemini_active["gemini_cleanup_failed"] = False
             late_provider_thread_id = str(
                 session_provider_id(late_session) or ""
             )
@@ -90756,19 +92762,20 @@ def claude_imported_fork_boundary(
     digest = hashlib.sha256()
     last_message: dict[str, Any] = {}
     with path.open("rb") as stream:
-        for _line in range(MAX_LOCAL_TRANSCRIPT_SCAN_LINES):
-            if not remaining:
-                break
-            raw = stream.readline(min(MAX_LOCAL_TRANSCRIPT_LINE_BYTES + 1, remaining))
-            if not raw or not raw.endswith(b"\n") or len(raw) > MAX_LOCAL_TRANSCRIPT_LINE_BYTES:
-                raise ValueError("imported history checkpoint has an incomplete transcript record")
-            remaining -= len(raw)
-            digest.update(raw)
-            if not raw.strip():
+        original = os.fstat(stream.fileno())
+        for record, offset, raw in jsonl_records(stream, end=remaining,
+                max_records=MAX_LOCAL_TRANSCRIPT_SCAN_LINES):
+            raw.update_hash(digest)
+            remaining = int(cursor["source_offset"]) - offset
+            if raw.blank:
                 continue
-            record = json.loads(raw)
-            if isinstance(record, dict) and record.get("type") in {"user", "assistant"} and not record.get("isSidechain"):
+            if record is None:
+                raise ValueError("imported history checkpoint has a malformed transcript record")
+            if record.get("type") in {"user", "assistant"} and not record.get("isSidechain"):
                 last_message = record
+        current = os.fstat(stream.fileno())
+        if (original.st_dev, original.st_ino, original.st_size, original.st_mtime_ns) != (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns):
+            raise ValueError("imported history checkpoint changed during reading")
     if remaining or not hmac.compare_digest(digest.hexdigest(), cursor["source_digest"]):
         raise ValueError("imported history checkpoint no longer matches its native prefix")
     message = last_message.get("message")
@@ -90823,7 +92830,15 @@ def claude_completed_fork_boundary(
     # final projected message can identify the inclusive native cutoff.
     expected_text = projected_text if projected_text and final_text.endswith(projected_text) else final_text
     recorded_uuid = str(final_projection.get("provider_message_id") or "") if expected_text == projected_text else ""
-    cutoff_time = parse_job_timestamp(str(terminal.get("ts") or ""))
+    cutoff_ts = str(terminal.get("ts") or "")
+    cutoff_time = parse_job_timestamp(cutoff_ts)
+    # now_iso() truncates server events to whole seconds; native Claude
+    # records retain milliseconds. Only an exact completed-message UUID can
+    # disambiguate another turn in that same second. Keep legacy text-only
+    # matching and explicitly fractional timestamps on the strict cutoff.
+    cutoff_second_is_truncated = bool(recorded_uuid and re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", cutoff_ts,
+    ))
     started = next((
         event for event in reversed(events[:-1])
         if event.get("type") == "turn_started" and str(event.get("run_id") or "") == run_id
@@ -90844,7 +92859,11 @@ def claude_completed_fork_boundary(
             if not record_uuid or (recorded_uuid and record_uuid != recorded_uuid):
                 continue
             record_time = parse_job_timestamp(str(record.get("timestamp") or ""))
-            if cutoff_time is None or record_time is None or record_time > cutoff_time:
+            if cutoff_time is None or record_time is None:
+                continue
+            if record_time > cutoff_time and not (
+                cutoff_second_is_truncated and record_time < cutoff_time + 1
+            ):
                 continue
             if not recorded_uuid and (start_time is None or record_time < start_time):
                 continue
@@ -90877,6 +92896,8 @@ async def fork_session(session_id: str, req: ForkSessionRequest) -> dict[str, An
     async with session_lifecycle_lock(session_id):
         try:
             ensure_session_not_deleting(session_id)
+            if (STORE.sessions.get(session_id) or {}).get("backend") == BACKEND_GEMINI:
+                raise HTTPException(409, "Gemini native fork is not available; create a new chat instead.")
             if (STORE.sessions.get(session_id) or {}).get("backend") == BACKEND_OPENCODE:
                 raise HTTPException(status_code=409, detail="OpenCode native chat fork is unavailable; no transcript-copy fallback is enabled.")
             async with ACTIVE_LOCK:
@@ -91289,8 +93310,123 @@ async def _fork_session_locked(
     return {"session": public_session(child), "sessions": [public_session(sess) for sess in ordered_sessions]}
 
 
+TURN_RECEIPT_TASKS: dict[tuple[str, str], tuple[str, asyncio.Task]] = {}
+
+
+def turn_receipt_path(session_id: str, request_id: str) -> Path:
+    return events_path(session_id).parent / "turn-receipts" / f"{request_id}.json"
+
+
+def write_turn_receipt(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w") as stream:
+        json.dump(value, stream, separators=(",", ":"))
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+    descriptor = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def recover_turn_receipt(session_id: str, value: dict) -> dict | None:
+    path = events_path(session_id)
+    stamp = history_file_stamp(path)
+    before = value.get("journal")
+    offset = before[2] if before else 0
+    if stamp is None:
+        if before is not None:
+            raise ValueError("send receipt journal disappeared")
+        return None
+    if before and (stamp[:2] != tuple(before[:2]) or stamp[2] < offset):
+        raise ValueError("send receipt journal was replaced")
+    # An ambiguous old receipt must not cause an unbounded scan or a resend.
+    if stamp[2] - offset > 32 * 1024 * 1024:
+        raise ValueError("send receipt recovery requires a larger journal scan")
+    with path.open("rb") as stream:
+        stream.seek(offset)
+        while stream.tell() < stamp[2]:
+            line = stream.readline(stamp[2] - stream.tell())
+            if not line.endswith(b"\n"):
+                raise ValueError("send receipt journal has an incomplete record")
+            if b'"client_request_id"' not in line:
+                continue
+            event = json.loads(line)
+            if event.get("client_request_id") != value["request_id"]:
+                continue
+            if event.get("type") == "turn_started":
+                return {"run_id": event["run_id"], "queued": False}
+            if event.get("type") == "turn_queued":
+                return {"queued_id": event["queued_id"], "queued": True,
+                        "position": event.get("position", 1)}
+    return None
+
+
+async def execute_receipted_turn(session_id: str, req: TurnRequest, fingerprint: str) -> dict:
+    path = turn_receipt_path(session_id, req.client_request_id)
+    try:
+        value = await asyncio.to_thread(lambda: json.loads(path.read_text()))
+    except FileNotFoundError:
+        value = {"request_id": req.client_request_id, "fingerprint": fingerprint,
+                 "journal": history_file_stamp(events_path(session_id)), "status": "pending"}
+        await asyncio.to_thread(write_turn_receipt, path, value)
+    else:
+        if value.get("fingerprint") != fingerprint:
+            raise HTTPException(status_code=409, detail="request ID was already used for a different message")
+        if value.get("status") == "accepted":
+            return {**value["response"], "session": public_session(STORE.sessions[session_id])}
+        try:
+            recovered = await asyncio.to_thread(recover_turn_receipt, session_id, value)
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=409, detail="message acceptance is uncertain; retain this request ID") from exc
+        if recovered is not None:
+            recovered["session"] = public_session(STORE.sessions[session_id])
+            value.update(status="accepted", response=recovered)
+            await asyncio.to_thread(write_turn_receipt, path, value)
+            return recovered
+    response = await post_turn_without_receipt(session_id, req)
+    value.update(status="accepted", response=response)
+    await asyncio.to_thread(write_turn_receipt, path, value)
+    return response
+
+
+async def post_turn_with_receipt(session_id: str, req: TurnRequest) -> Any:
+    if session_id not in STORE.sessions or session_id in DELETED_SESSION_TOMBSTONES:
+        raise HTTPException(status_code=404, detail="session not found")
+    fingerprint = hashlib.sha256(json.dumps(req.model_dump(mode="json"), sort_keys=True,
+                                           separators=(",", ":")).encode()).hexdigest()
+    key = (session_id, req.client_request_id)
+    existing = TURN_RECEIPT_TASKS.get(key)
+    if existing is not None and existing[0] != fingerprint:
+        raise HTTPException(status_code=409, detail="request ID was already used for a different message")
+    if existing is None:
+        task = asyncio.create_task(execute_receipted_turn(session_id, req, fingerprint))
+        TURN_RECEIPT_TASKS[key] = (fingerprint, task)
+        def completed(done):
+            TURN_RECEIPT_TASKS.pop(key, None)
+            if not done.cancelled():
+                done.exception()
+        task.add_done_callback(completed)
+    else:
+        task = existing[1]
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=10)
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=202, content={"request_id": req.client_request_id,
+                            "acceptance": "pending", "retry_same_request": True})
+
+
 @app.post("/api/sessions/{session_id}/turns")
-async def post_turn(session_id: str, req: TurnRequest) -> dict[str, Any]:
+async def post_turn(session_id: str, req: TurnRequest) -> Any:
+    if req.client_request_id is not None:
+        return await post_turn_with_receipt(session_id, req)
+    return await post_turn_without_receipt(session_id, req)
+
+
+async def post_turn_without_receipt(session_id: str, req: TurnRequest) -> dict[str, Any]:
     while True:
         try:
             return await start_turn(session_id, req)
@@ -94996,6 +97132,12 @@ async def stop_turn(
                     "superseded": True,
                     "message": "The requested run no longer owns this chat.",
                 }
+        if ((STORE.sessions.get(session_id) or {}).get("gemini_cleanup_pending_run_id")
+                and (not active or not callable(active.get("gemini_cleanup")))):
+            if _admission_ready is not None:
+                _admission_ready.set()
+            return {"ok": False, "stopped": False, "pending": True,
+                    "message": "Gemini runtime cleanup requires server-side verification after restart; this chat remains fenced."}
         if preserve_active_goal and codex_goal_followup_requires_native(
             STORE.sessions.get(session_id) or {}, active or {}, current_turn,
         ):
@@ -95264,7 +97406,6 @@ async def stop_turn(
         and not active
         and str(session.get("backend") or "") == BACKEND_CODEX
         and root_thread_id
-        and codex_manager is not None
     ):
         subagent_stop = await stop_codex_descendant_subagents(
             session_id,
@@ -95326,6 +97467,7 @@ async def stop_turn(
                         "pending": False,
                         "superseded": True,
                         "subagents": subagent_stop,
+                        **codex_subagent_stop_status(session, subagent_stop),
                     }
                 if bound_active:
                     # The runner bound while Stop was waiting. Re-enter through
@@ -95352,6 +97494,7 @@ async def stop_turn(
                         "stopped": True,
                         "pending": False,
                         "subagents": subagent_stop,
+                        **codex_subagent_stop_status(session, subagent_stop),
                         **goal_result,
                     }
                 remaining = deadline - asyncio.get_running_loop().time()
@@ -95433,6 +97576,7 @@ async def stop_turn(
                         "pending": False,
                         "hard_stop": True,
                         "subagents": subagent_stop,
+                        **codex_subagent_stop_status(session, subagent_stop),
                         **goal_result,
                     }
                 # Keep the deferred STOP_REQUESTS marker. A legitimate slow
@@ -95469,6 +97613,7 @@ async def stop_turn(
                 "stopped": True,
                 "pending": False,
                 "subagents": subagent_stop,
+                **codex_subagent_stop_status(session, subagent_stop),
                 **goal_result,
             }
         schedule_unpaused_queue_after_release()
@@ -95480,6 +97625,7 @@ async def stop_turn(
             "stopped": True,
             "pending": False,
             "subagents": subagent_stop,
+            **codex_subagent_stop_status(session, subagent_stop),
             **goal_result,
         }
     proc = active.get("proc") if active else None
@@ -95517,6 +97663,7 @@ async def stop_turn(
                 "Turn stopped. The stale Codex goal thread was fenced and "
                 "will not be reused."
             ),
+            **codex_subagent_stop_status(session, subagent_stop),
         }
 
     async def hard_terminalize_active_stop(
@@ -95568,6 +97715,7 @@ async def stop_turn(
                 "native_interrupt": native_interrupt,
                 "goal_paused": goal_paused,
                 "subagents": subagent_stop,
+                **codex_subagent_stop_status(session, subagent_stop),
             }
 
         if is_claude_sdk:
@@ -95649,6 +97797,7 @@ async def stop_turn(
                     else "Turn stopped. The unresponsive provider runner was retired."
                 )
             ),
+            **codex_subagent_stop_status(session, subagent_stop),
         }
 
     native_interrupt = False
@@ -95718,7 +97867,20 @@ async def stop_turn(
     # The app-server process may serve multiple Codex chats and must never be
     # terminated as a per-chat Stop action.
     if proc and active.get("transport") != CODEX_TRANSPORT_APP_SERVER:
-        await terminate_process_tree(proc)
+        if active.get("backend") == BACKEND_GEMINI:
+            # Gemini owns a verified-cleanup guard. Generic tree termination
+            # can kill it before startup or during verification, destroying the
+            # cleanup evidence and leaving the chat permanently fenced.
+            cleanup = active.get("gemini_cleanup")
+            try:
+                if not callable(cleanup):
+                    raise RuntimeError("Missing Gemini cleanup owner")
+                await cleanup()
+            except Exception:
+                return {"ok": False, "stopped": False, "pending": True,
+                        "message": "Gemini runtime cleanup is incomplete. Retry Stop; this chat remains fenced."}
+        else:
+            await terminate_process_tree(proc)
     if transition_ready is not None:
         try:
             await asyncio.wait_for(
@@ -95750,6 +97912,7 @@ async def stop_turn(
                 "native_interrupt": native_interrupt,
                 "goal_paused": goal_paused,
                 "subagents": subagent_stop,
+                **codex_subagent_stop_status(session, subagent_stop),
                 "message": (
                     goal_pause_error
                     or "Stop was sent; waiting for the steering transition to settle."
@@ -95786,6 +97949,18 @@ async def stop_turn(
                 and not owner_task.done()
             ):
                 dynamic_tasks.add(owner_task)
+        if (current is active and active.get("backend") == BACKEND_GEMINI
+                and active.get("gemini_cleanup_failed") and not dynamic_tasks):
+            try:
+                await active["gemini_cleanup"]()
+                from gemini_runner import clear_cleanup_fence
+                await clear_cleanup_fence(sys.modules[__name__], session_id, str(active.get("run_id") or ""))
+            except Exception:
+                return {"ok": False, "stopped": False, "pending": True,
+                        "message": "Gemini runtime cleanup is incomplete. Retry Stop; this chat remains fenced."}
+            active["gemini_cleanup_failed"] = False
+            await reconcile_provider_task_exit(session_id, str(active.get("run_id") or ""), BACKEND_GEMINI)
+            return {"ok": True, "stopped": True, "pending": False}
         if current is not active:
             if not goal_pause_ok:
                 return await terminal_goal_pause_failure_result(native_interrupt)
@@ -95797,6 +97972,7 @@ async def stop_turn(
                 "native_interrupt": native_interrupt,
                 "goal_paused": goal_paused,
                 "subagents": subagent_stop,
+                **codex_subagent_stop_status(session, subagent_stop),
             }
         if not still_busy:
             if not goal_pause_ok:
@@ -95817,6 +97993,7 @@ async def stop_turn(
                 "native_interrupt": native_interrupt,
                 "goal_paused": goal_paused,
                 "subagents": subagent_stop,
+                **codex_subagent_stop_status(session, subagent_stop),
             }
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
@@ -95864,6 +98041,7 @@ async def stop_turn(
             "native_interrupt": native_interrupt,
             "goal_paused": goal_paused,
             "subagents": subagent_stop,
+            **codex_subagent_stop_status(session, subagent_stop),
         }
 
     # A provider interrupt is an acknowledgement, not terminal state. Leave
@@ -96631,6 +98809,17 @@ async def session_terminal(
             await ws.close()
 
 
+EVENT_STREAM_HEARTBEAT_SECONDS = 15.0
+
+
+async def send_event_stream_status(ws: WebSocket, session_id: str, phase: str) -> None:
+    # Ephemeral, opt-in control frames: never persisted or assigned a seq.
+    await asyncio.wait_for(ws.send_json({
+        "type": "event_stream_status", "version": 1,
+        "session_id": session_id, "phase": phase,
+    }), timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS)
+
+
 @app.websocket("/api/sessions/{session_id}/events")
 async def session_events(
     session_id: str,
@@ -96639,6 +98828,8 @@ async def session_events(
     visible: bool | None = None,
     reasoning_stream: bool = False,
     reasoning_text: bool = False,
+    liveness: bool = False,
+    history_projection: bool = False,
 ) -> None:
     selected_subprotocol = websocket_endpoint_subprotocol(
         ws,
@@ -96653,6 +98844,7 @@ async def session_events(
         await ws.close(code=4404)
         return
     await ws.accept(subprotocol=selected_subprotocol)
+    schedule_provider_history_sync(STORE.sessions[session_id])
     try:
         if not await HUB.reserve(session_id, ws):
             await close_event_websocket_over_capacity(ws)
@@ -96668,7 +98860,6 @@ async def session_events(
         # is ready. Reading its fsynced rows earlier can replay raw scheduled
         # inputs before this socket is registered for the repaired broadcast.
         async with event_delivery_lock(session_id):
-            await asyncio.to_thread(prepare_provider_history_metadata_repair, session_id)
             boundary = await asyncio.to_thread(
                 last_event_seq_from_file,
                 events_path(session_id),
@@ -96719,12 +98910,28 @@ async def session_events(
                     return
                 if reasoning_snapshot is not None:
                     await asyncio.wait_for(ws.send_json(reasoning_snapshot), timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS)
+                if liveness:
+                    await send_event_stream_status(ws, session_id, "ready")
+                if history_projection:
+                    # A proof may finish between the HTTP page and subscription.
+                    # The revision closes that gap without replaying old rows.
+                    await asyncio.wait_for(ws.send_json(history_projection_notice(session_id)), timeout=WEBSOCKET_SEND_TIMEOUT_SECONDS)
                 break
             boundary = gap_boundary
         while True:
-            await ws.receive_text()
+            if not liveness:
+                await ws.receive_text()
+                continue
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=EVENT_STREAM_HEARTBEAT_SECONDS)
+            except asyncio.TimeoutError:
+                # No history scan, provider call, or sequence acknowledgement.
+                # This confirms that the application event path is still alive.
+                await send_event_stream_status(ws, session_id, "heartbeat")
     except WebSocketDisconnect:
         pass
+    except (asyncio.TimeoutError, ConnectionError):
+        await close_event_websocket_after_delivery_failure(ws)
     finally:
         await HUB.unsubscribe(session_id, ws)
 
@@ -97260,6 +99467,72 @@ async def raise_agent_emergency_alert(
             sess,
             duplicate=False,
         )
+
+
+@app.post("/api/agent/sessions/{session_id}/notifications")
+async def raise_agent_notification(
+    request: Request,
+    session_id: str,
+    req: AgentNotificationRequest,
+) -> dict[str, Any]:
+    capability = await authorize_provider_action(request, action="notify", session_id=session_id)
+    message = clean_emergency_message(req.message)
+    if not message:
+        raise HTTPException(status_code=422, detail="notification message is empty")
+    if req.level == "emergency":
+        receipt = await raise_agent_emergency_alert(
+            request,
+            session_id,
+            EmergencyAlertRequest(request_id=req.request_id, message=message),
+        )
+        return {
+            "ok": True, "chat_id": session_id, "level": req.level,
+            "event_id": receipt["event_id"], "event_seq": receipt["event_seq"],
+            "duplicate": receipt["duplicate"],
+        }
+
+    request_digest = hashlib.sha256(
+        json.dumps({"level": req.level, "message": message}, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    async with session_lifecycle_lock(session_id):
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise HTTPException(status_code=404, detail="session not found")
+        ensure_session_not_deleting(session_id)
+        if sess.get("archived"):
+            raise HTTPException(status_code=409, detail="an archived chat cannot send a notification")
+        token = provider_capability_header(request)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        async with CROSS_CHAT_CAPABILITY_LOCK:
+            live = CROSS_CHAT_CAPABILITIES.get(token_hash)
+            if live is None or live.get("source_run_id") != capability.get("source_run_id"):
+                raise HTTPException(status_code=403, detail="provider capability is no longer attached to this turn")
+            reservations = live.setdefault("notification_requests", {})
+            previous_digest = reservations.get(req.request_id)
+            if previous_digest is not None and previous_digest != request_digest:
+                raise HTTPException(status_code=409, detail="notification request ID was already used with different content")
+            if previous_digest is None:
+                if len(reservations) >= NOTIFICATION_REQUESTS_PER_RUN:
+                    raise HTTPException(status_code=429, detail="this turn already used its notification limit")
+                reservations[req.request_id] = request_digest
+        source_run_id = str(capability.get("source_run_id") or "")
+        existing = await asyncio.to_thread(
+            find_agent_notification_event, session_id, req.request_id, source_run_id,
+        )
+        if existing is not None:
+            if existing.get("notification_request_digest") != request_digest:
+                raise HTTPException(status_code=409, detail="notification receipt does not match this live turn")
+            return {"ok": True, "chat_id": session_id, "level": req.level,
+                    "event_id": existing["id"], "event_seq": existing["seq"], "duplicate": True}
+        event = await append_durable_event(session_id, "agent_notification", {
+            "run_id": source_run_id,
+            "message": message,
+            "notification_level": req.level,
+            "notification_request_id": req.request_id,
+            "notification_request_digest": request_digest,
+        })
+        return {"ok": True, "chat_id": session_id, "level": req.level,
+                "event_id": event["id"], "event_seq": event["seq"], "duplicate": False}
 
 
 def stage_upload_file_sync(source: Any, destination: Path) -> int:

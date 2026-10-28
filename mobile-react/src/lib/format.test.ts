@@ -1,5 +1,5 @@
 import type { AgentFile, Event } from '../types'
-import { filesNewestFirst, formatChatDateTime, formatDateTime, isImage, mergeEvents, mergeFiles, normalizeServerURL } from './format'
+import { filesNewestFirst, formatChatDate, formatDateTime, isImage, mergeEvents, mergeFiles, normalizeServerURL } from './format'
 
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message)
@@ -20,11 +20,23 @@ export function runFormatTests(): void {
   assert(/Jul|7/.test(full), `full timestamp must include a date: ${full}`)
   assert(/\d/.test(full), `full timestamp must include a time: ${full}`)
 
-  const compact = formatChatDateTime('2026-07-16T19:42:00Z')
+  const now = new Date(2026, 9, 17, 0, 5)
+  assert(formatChatDate(new Date(2026, 9, 17, 0, 1).toISOString(), now) === 'Today', 'today uses the device calendar, including UTC timestamps')
+  assert(formatChatDate(new Date(2026, 9, 16, 23, 59).toISOString(), now) === 'Yesterday', 'yesterday is a calendar day, not the last 24 hours')
+  assert(formatChatDate(new Date(2025, 11, 31, 23, 59).toISOString(), new Date(2026, 0, 1)) === 'Yesterday', 'yesterday crosses year boundaries')
+  assert(formatChatDate(new Date(2026, 8, 30, 23, 59).toISOString(), new Date(2026, 9, 1)) === 'Yesterday', 'yesterday crosses month boundaries')
+  for (const [month, day] of [[2, 9], [10, 2]]) {
+    const afterDST = new Date(2026, month, day, 0, 30)
+    const priorDay = new Date(2026, month, day - 1, 0, 1)
+    assert(formatChatDate(priorDay.toISOString(), afterDST) === 'Yesterday', 'calendar comparison works across short and long DST days')
+  }
+  const compact = formatChatDate('2026-07-16T19:42:00Z', now)
   assert(/Jul|7/.test(compact), `chat timestamp must include a date: ${compact}`)
-  assert(/\d/.test(compact), `chat timestamp must include a time: ${compact}`)
+  assert(!/:|AM|PM|2026/i.test(compact), `same-year chat dates have no time or year: ${compact}`)
+  assert(/2025/.test(formatChatDate('2025-07-16T19:42:00Z', now)), 'older-year dates retain the year')
   assert(formatDateTime('not-a-date') === '', 'invalid full timestamps must be empty')
-  assert(formatChatDateTime(null) === '', 'missing chat timestamps must be empty')
+  assert(formatChatDate(null) === '', 'missing chat timestamps must be empty')
+  assert(formatChatDate('not-a-date') === '', 'invalid chat timestamps must be empty')
   assert(isImage({ id: 'image-1', filename: 'export.AVIF' }), 'AVIF uploads must retain their image preview after upload')
   assert(isImage({ id: 'image-2', filename: 'scan.TIFF?download=1' }), 'query-suffixed TIFF uploads must retain their image preview after upload')
   assert(isImage({ id: 'image-3', filename: 'picker-item', content_type: 'image/heif' }), 'image MIME metadata must enable a preview without a filename extension')

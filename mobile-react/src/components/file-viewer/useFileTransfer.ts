@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { isFileTransferBusy, type FileTransferRequest, type FileTransferState } from '../../lib/file-transfer'
+import { isFileTransferBusy, PhotoLibraryPermissionError, type FileTransferRequest, type FileTransferState } from '../../lib/file-transfer'
 import { runNativeFileTransfer } from '../../lib/native-file-transfer'
 
 export function useFileTransfer(scopeKey: string) {
@@ -27,7 +27,7 @@ export function useFileTransfer(scopeKey: string) {
         if (isCurrent()) setState(next)
       })
     } catch (cause) {
-      if (isCurrent()) setState({ phase: 'error', filename: request.filename, message: `Could not ${request.action === 'download' ? 'download' : 'share'} ${request.title}: ${cause instanceof Error ? cause.message : String(cause)}` })
+      if (isCurrent()) setState({ phase: 'error', filename: request.filename, canOpenSettings: cause instanceof PhotoLibraryPermissionError, message: `Could not ${request.action === 'save-photos' ? 'save to Photos' : request.action === 'download' ? 'download' : 'share'} ${request.title}: ${cause instanceof Error ? cause.message : String(cause)}` })
     } finally {
       if (active.current === controller) {
         if (mounted.current && scope.current === scopeKey && !request.isCurrent()) setState(null)

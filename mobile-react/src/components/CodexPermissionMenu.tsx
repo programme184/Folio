@@ -15,7 +15,7 @@ import {
   type CodexPermissionUpdateScope,
 } from '../lib/codex-permission-updates'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type {
   CodexApprovalPolicy,
   CodexApprovalsReviewer,
@@ -252,19 +252,19 @@ export function CodexPermissionMenu({ sessionId, compact }: { sessionId: string;
         },
       ]}
     >
-      {compact ? <View style={[styles.triggerCompactFace, { backgroundColor: colors.raised }]}><Shield size={16} color={colors.muted} />{riskyPermissions ? <View style={[styles.triggerWarningDot, { backgroundColor: colors.orange }]} /> : null}</View> : <><Shield size={17} color={colors.muted} /><Text style={[styles.triggerText, { color: colors.text }]} numberOfLines={1}>{accessLabel} · {compactApprovalLabel(draft.policy)}</Text><ChevronDown size={13} color={colors.muted} /></>}
+      {compact ? <View style={[styles.triggerCompactFace, { backgroundColor: colors.raised }]}><Shield size={16} color={colors.muted} />{riskyPermissions ? <View style={[styles.triggerWarningDot, { backgroundColor: colors.orange }]} /> : null}</View> : <><Shield size={17} color={colors.muted} /><Text style={[styles.triggerText, { color: colors.text }]} numberOfLines={1} localize>{accessLabel} · {compactApprovalLabel(draft.policy)}</Text><ChevronDown size={13} color={colors.muted} /></>}
     </Pressable>
     {open ? <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={close}>
       <SafeAreaView accessibilityViewIsModal onAccessibilityEscape={close} style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.header, { borderBottomColor: colors.border }]}>
           <View style={[styles.headerMark, { backgroundColor: colors.raised }]}><Shield size={19} color={colors.blue} /></View>
           <View style={styles.headerCopy}>
-            <Text style={[styles.title, { color: colors.text }]}>Codex permissions</Text>
-            <Text style={[styles.subtitle, { color: colors.muted }]}>Applies to future turns in this chat.</Text>
+            <Text style={[styles.title, { color: colors.text }]} localize>Codex permissions</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]} localize>Applies to future turns in this chat.</Text>
           </View>
           <View accessibilityLiveRegion="polite" style={styles.saveStatus}>
             {saveState === 'saving' ? <ActivityIndicator size="small" color={colors.blue} /> : null}
-            <Text style={[styles.saveStatusText, { color: saveState === 'error' ? colors.red : colors.muted }]}>
+            <Text style={[styles.saveStatusText, { color: saveState === 'error' ? colors.red : colors.muted }]} localize>
               {saveState === 'saving' ? 'Saving' : saveState === 'saved' ? 'Saved' : saveState === 'error' ? 'Not saved' : ''}
             </Text>
           </View>
@@ -317,10 +317,10 @@ export function CodexPermissionMenu({ sessionId, compact }: { sessionId: string;
             ]}
             onChange={value => apply({ reviewer: value as CodexApprovalsReviewer })}
           />
-          {draft.profile ? <Text style={[styles.hint, { color: colors.muted }]}>The selected profile replaces the custom filesystem sandbox. Clearing it restores the preserved sandbox.</Text> : null}
-          {profilesError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>Profiles unavailable: {profilesError}</Text> : null}
+          {draft.profile ? <Text style={[styles.hint, { color: colors.muted }]} localize>The selected profile replaces the custom filesystem sandbox. Clearing it restores the preserved sandbox.</Text> : null}
+          {profilesError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]} localize>Profiles unavailable: {profilesError}</Text> : null}
           {saveError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red }]}>{saveError}</Text> : null}
-          {riskyPermissions ? <Text style={[styles.warning, { color: colors.orange, borderColor: colors.orange }]}>Full access with no command prompts is enabled for this chat.</Text> : null}
+          {riskyPermissions ? <Text style={[styles.warning, { color: colors.orange, borderColor: colors.orange }]} localize>Full access with no command prompts is enabled for this chat.</Text> : null}
         </ScrollView>
       </SafeAreaView>
     </Modal> : null}
@@ -440,15 +440,15 @@ function errorMessage(cause: unknown): string {
 }
 
 const styles = StyleSheet.create({
-  trigger: { height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  trigger: { height: COMPOSER_TOOLBAR_TOUCH_SIZE, flexShrink: 0, borderRadius: radius.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   triggerCompact: { width: COMPOSER_TOOLBAR_TOUCH_SIZE },
   triggerWide: { minWidth: COMPOSER_TOOLBAR_TOUCH_SIZE, maxWidth: 160, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 9 },
-  triggerCompactFace: { width: COMPOSER_PERMISSION_FACE_SIZE, height: COMPOSER_PERMISSION_FACE_SIZE, position: 'relative', borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
-  triggerWarningDot: { width: 5, height: 5, position: 'absolute', top: 3, right: 3, borderRadius: 3 },
+  triggerCompactFace: { width: COMPOSER_PERMISSION_FACE_SIZE, height: COMPOSER_PERMISSION_FACE_SIZE, position: 'relative', borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  triggerWarningDot: { width: 5, height: 5, position: 'absolute', top: 3, right: 3, borderRadius: radius.round },
   triggerText: { minWidth: 0, flexShrink: 1, fontSize: 10.5, fontWeight: '800' },
   sheet: { flex: 1 },
   header: { minHeight: 70, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerMark: { width: 40, height: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  headerMark: { width: 40, height: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
   headerCopy: { flex: 1, minWidth: 0 },
   title: { fontSize: 17, fontWeight: '900' },
   subtitle: { marginTop: 2, fontSize: 10.5 },
@@ -458,12 +458,12 @@ const styles = StyleSheet.create({
   content: { width: '100%', maxWidth: 680, alignSelf: 'center', padding: 14, paddingBottom: 44, gap: 12 },
   field: { gap: 5 },
   label: { fontSize: 10.5, fontWeight: '800' },
-  choice: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  choice: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 8 },
   choiceText: { minWidth: 0, flex: 1, fontSize: 13 },
-  options: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 5, gap: 2 },
-  option: { minHeight: 46, borderRadius: 6, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  options: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 5, gap: 2 },
+  option: { minHeight: 46, borderRadius: radius.md, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   optionText: { minWidth: 0, flex: 1, fontSize: 13 },
   hint: { fontSize: 10.5, lineHeight: 15 },
   error: { fontSize: 11, lineHeight: 16 },
-  warning: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 10, fontSize: 11, lineHeight: 16 },
+  warning: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10, fontSize: 11, lineHeight: 16 },
 })

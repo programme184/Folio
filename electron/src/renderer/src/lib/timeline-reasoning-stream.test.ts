@@ -18,6 +18,18 @@ const project = (events: Event[]) => {
 }
 
 describe('transient reasoning presentation', () => {
+  it('shows Gemini live answers as messages, not thinking, and durable output wins', () => {
+    const answer: ReasoningSummaryStreamItem = { ...stream, backend: 'gemini', phase: 'assistant', text: 'Partial answer' }
+    const initial = project([start])
+    const live = overlayReasoningStream(initial.rows, initial.semantic, [answer], 'chat')
+    expect(live.at(-1)).toMatchObject({ kind: 'message', role: 'assistant', event: { type: 'assistant_text', text: 'Partial answer' } })
+    expect(initial.rows).toHaveLength(1)
+    const done = project([start, event(2, 'assistant_text', { backend: 'gemini', item_id: answer.item_id, text: 'Partial answer complete' })])
+    expect(overlayReasoningStream(done.rows, done.semantic, [answer], 'chat')).toBe(done.rows)
+    const stopped = project([start, event(2, 'turn_stopped')])
+    expect(overlayReasoningStream(stopped.rows, stopped.semantic, [answer], 'chat')).toBe(stopped.rows)
+    expect(overlayReasoningStream(initial.rows, initial.semantic, [{ ...answer, run_id: 'other' }], 'chat')).toBe(initial.rows)
+  })
   it('keeps summary and exposed reasoning independent when native item identity is shared', () => {
     const summary = event(2, 'reasoning_summary', { item_id: stream.item_id, phase: 'summary', text: 'Saved summary' })
     const raw: ReasoningSummaryStreamItem = { ...stream, phase: 'reasoning', text: 'Provider plaintext' }

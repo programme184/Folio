@@ -18,6 +18,7 @@ fixture.client = new Proxy({}, { get: (_, method) => (...args) => {
   calls.push([method, args]); throw new Error(`Unexpected imported-delivery API: ${String(method)}`)
 } })
 const mocks = {
+  './store/useAppearanceStore': `export const useAppearanceStore = selector => selector({ preference: 'system' });`,
   'react-native': `import { createElement } from 'react';
     export const View = 'View', ActivityIndicator = 'ActivityIndicator';
     export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children);

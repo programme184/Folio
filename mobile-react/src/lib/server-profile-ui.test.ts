@@ -1,6 +1,7 @@
 import {
   buildCreateServerProfileInput,
   buildUpdateServerProfileInput,
+  displayedServerConnectionState,
   editServerProfileDraft,
   findProfileByIdentity,
   initialServerProfileDraft,
@@ -38,6 +39,12 @@ const beta: ServerProfileListItem = {
   serverUrl: 'https://beta.example:7850',
   serverIdentity: 'server-beta',
 }
+
+assertEqual(displayedServerConnectionState('cached', 'online', false, false), 'online', 'an inactive verified server stays green')
+assertEqual(displayedServerConnectionState('connecting', 'online', true, true), 'online', 'selection must not flash a verified server gray')
+assertEqual(displayedServerConnectionState('retrying', 'online', true, true), 'online', 'reconnect retains the last verified green until resolved')
+assertEqual(displayedServerConnectionState('offline', 'online', true, false), 'offline', 'a failed health check overrides old reachability')
+assertEqual(displayedServerConnectionState('cached', 'offline', false, false), 'offline', 'an unavailable inactive server stays gray')
 
 assertEqual(
   initialServerProfileDraft('edit-active', [alpha, beta], 'alpha'),

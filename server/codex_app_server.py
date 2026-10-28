@@ -1088,6 +1088,8 @@ class CodexAppServerClient:
         self._next_id += 1
         request_id = self._next_id
         future: asyncio.Future[Any] = loop.create_future()
+        # Preserve request ownership for per-chat process handoff.
+        future._codex_thread_id = str((params or {}).get("threadId") or (params or {}).get("ancestorThreadId") or "")
         self._pending[request_id] = (
             method,
             future,
@@ -1557,6 +1559,7 @@ class CodexAppServerClient:
                         previous,
                     )
                 )
+            task._codex_thread_id = thread_id
             self._callback_tails[owner] = task
             self._callback_tasks.add(task)
             task.add_done_callback(
@@ -1619,6 +1622,7 @@ class CodexAppServerClient:
             self._handle_server_request(request_id, method, params),
             name=f"codex-app-server-request-{request_id}",
         )
+        task._codex_thread_id = str(params.get("threadId") or "")
         self._server_request_tasks[request_id] = task
         task.add_done_callback(
             lambda done, rid=request_id: self._finish_server_request(rid, done)
@@ -2365,17 +2369,20 @@ class CodexAppServerClient:
         validated["turn"] = _protocol_turn(method, result.get("turn"))
         return validated
 
-    async def run_thread_shell_command(self, thread_id: str, command: str) -> None:
+    async def run_thread_shell_command(
+        self, thread_id: str, command: str, *,
+        before_send: Callable[[], bool] | None = None,
+    ) -> None:
         thread_id = _require_nonempty_string(thread_id, "thread_id")
         command = _require_nonempty_string(command, "command")
         method = "thread/shellCommand"
-        _protocol_empty_object(
-            method,
-            await self.request(
-                method,
-                {"threadId": thread_id, "command": command},
-            ),
-        )
+        params = {"threadId": thread_id, "command": command}
+        if before_send is None:
+            result = await self.request(method, params)
+        else:
+            await self.start()
+            result = await self._request_connected(method, params, before_send=before_send)
+        _protocol_empty_object(method, result)
 
     async def list_background_terminals(
         self,
@@ -3007,8 +3014,14 @@ class CodexAppServerManager:
             delivery=delivery,
         )
 
-    async def run_thread_shell_command(self, thread_id: str, command: str) -> None:
-        await self.client.run_thread_shell_command(thread_id, command)
+    async def run_thread_shell_command(
+        self, thread_id: str, command: str, *,
+        before_send: Callable[[], bool] | None = None,
+    ) -> None:
+        if before_send is None:
+            await self.client.run_thread_shell_command(thread_id, command)
+        else:
+            await self.client.run_thread_shell_command(thread_id, command, before_send=before_send)
 
     async def list_background_terminals(
         self,

@@ -5,7 +5,8 @@ import { runtimeBackendCatalogFor, runtimeEffortOptions } from '@shared/runtime-
 export function backendLabel(backend: Backend, codexProvider?: CodexProvider): string {
   if (backend === 'cursor' && codexProvider === 'custom') return t('connections.cursorKey')
   if (backend === 'codex' && codexProvider === 'custom') return t('codexProvider.label')
-  if (codexProvider === 'custom') return t('connections.chatLabel', { provider: backend === 'opencode' ? 'OpenCode' : 'Claude' })
+  if (codexProvider === 'custom') return t('connections.chatLabel', { provider: backend === 'gemini' ? 'Gemini' : backend === 'opencode' ? 'OpenCode' : 'Claude' })
+  if (backend === 'gemini') return 'Gemini'
   if (backend === 'codex') return 'Codex'
   if (backend === 'cursor') return 'Cursor'
   if (backend === 'opencode') return 'OpenCode'

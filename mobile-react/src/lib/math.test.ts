@@ -4,6 +4,7 @@ import {
   matchMathAt,
   scanMath,
   scanMathSegments,
+  visibleMarkdownPreview,
 } from './math'
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -47,6 +48,14 @@ const codeFold = foldMarkdownSource('before `literal code` after', 14)
 assert(codeFold.visible === 'before ', 'folding must move before an inline code span')
 const fenceFold = foldMarkdownSource('before\n```\nlong code\n```\nafter', 16)
 assert(fenceFold.visible === 'before\n', 'folding must move before a fenced code block')
+const longFirstFence = `\`\`\`text\n${'long message '.repeat(400)}\n\`\`\``
+const longFirstFenceFold = foldMarkdownSource(longFirstFence, 3_200)
+assert(longFirstFenceFold.folded && longFirstFenceFold.cutIndex === 0, 'folding must not cut through a leading oversized code block')
+const longFirstFencePreview = visibleMarkdownPreview(longFirstFence, longFirstFenceFold, 3_200)
+assert(longFirstFencePreview.includes('long message') && longFirstFencePreview.length > 3_200, 'a leading oversized protected block must still show a bounded visible preview')
+const longPlain = `${'ordinary text '.repeat(400)}`
+const longPlainFold = foldMarkdownSource(longPlain, 3_200)
+assert(visibleMarkdownPreview(longPlain, longPlainFold, 3_200).startsWith(longPlain.slice(0, 3_200)), 'normal long messages must retain the safe folded preview')
 const emojiSource = `abc😀def`
 const emojiFold = foldMarkdownSource(emojiSource, 4)
 assert(!emojiFold.visible.endsWith('\uD83D'), 'folding must not split a surrogate pair')

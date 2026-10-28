@@ -20,6 +20,7 @@ import { useAppStore } from '../store/app-store'
 import { eventErrorText, isTimelineError } from '../lib/timeline'
 import { NativeProviderSignIn } from './NativeProviderSignIn'
 import { openAIProviderSettings } from '../lib/provider-settings'
+import { CopyErrorButton } from './CopyErrorButton'
 
 export const RuntimeHealthNotice = memo(function RuntimeHealthNotice({ backend, sessionId, codexProvider, admissionError }: { backend: Backend; sessionId: string; codexProvider?: CodexProvider; admissionError?: string }) {
   useLocale()
@@ -107,7 +108,7 @@ function TmuxStatus() {
     <Icon size={17} />
     <div>
       <strong>tmux <span>{label}</span></strong>
-      <small>{detail}</small>
+      <small className="runtime-detail">{detail}</small>
       {capability?.action ? <small className="runtime-action">{capability.action}</small> : null}
     </div>
   </div>
@@ -175,7 +176,7 @@ function RuntimeStatus({
     ? connected && diagnostic?.authenticated === true && diagnostic.status === 'ready' ? 'ready' : 'unknown'
     : cursorUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
   const Icon = tone === 'ready' ? CheckCircle2 : tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : CircleHelp
-  const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : backend === 'opencode' ? 'OpenCode' : codexProvider === 'custom' ? t('codexProvider.label') : 'Codex'
+  const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : backend === 'opencode' ? 'OpenCode' : backend === 'gemini' ? 'Gemini' : codexProvider === 'custom' ? t('codexProvider.label') : 'Codex'
   const cursorUnavailableDetail = cursorUnavailable
     ? (backend === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorBackendUnavailableReason(health, catalog)) || ''
     : ''
@@ -215,13 +216,15 @@ function RuntimeStatus({
     <Icon size={compact ? 15 : 17} />
     <div>
       <strong>{provider} <span>{label}</span></strong>
-      <small>{detail}</small>
+      <small className="runtime-detail">{detail}</small>
       {action ? <small className="runtime-action">{action}</small> : null}
       {!compact && tone !== 'ready' && <NativeProviderSignIn key={`${backend}:${profileId}:${profileGeneration}`} backend={backend} disabled={!connected} />}
     </div>
-    {compact && offerCursorKey && <button type="button" className="quiet-button runtime-recheck-button" onClick={useSavedCursorKey}>{t('connections.cursorKey')}</button>}
-    {compact && codexProvider === 'custom' && <button type="button" className="quiet-button runtime-recheck-button" onClick={() => openAIProviderSettings(backend)}>{t('connections.configure')}</button>}
-    {compact && !offerCursorKey && codexProvider !== 'custom' && providerNeedsAttention && onRecheck
+    {compact && <div className="runtime-health-actions">
+    <CopyErrorButton key={`${detail}:${action}`} text={[detail, action && !detail.includes(action) ? action : null].filter(Boolean).join('\n')} />
+    {offerCursorKey && <button type="button" className="quiet-button runtime-recheck-button" onClick={useSavedCursorKey}>{t('connections.cursorKey')}</button>}
+    {(codexProvider === 'custom' || backend === 'gemini') && <button type="button" className="quiet-button runtime-recheck-button" onClick={() => openAIProviderSettings(backend)}>{t('connections.configure')}</button>}
+    {!offerCursorKey && codexProvider !== 'custom' && backend !== 'gemini' && providerNeedsAttention && onRecheck
       ? <button
           type="button"
           className="quiet-button runtime-recheck-button"
@@ -231,6 +234,7 @@ function RuntimeStatus({
         >
           <RefreshCw className={refreshing ? 'spin' : ''} size={12} />{" "}{t("ui.RuntimeHealth.RuntimeStatus.recheck_1f47d83")}</button>
       : null}
+    </div>}
     {!compact && diagnostic?.version ? <code>{diagnostic.version}</code> : null}
   </div>
 }
@@ -251,12 +255,13 @@ function latestChatRunError(events: Event[] | undefined, backend: Backend): stri
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
     if (event.run_id !== latestRunId || (event.backend && event.backend !== backend) || !isTimelineError(event)) continue
-    return compactError(event)
+    const detail = compactError(event)
+    if (detail) return detail
   }
   return ''
 }
 
 function compactError(event: Event): string {
-  const text = eventErrorText(event).trim()
-  return text.length > 520 ? `${text.slice(0, 520).trim()}…` : text
+  // Preserve complete commands; constrain long notices visually, not in data.
+  return eventErrorText(event).trim()
 }

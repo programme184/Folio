@@ -68,7 +68,7 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url === 'https://validation.example/api/health') {
     return Promise.resolve(new Response(JSON.stringify({ ok: true, server_identity: 'validated-server', api_contract_version: 7 }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation.example/api/sessions') {
+  if (url === 'https://validation.example/api/sessions?summary=true') {
     return Promise.resolve(new Response(JSON.stringify({ sessions: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
   }
   if (url === 'https://revoke.example/api/health') {
@@ -327,6 +327,10 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
           created_at: '2026-07-28T00:00:00Z',
         },
       }
+    } else if (path.endsWith('/gemini/runtime')) {
+      value = { available: true, pending_interactions: [], permission_modes: ['default', 'autoEdit', 'yolo'] }
+    } else if (path.includes('/gemini/interactions/')) {
+      value = { interaction: { id: 'gemini interaction /?', session_id: 'session /?', method: 'item/tool/requestApproval', params: {}, created_at: '2026-10-25T00:00:00Z' } }
     } else if (path.endsWith('/claude/runtime')) {
       value = {
         available: true,
@@ -398,7 +402,7 @@ globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
   if (url.startsWith('https://auth-reject.example/api/')) {
     return Promise.resolve(new Response(JSON.stringify({ detail: 'Access token rejected' }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
   }
-  if (url === 'https://validation-detail.example/api/sessions') {
+  if (url === 'https://validation-detail.example/api/sessions?summary=true') {
     return Promise.resolve(new Response(JSON.stringify({
       detail: [{
         type: 'string_too_short',
@@ -716,6 +720,16 @@ try {
   assert(createBody.codex_permission_profile === null, 'The server should own an omitted Codex permission profile default')
   assert(createBody.codex_approvals_reviewer === null, 'The server should own an omitted Codex reviewer default')
   assert(createBody.provider_jobs_access === null, 'The server should own an omitted provider jobs access default')
+  assert(!Object.hasOwn(createBody, 'codex_provider') && !Object.hasOwn(createBody, 'provider_connection'), 'Legacy native creation must not add a custom route')
+  for (const backend of ['codex', 'claude', 'opencode', 'gemini'] as const) {
+    const field = backend === 'codex' ? 'codex_provider' : 'provider_connection'
+    await codex.createSession({ title: 'API test', folder: '', cwd: '', backend, [field]: 'custom', model: 'exact-api-model' })
+    const body = JSON.parse(fetchRecords.at(-1)?.body ?? '{}')
+    assert(body[field] === 'custom' && body.model === 'exact-api-model', 'Create must serialize the selected API mode and exact model')
+    await codex.updateSession('api-session', { backend, [field]: 'custom', model: null, effort: null })
+    const patch = JSON.parse(fetchRecords.at(-1)?.body ?? '{}')
+    assert(patch[field] === 'custom' && patch.model === null, 'Switching modes must send the API route and clear the old model')
+  }
 
   await codex.createSession({
     title: 'Restricted Codex',
@@ -744,6 +758,11 @@ try {
   })
   const claudeCreateBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
   assert(claudeCreateBody.claude_permission_mode === 'plan', 'Claude session creation must send the requested SDK permission mode')
+  for (const backend of ['opencode', 'gemini'] as const) {
+    const field = backend === 'opencode' ? 'opencode_permission_mode' : 'gemini_permission_mode'
+    await codex.createSession({ title: 'Optional agent', folder: '', cwd: '/workspace', backend, [field]: 'plan' })
+    assert(JSON.parse(fetchRecords.at(-1)?.body ?? '{}')[field] === 'plan', `${backend} creation must preserve permission mode`)
+  }
   await codex.updateSession('session /?', { claude_permission_mode: null })
   const claudeResetBody = JSON.parse(fetchRecords.at(-1)?.body ?? '{}') as Record<string, unknown>
   assert(Object.hasOwn(claudeResetBody, 'claude_permission_mode'), 'Claude permission reset must preserve an explicit null')
@@ -841,6 +860,15 @@ try {
   assert(reloadRequest.method === 'POST' && reloadRequest.body === '{}', 'Provider reload should POST an explicit empty object')
 
   await codex.codexRuntime('session /?')
+  const geminiRuntime = await codex.geminiRuntime('session /?')
+  assert(geminiRuntime.available && geminiRuntime.permission_modes?.includes('autoEdit'), 'Gemini runtime must preserve advertised modes')
+  assert(fetchRecords.at(-1)?.url.endsWith('/session%20%2F%3F/gemini/runtime'), 'Gemini runtime must encode the session ID')
+  const geminiInteraction = await codex.resolveGeminiInteraction('session /?', 'gemini interaction /?', { decision: 'decline' })
+  assert(geminiInteraction.id === 'gemini interaction /?', 'Gemini approval must unwrap the exact interaction')
+  const geminiRequest = fetchRecords.at(-1)
+  assert(geminiRequest?.url.endsWith('/gemini/interactions/gemini%20interaction%20%2F%3F/resolve'), 'Gemini approval must encode both IDs')
+  assert(geminiRequest.method === 'POST' && geminiRequest.teamNetworkToken === 'codex-token' && geminiRequest.token === null, 'Gemini approval must use only the modern native-control header')
+  assert(geminiRequest.body === '{"response":{"decision":"decline"}}', 'Gemini approval must preserve the offered decision')
   await codex.resolveCodexInteraction('session /?', 'interaction /?', { decision: 'accept' })
   const claudeRuntime = await codex.claudeRuntime('session /?')
   assert(claudeRuntime.transport === 'agent-sdk', 'Claude runtime should return the server transport snapshot')
@@ -983,7 +1011,7 @@ try {
   const combined = new AgentServerClient('https://signals.example')
   const internals = combined as unknown as {
     captureScope(): { signal: AbortSignal }
-    fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, scopeSignal: AbortSignal): Promise<Response>
+    fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number, scopeSignal: AbortSignal, consume: (response: Response) => Promise<Response>): Promise<Response>
   }
   const callerController = new AbortController()
   const callerRequest = internals.fetchWithTimeout(
@@ -991,6 +1019,7 @@ try {
     { signal: callerController.signal },
     30_000,
     internals.captureScope().signal,
+    async response => response,
   )
   callerController.abort(new Error('caller cancelled'))
   await assertRejects(
@@ -999,8 +1028,8 @@ try {
     'Caller abort signals should be preserved by the combined request signal',
   )
   await assertRejects(
-    internals.fetchWithTimeout('https://signals.example/timeout', {}, 1, internals.captureScope().signal),
-    error => error instanceof Error && error.name === 'AbortError',
+    internals.fetchWithTimeout('https://signals.example/timeout', {}, 1, internals.captureScope().signal, async response => response),
+    error => error instanceof Error && error.name === 'AgentServerRequestTimeoutError',
     'Request timeout should remain active alongside client and caller signals',
   )
   assert(!combined.isDisposed, 'Caller cancellation and timeout should not dispose the client')
@@ -1108,6 +1137,7 @@ try {
   assert(validationClient.fileURL('chat', 'file') === 'https://validation.example/api/sessions/chat/files/file', 'Validated clients should expose scoped file URLs')
   assert(validationClient.authHeaders()['X-ZenithDock-Token'] === 'validation-token', 'Validated clients should expose their auth header')
   assert((await validationClient.sessions()).length === 0, 'Validated clients should allow non-health HTTP requests')
+  assert(new URL(fetchRecords.at(-1)!.url).searchParams.get('summary') === 'true', 'Mobile lists should request the same compact summaries as desktop')
   validationClient.configure('https://revoke.example', 'revoke-token')
   validationClient.markValidated()
   const pendingRevocationRequest = validationClient.sessions()

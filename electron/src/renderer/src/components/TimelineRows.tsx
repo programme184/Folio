@@ -1,5 +1,6 @@
 import { getLocale, t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
+import { CopyErrorButton } from './CopyErrorButton'
 import { legacyOutgoingDeliveryStatus, outgoingDeliveryStatus } from '../lib/cross-chat-delivery-status'
 import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/timeline-labels'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
@@ -982,7 +983,7 @@ function SystemView({ item, sessionId, profileScope, pinned, codexLifecycleActiv
     title: routeTargetTitle?.trim() ? routeTargetTitle : event.target_title?.trim() ? event.target_title : t('timeline.ui.anotherChat')
   }) : digest ? digestStatusText(event) : messageText(event) || timelineEventLabel(event.type)
   const digestBody = event.type === 'handoff_digest_received' ? event.digest?.trim() : ''
-  return <article className={`system-row ${error ? 'error' : digest ? 'digest' : ''}`} data-event-id={event.id}><span className="system-icon">{icon}</span><div><header><strong>{title}</strong><time>{formatTime(event.ts)}</time><button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinItem') : t('timeline.ui.pinItem')} onClick={() => runTimelineAction(toggleSystemPin(event, sessionId, profileScope, pinned, title, digestBody || text))}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button></header>{routeAudit ? <p>{text}</p> : <MarkdownContent text={text} sessionId={sessionId} compact />}{digestBody && <details className="digest-body"><summary>{t('timeline.ui.viewDigest')}</summary><MarkdownContent text={digestBody} sessionId={sessionId} /></details>}</div></article>
+  return <article className={`system-row ${error ? 'error' : digest ? 'digest' : ''}`} data-event-id={event.id}><span className="system-icon">{icon}</span><div><header><strong>{title}</strong><time>{formatTime(event.ts)}</time><button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinItem') : t('timeline.ui.pinItem')} onClick={() => runTimelineAction(toggleSystemPin(event, sessionId, profileScope, pinned, title, digestBody || text))}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>{error && messageText(event) && <CopyErrorButton key={text} text={text} />}</header>{routeAudit ? <p>{text}</p> : <MarkdownContent text={text} sessionId={sessionId} compact />}{digestBody && <details className="digest-body"><summary>{t('timeline.ui.viewDigest')}</summary><MarkdownContent text={digestBody} sessionId={sessionId} /></details>}</div></article>
 }
 
 function ImportedCrossChatDeliveryView({ item, sessionId, profileScope }: { item: SystemItem; sessionId: string; profileScope: WorkspaceProfileScope | null }) {
@@ -1212,8 +1213,7 @@ function timelineWorkspaceScopeCurrent(scope: TimelineWorkspaceScope): boolean {
     && (state.profiles.find(profile => profile.id === state.activeProfileId)?.serverIdentity ?? null) === scope.serverIdentity
     && (
       state.selectedSessionId === scope.sessionId
-      || state.chatPanes.primary === scope.sessionId
-      || state.chatPanes.secondary === scope.sessionId
+      || Object.values(state.chatPanes).includes(scope.sessionId)
     )
 }
 
@@ -1568,8 +1568,7 @@ function CrossChatExchangeView({ item, sessionId, profileScope }: { item: System
   const workspaceRevision = useAppStore(state => {
     const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
     const visible = state.selectedSessionId === sessionId
-      || state.chatPanes.primary === sessionId
-      || state.chatPanes.secondary === sessionId
+      || Object.values(state.chatPanes).includes(sessionId)
     return JSON.stringify([
       state.activeProfileId, state.profileGeneration, profile?.serverIdentity ?? null,
       state.connected, state.connectionGeneration, state.health?.server_instance_id ?? null, visible
@@ -1861,8 +1860,7 @@ function CrossChatView({ item, sessionId, profileScope }: { item: SystemItem; se
   const workspaceRevision = useAppStore(state => {
     const profile = state.profiles.find(candidate => candidate.id === state.activeProfileId)
     const visible = state.selectedSessionId === sessionId
-      || state.chatPanes.primary === sessionId
-      || state.chatPanes.secondary === sessionId
+      || Object.values(state.chatPanes).includes(sessionId)
     return JSON.stringify([
       state.activeProfileId, state.profileGeneration, profile?.serverIdentity ?? null,
       state.connected, state.connectionGeneration, state.health?.server_instance_id ?? null, visible

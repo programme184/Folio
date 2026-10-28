@@ -50,6 +50,7 @@ class InstallerContractTests(unittest.TestCase):
             source.mkdir()
             for name in package_release.FILES:
                 path = source / name
+                path.parent.mkdir(parents=True, exist_ok=True)
                 if name == "install.sh":
                     shutil.copy2(INSTALLER, path)
                 elif name == "VERSION":
@@ -85,6 +86,26 @@ class InstallerContractTests(unittest.TestCase):
             self.assertIn("agent_server.py", result.stderr)
             self.assertIn("not a regular release file", result.stderr)
             self.assertFalse((root / "install").exists())
+
+            (source / "agent_server.py").unlink()
+            (source / "agent_server.py").write_text("release file\n")
+            for name in ("npm/agentsdock", "npm"):
+                with self.subTest(linked_directory=name):
+                    directory = source / name
+                    external = root / "external-qr"
+                    directory.rename(external)
+                    directory.symlink_to(external, target_is_directory=True)
+                    with self.assertRaisesRegex(SystemExit, "linked release files"):
+                        package_release.validate_release_files(source)
+                    result = subprocess.run(
+                        ["/bin/bash", str(source / "install.sh"), "--execution-mode", "legacy", "--no-team-hub-host"],
+                        env=environment, capture_output=True, text=True, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("not a real directory", result.stderr)
+                    self.assertFalse((root / "install").exists())
+                    directory.unlink()
+                    external.rename(directory)
 
     def test_team_hub_release_directory_is_closed_and_cache_free(self):
         self.assertIn(
@@ -760,6 +781,7 @@ exit 0
         self.assertIn('"$SCRIPT_DIR/agentsdock_team.py"', source)
         self.assertIn('"$SCRIPT_DIR/provider_commands.py"', source)
         self.assertIn('"$SCRIPT_DIR/provider_usage.py"', source)
+        self.assertIn('"$SCRIPT_DIR/session_unread.py"', source)
         self.assertIn('"$SCRIPT_DIR/claude_sdk_client.py"', source)
         self.assertIn('"$SCRIPT_DIR/codex_app_server.py"', source)
         self.assertIn('"$SCRIPT_DIR/cursor_agent_client.py"', source)
@@ -785,6 +807,7 @@ exit 0
         self.assertIn("'$REMOTE_SERVER_DIR/agentsdock_team.py'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/provider_commands.py'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/provider_usage.py'", source)
+        self.assertIn("'$REMOTE_SERVER_DIR/session_unread.py'", source)
         self.assertIn("'$REMOTE_SERVER_DIR/agentsdock_team_hub'", source)
         self.assert_smoke_check_imports(
             source,
@@ -1424,7 +1447,7 @@ exit 0
         self.assertIsNotNone(release_files_match)
         release_files = release_files_match.group(1).split()
         for filename in (
-            "activation_transaction.py agent_server.py team_hub_host.py secure_peer_runtime.py secure_peer_delivery.py agentsdock_jobs.py agentsdock_chats.py chat_mailbox.py agentsdock_emergency.py agentsdock_publish.py agentsdock_mail.py agentsdock_team.py provider_commands.py claude_sdk_client.py claude_background_reconciliation.py codex_app_server.py cursor_agent_client.py cursor_provider_mcp.py opencode_agent_client.py cursor_process_guard.py"
+            "activation_transaction.py agent_server.py team_hub_host.py secure_peer_runtime.py secure_peer_delivery.py agentsdock_jobs.py agentsdock_chats.py chat_mailbox.py agentsdock_emergency.py agentsdock_notify.py agentsdock_publish.py agentsdock_mail.py agentsdock_team.py provider_commands.py claude_sdk_client.py claude_background_reconciliation.py codex_app_server.py cursor_agent_client.py cursor_provider_mcp.py opencode_agent_client.py cursor_process_guard.py"
         ).split():
             self.assertIn(filename, release_files)
         self.assertIn('"$STAGE_DIR/activation_transaction.py"', installer_source)
@@ -1432,10 +1455,13 @@ exit 0
         self.assertIn("RELEASE_DIRECTORIES=(agentsdock_team_hub)", installer_source)
         self.assertIn('"$STAGE_DIR/agentsdock_chats.py"', installer_source)
         self.assertIn('"$STAGE_DIR/agentsdock_emergency.py"', installer_source)
+        self.assertIn('"$STAGE_DIR/agentsdock_notify.py"', installer_source)
         self.assertIn('"$STAGE_DIR/agentsdock_publish.py"', installer_source)
         self.assertIn('"$STAGE_DIR/provider_commands.py"', installer_source)
         self.assertIn('"$STAGE_DIR/provider_usage.py"', installer_source)
+        self.assertIn('"$STAGE_DIR/session_unread.py"', installer_source)
         self.assertIn("provider_usage.py", release_files)
+        self.assertIn("session_unread.py", release_files)
         self.assertIn('"$STAGE_DIR/claude_sdk_client.py"', installer_source)
         self.assertIn('"$STAGE_DIR/codex_app_server.py"', installer_source)
         self.assertIn('"$STAGE_DIR/cursor_agent_client.py"', installer_source)
@@ -1455,6 +1481,7 @@ exit 0
         self.assertIn('"activation_transaction.py"', packager_source)
         self.assertIn('"agentsdock_chats.py"', packager_source)
         self.assertIn('"agentsdock_emergency.py"', packager_source)
+        self.assertIn('"agentsdock_notify.py"', packager_source)
         self.assertIn('"agentsdock_mail.py"', packager_source)
         self.assertIn('"agentsdock_team.py"', packager_source)
         self.assertIn('"provider_commands.py"', packager_source)
@@ -1493,6 +1520,9 @@ exit 0
                 emergency = archive.getmember(
                     f"agents-server-{version}/agentsdock_emergency.py"
                 )
+                notification = archive.getmember(
+                    f"agents-server-{version}/agentsdock_notify.py"
+                )
                 mail = archive.getmember(
                     f"agents-server-{version}/agentsdock_mail.py"
                 )
@@ -1507,6 +1537,7 @@ exit 0
                 f"agents-server-{version}/agentsdock_emergency.py",
                 members,
             )
+            self.assertIn(f"agents-server-{version}/agentsdock_notify.py", members)
             self.assertIn(
                 f"agents-server-{version}/agentsdock_mail.py",
                 members,
@@ -1520,6 +1551,7 @@ exit 0
                 members,
             )
             self.assertIn(f"agents-server-{version}/provider_usage.py", members)
+            self.assertIn(f"agents-server-{version}/session_unread.py", members)
             self.assertIn(f"agents-server-{version}/cursor_provider_mcp.py", members)
             self.assertIn(
                 f"agents-server-{version}/codex_app_server.py",
@@ -1612,6 +1644,7 @@ exit 0
             )
             self.assertNotEqual(publisher.mode & 0o111, 0)
             self.assertNotEqual(emergency.mode & 0o111, 0)
+            self.assertNotEqual(notification.mode & 0o111, 0)
             self.assertNotEqual(mail.mode & 0o111, 0)
             self.assertNotEqual(uninstaller.mode & 0o111, 0)
             self.assertEqual(
@@ -2239,6 +2272,7 @@ chmod 755 "$target/bin/python"
             uv_binary_source = root / "fake-uv"
             fake_bin.mkdir()
             home.mkdir()
+            self.write_unavailable_uv(fake_bin)
             self.write_executable(fake_bin / "uname", "#!/bin/sh\necho Linux\n")
             self.write_executable(fake_bin / "systemctl", "#!/bin/sh\nexit 0\n")
             self.write_executable(fake_bin / "tmux", "#!/bin/sh\nexit 0\n")
@@ -2495,6 +2529,7 @@ chmod 755 "$project/.venv/bin/python"
             fake_bin.mkdir()
             home.mkdir()
             self.prepare_preflight_path(fake_bin, os_name="Linux", commands=("tmux",))
+            self.write_unavailable_uv(fake_bin)
             self.write_executable(fake_bin / "tmux", "#!/bin/sh\nexit 127\n")
             self.write_executable(fake_bin / "systemctl", "#!/bin/sh\nexit 1\n")
             result = subprocess.run(
@@ -2533,6 +2568,7 @@ chmod 755 "$project/.venv/bin/python"
             home.mkdir()
             source.mkdir()
             for name in package_release.FILES:
+                (source / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / name, source / name)
             for directory, names in package_release.DIRECTORY_FILES.items():
                 for name in names:
@@ -5730,6 +5766,7 @@ exit 0
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             home, fake_bin, install_root, environment = self.fake_linux_preinstall_environment(root)
+            self.write_unavailable_uv(fake_bin)
             curl_log = root / "curl.log"
             self.write_executable(fake_bin / "curl", """#!/bin/sh
 for argument in "$@"; do
@@ -5765,6 +5802,7 @@ exit 28
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             home, fake_bin, install_root, environment = self.fake_linux_preinstall_environment(root)
+            self.write_unavailable_uv(fake_bin)
             wget_log = root / "wget.log"
             self.write_executable(fake_bin / "curl", "#!/bin/sh\nexit 127\n")
             self.write_executable(fake_bin / "wget", """#!/bin/sh
@@ -7533,6 +7571,15 @@ exit 0
     def write_private_file(path: Path, source: str) -> None:
         path.write_text(source)
         path.chmod(0o600)
+
+    @staticmethod
+    def write_unavailable_uv(directory: Path) -> None:
+        # The installer appends standard package-manager paths, so a restricted
+        # PATH alone does not mask a host uv (e.g. Homebrew). Do not use
+        # write_executable here: it makes uv --version succeed for runtime stubs.
+        path = directory / "uv"
+        path.write_text("#!/bin/sh\nexit 127\n")
+        path.chmod(0o755)
 
     @staticmethod
     def write_executable(path: Path, source: str):

@@ -5,18 +5,21 @@ import { runtimeDiagnosticFor, runtimeLabel, runtimeNeedsAttention } from '../li
 import { cursorBackendAvailable, cursorBackendSupported, cursorBackendUnavailableReason } from '../lib/runtime-catalog'
 import { isTimelineError } from '../lib/timeline'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import { Text } from './AppText'
+import { backendLabel } from '../lib/format'
+import { isCustomProvider } from '../lib/provider-selection'
 
 export function RuntimeHealthNotice({ backend, sessionId }: { backend: Backend; sessionId: string }) {
   const health = useAppStore(state => state.health)
   const runtime = useAppStore(state => state.runtime)
   const events = useAppStore(state => state.snapshots[sessionId]?.events)
   const refresh = useAppStore(state => state.refreshRuntime)
+  const session = useAppStore(state => state.sessions.find(item => item.id === sessionId))
   const diagnostic = runtimeDiagnosticFor(health, runtime, backend)
   const chatError = latestChatRunError(events, backend)
   const unavailable = backend === 'cursor' && !cursorBackendAvailable(health, runtime)
-  const providerNeedsAttention = unavailable || Boolean(diagnostic && diagnostic.status !== 'ready')
+  const providerNeedsAttention = !(session && isCustomProvider(session)) && (unavailable || Boolean(diagnostic && diagnostic.status !== 'ready'))
   if (!chatError && !providerNeedsAttention) return null
   return <RuntimeRow backend={backend} diagnostic={diagnostic} compact detailOverride={chatError || (unavailable ? cursorBackendUnavailableReason(health, runtime) : null)} onRecheck={() => void refresh()} />
 }
@@ -29,8 +32,8 @@ export function RuntimeHealthPanel() {
   const refresh = useAppStore(state => state.refreshRuntime)
   return <View style={[styles.panel, { borderColor: colors.border, backgroundColor: colors.raised }]}>
     <View style={styles.header}>
-      <View style={{ flex: 1 }}><Text style={[styles.heading, { color: colors.text }]}>Agent runtimes</Text><Text style={[styles.caption, { color: colors.muted }]}>Provider readiness is separate from server connectivity.</Text></View>
-      <Pressable accessibilityRole="button" accessibilityLabel="Refresh runtime status" disabled={!connected} onPress={() => void refresh()} style={[styles.refresh, { backgroundColor: colors.surface, opacity: connected ? 1 : 0.45 }]}><RefreshCw size={14} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }}>Refresh</Text></Pressable>
+      <View style={{ flex: 1 }}><Text style={[styles.heading, { color: colors.text }]} localize>Agent runtimes</Text><Text style={[styles.caption, { color: colors.muted }]} localize>Provider readiness is separate from server connectivity.</Text></View>
+      <Pressable accessibilityRole="button" accessibilityLabel="Refresh runtime status" disabled={!connected} onPress={() => void refresh()} style={[styles.refresh, { backgroundColor: colors.surface, opacity: connected ? 1 : 0.45 }]}><RefreshCw size={14} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }} localize>Refresh</Text></Pressable>
     </View>
     <RuntimeRow backend="claude" diagnostic={runtimeDiagnosticFor(health, runtime, 'claude')} />
     <RuntimeRow backend="codex" diagnostic={runtimeDiagnosticFor(health, runtime, 'codex')} />
@@ -43,12 +46,12 @@ function RuntimeRow({ backend, diagnostic, compact = false, detailOverride, onRe
   const tone = diagnostic?.status === 'ready' ? (diagnostic.last_error ? 'warning' : 'ready') : diagnostic?.status === 'unknown' || !diagnostic ? 'unknown' : 'error'
   const color = tone === 'ready' ? colors.green : tone === 'warning' ? colors.orange : tone === 'error' ? colors.red : colors.muted
   const Icon = tone === 'ready' ? CircleCheck : tone === 'warning' ? AlertTriangle : tone === 'error' ? CircleX : CircleHelp
-  const provider = backend === 'claude' ? 'Claude Code' : backend === 'cursor' ? 'Cursor' : 'Codex'
+  const provider = backendLabel(backend)
   const detail = detailOverride || diagnostic?.last_error || diagnostic?.message || `${provider} has not been checked yet.`
   return <View accessibilityRole={tone === 'error' ? 'alert' : 'text'} style={[styles.row, compact && styles.compact, { borderColor: tone === 'error' || tone === 'warning' ? color : colors.border, backgroundColor: colors.surface }]}>
     <Icon size={compact ? 15 : 17} color={color} />
     <View style={{ flex: 1, minWidth: 0 }}><Text style={[styles.title, { color: colors.text }]}>{provider} <Text style={{ color }}>{runtimeLabel(diagnostic)}</Text></Text><Text style={[styles.detail, { color: colors.muted }]} numberOfLines={compact ? 2 : undefined}>{detail}</Text>{!compact && diagnostic?.action ? <Text style={[styles.action, { color: colors.text }]}>{diagnostic.action}</Text> : null}</View>
-    {compact && onRecheck ? <Pressable accessibilityRole="button" accessibilityLabel={`Recheck ${provider} CLI status`} onPress={onRecheck} style={[styles.refresh, { backgroundColor: colors.raised }]}><RefreshCw size={12} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }}>Recheck</Text></Pressable> : null}
+    {compact && onRecheck ? <Pressable accessibilityRole="button" accessibilityLabel={`Recheck ${provider} CLI status`} onPress={onRecheck} style={[styles.refresh, { backgroundColor: colors.raised }]}><RefreshCw size={12} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '700' }} localize>Recheck</Text></Pressable> : null}
     {!compact && diagnostic?.version ? <Text style={[styles.version, { color: colors.muted }]} numberOfLines={1}>{diagnostic.version}</Text> : null}
   </View>
 }
@@ -76,9 +79,9 @@ function compactEventError(event: Event): string {
 }
 
 const styles = StyleSheet.create({
-  panel: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 9, gap: 6 },
+  panel: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 9, gap: 6 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8 }, heading: { fontSize: 12, fontWeight: '800' }, caption: { fontSize: 10, marginTop: 1 },
-  refresh: { minHeight: 44, borderRadius: 5, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
-  row: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, padding: 8, flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
+  refresh: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  row: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 8, flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
   compact: { marginHorizontal: 10, marginTop: 6, paddingVertical: 7 }, title: { fontSize: 11, fontWeight: '800' }, detail: { fontSize: 10, lineHeight: 14, marginTop: 2 }, action: { fontSize: 10, lineHeight: 14, marginTop: 3 }, version: { maxWidth: 100, fontSize: 9 },
 })

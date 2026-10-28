@@ -12,6 +12,7 @@ const nativeAliases = new Map(Object.entries({
   'react-native': 'tests/mocks/react-native.ts',
   'expo-file-system': 'tests/mocks/expo-file-system.ts',
   'expo-notifications': 'tests/mocks/expo-notifications.ts',
+  'expo-localization': 'tests/mocks/expo-localization.ts',
   '@react-native-async-storage/async-storage': 'tests/mocks/async-storage.ts',
   'expo-secure-store': 'tests/mocks/secure-store.ts',
 }).map(([specifier, target]) => [specifier, resolve(target)]))

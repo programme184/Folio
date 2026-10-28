@@ -13,6 +13,7 @@ import { ClaudeRuntimeProvider } from '../components/ClaudeRuntimeContext'
 import { CodexStatusButton } from '../components/CodexControls'
 import { CodexInteractionShelf } from '../components/CodexInteractionShelf'
 import { ClaudeInteractionShelf } from '../components/ClaudeInteractionShelf'
+import { GeminiInteractionShelf } from '../components/GeminiInteractionShelf'
 import { ScheduledJobsPopover } from '../components/ScheduledJobsPopover'
 import { JobDialog } from '../components/Dialogs'
 import { SessionPromptField } from '../components/Inspector'
@@ -144,7 +145,7 @@ export function SharedChatApp({ onRetry }: { onRetry: () => void | Promise<void>
         {error && error !== syncError && <div className="shared-chat-notice" role="alert"><span>{error}</span><button className="icon-button" aria-label={t('chatShare.web.dismiss')} onClick={() => useAppStore.getState().setError(null)}><X size={14} /></button></div>}
         <div className="chat-workspace">
           <div className="chat-workspace-history"><Timeline /></div>
-          <div className="chat-workspace-shelves"><fieldset disabled={!connected} className="shared-chat-controls"><CodexInteractionShelf /><ClaudeInteractionShelf /></fieldset></div>
+          <div className="chat-workspace-shelves"><fieldset disabled={!connected} className="shared-chat-controls"><CodexInteractionShelf /><ClaudeInteractionShelf /><GeminiInteractionShelf session={session} /></fieldset></div>
           <Composer dropActive={connected && fileDropActive} writeDisabled={!connected} />
         </div>
       </main>

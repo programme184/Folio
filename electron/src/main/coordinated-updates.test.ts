@@ -225,6 +225,24 @@ describe('coordinated app/server reconciliation (mocked server boundary)', () =>
     expect(f.manager.status()[0].phase).toBe('pending')
     expect(f.clients.a.ensureServerUpdate).not.toHaveBeenCalled()
   })
+  it.each(['recovering', 'failed'] as const)('does not finish the update before chat recovery is ready: %s', async state => {
+    const f = fixture()
+    const unavailable = health('a', { server_version: '1.2.0-beta.2',
+      chat_readiness: { ready: false, state, message: 'Saved messages are not ready.' } })
+    f.clients.a.health.mockResolvedValue(unavailable)
+    await f.manager.resume(signed('1.2.0-beta.2'), '1.2.0-beta.2')
+    expect(f.manager.status()[0]).toMatchObject({ phase: state === 'recovering' ? 'pending' : 'failed',
+      message: 'Saved messages are not ready.' })
+    expect(f.clients.a.ensureServerUpdate).not.toHaveBeenCalled()
+    f.manager.serverReachable('a', unavailable)
+    await f.manager.reconcileAll()
+    const ready = { ...unavailable, chat_readiness: { ready: true, state: 'ready' as const, message: null } }
+    f.clients.a.health.mockResolvedValue(ready)
+    f.manager.serverReachable('a', ready)
+    await f.manager.reconcileAll()
+    expect(f.manager.status()[0].phase).toBe('current')
+    expect(f.clients.a.ensureServerUpdate).not.toHaveBeenCalled()
+  })
   it('queues compatible busy servers independently and persists identity-bound operation receipts', async () => {
     const f = fixture(['a', 'b'])
     await f.manager.resume(signed('1.2.0-beta.2'), '1.2.0-beta.2')

@@ -71,6 +71,15 @@ describe('sidebar split pane context', () => {
     expect(row).not.toHaveTextContent(/(?:^|\s)[12](?:\s|$)/)
   })
 
+  it('visibly marks archived chats even when selected or shown in search', () => {
+    useAppStore.setState({ sessions: [{ ...sessions[0], archived: true }, sessions[1]] })
+    render(<Sidebar />)
+    const row = screen.getByText('Primary chat').closest<HTMLElement>('.session-row')!
+    expect(row).toHaveClass('is-archived', 'selected')
+    expect(within(row).getByText('Archived')).toBeInTheDocument()
+    expect(screen.getByText('Secondary chat').closest('.session-row')).not.toHaveClass('is-archived')
+  })
+
   it('opens Team Network from one labeled action and disables it during a profile switch', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-teamspace', open)

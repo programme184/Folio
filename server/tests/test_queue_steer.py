@@ -2600,6 +2600,63 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
         )
         start.assert_not_awaited()
 
+    async def test_stop_demotes_promotion_before_scheduler_or_snapshot_can_resume(
+        self,
+    ) -> None:
+        promoted = agent_server.QUEUED_TURNS["chat-1"].popleft()
+        promoted["_durable"] = True
+        successor = {**promoted, "queued_id": "queued-next", "prompt": "Next request"}
+        agent_server.QUEUED_TURNS["chat-1"].append(successor)
+        agent_server.RUN_NOW_TURNS["chat-1"] = promoted
+        agent_server.RUN_NOW_COMPLETED_RESULTS[("chat-1", "queued-steer")] = {
+            "expires_at": time.monotonic() + 30,
+            "result": {"ok": True, "queued_id": "queued-steer"},
+        }
+        write_started = asyncio.Event()
+        finish_write = asyncio.Event()
+
+        async def persist_pause(*_args: object, **_kwargs: object) -> dict:
+            write_started.set()
+            await finish_write.wait()
+            return {}
+
+        with patch.object(agent_server, "append_durable_event", side_effect=persist_pause), \
+                patch.object(agent_server, "_start_turn_locked", new_callable=AsyncMock) as start:
+            pause = asyncio.create_task(agent_server.pause_queued_turns_after_explicit_stop("chat-1"))
+            await asyncio.wait_for(write_started.wait(), 0.5)
+            snapshot = asyncio.create_task(agent_server.queued_turns_snapshot("chat-1"))
+            await asyncio.sleep(0)
+            self.assertFalse(snapshot.done())
+            finish_write.set()
+            self.assertEqual(await pause, 2)
+            rows = await snapshot
+
+            # Stop owns the held state immediately, even while its cleanup
+            # fence prevents the ordinary queue scheduler from running.
+            self.assertEqual([row["queued_id"] for row in rows], ["queued-steer", "queued-next"])
+            self.assertTrue(all(row["paused"] and not row["promoted"] for row in rows))
+            self.assertNotIn("chat-1", agent_server.RUN_NOW_TURNS)
+            self.assertNotIn(("chat-1", "queued-steer"), agent_server.RUN_NOW_COMPLETED_RESULTS)
+            agent_server.reject_promoted_queue_mutation("chat-1", "queued-steer")
+            await agent_server.start_next_queued_turn("chat-1")
+            start.assert_not_awaited()
+
+    async def test_failed_stop_pause_write_demotes_and_holds_without_replaying(
+        self,
+    ) -> None:
+        promoted = agent_server.QUEUED_TURNS.pop("chat-1")[0]
+        promoted["_durable"] = True
+        agent_server.RUN_NOW_TURNS["chat-1"] = promoted
+        with patch.object(agent_server, "append_durable_event", side_effect=OSError("fixture storage failure")), \
+                patch.object(agent_server, "_start_turn_locked", new_callable=AsyncMock) as start:
+            self.assertEqual(await agent_server.pause_queued_turns_after_explicit_stop("chat-1"), 1)
+            rows = await agent_server.queued_turns_snapshot("chat-1")
+            self.assertFalse(rows[0]["promoted"])
+            self.assertTrue(rows[0]["paused"])
+            self.assertFalse(agent_server.QUEUED_TURNS["chat-1"][0]["_durable"])
+            await agent_server.start_next_queued_turn("chat-1")
+            start.assert_not_awaited()
+
     async def test_force_send_does_not_cache_success_after_stop_pauses_item(
         self,
     ) -> None:
@@ -4176,6 +4233,80 @@ class RunQueuedTurnNowTests(unittest.IsolatedAsyncioTestCase):
 
 
 class StartupQueueRecoveryAdmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_completed_timeout_is_failed_and_repeated_admission_stays_closed(self):
+        async def fail():
+            raise TimeoutError("private diagnostic")
+        task = asyncio.create_task(fail())
+        await asyncio.gather(task, return_exceptions=True)
+        with patch.object(agent_server, "QUEUE_RECOVERY_TASK", task):
+            self.assertEqual(agent_server.queue_recovery_readiness()["state"], "failed")
+            for _ in range(3):
+                with self.assertRaises(agent_server.TransientAdmissionWait) as raised:
+                    await agent_server.wait_for_queue_recovery_admission()
+                self.assertIn("did not complete", raised.exception.detail)
+                self.assertNotIn("private diagnostic", raised.exception.detail)
+
+    async def test_request_cancellation_does_not_cancel_recovery(self):
+        released = asyncio.Event()
+        task = asyncio.create_task(released.wait())
+        try:
+            with patch.object(agent_server, "QUEUE_RECOVERY_TASK", task):
+                self.assertEqual(agent_server.queue_recovery_readiness()["state"], "recovering")
+                request = asyncio.create_task(agent_server.wait_for_queue_recovery_admission())
+                await asyncio.sleep(0)
+                request.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await request
+                self.assertFalse(task.done())
+                released.set()
+                await task
+                await agent_server.wait_for_queue_recovery_admission()
+                self.assertTrue(agent_server.queue_recovery_readiness()["ready"])
+        finally:
+            released.set()
+            await task
+
+    async def test_cancelled_recovery_is_failed_except_during_shutdown(self):
+        task = asyncio.create_task(asyncio.sleep(10))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        with patch.object(agent_server, "QUEUE_RECOVERY_TASK", task):
+            self.assertEqual(agent_server.queue_recovery_readiness()["state"], "failed")
+            with patch.object(agent_server, "SERVER_SHUTTING_DOWN", False):
+                with self.assertRaises(agent_server.TransientAdmissionWait):
+                    await agent_server.wait_for_queue_recovery_admission()
+            with patch.object(agent_server, "SERVER_SHUTTING_DOWN", True):
+                with self.assertRaises(asyncio.CancelledError):
+                    await agent_server.wait_for_queue_recovery_admission()
+
+    async def test_many_waiting_requests_cannot_cancel_or_outlive_failed_recovery(self):
+        release = asyncio.Event()
+        async def recovery_work():
+            await release.wait()
+            raise TimeoutError("scan failed after partial work")
+        recovery = asyncio.create_task(recovery_work())
+        try:
+            with patch.object(agent_server, "QUEUE_RECOVERY_TASK", recovery), patch.object(
+                    agent_server, "QUEUE_RECOVERY_ADMISSION_WAIT_SECONDS", 0.01):
+                pending = [asyncio.create_task(agent_server.wait_for_queue_recovery_admission()) for _ in range(12)]
+                responses = await asyncio.gather(*pending, return_exceptions=True)
+                self.assertTrue(all(isinstance(r, agent_server.TransientAdmissionWait) and "in progress" in r.detail for r in responses))
+                self.assertFalse(recovery.done())
+                release.set()
+                await asyncio.gather(recovery, return_exceptions=True)
+                self.assertEqual(agent_server.queue_recovery_readiness()["state"], "failed")
+                with self.assertRaises(agent_server.TransientAdmissionWait) as raised:
+                    await agent_server.wait_for_queue_recovery_admission()
+                self.assertIn("did not complete", raised.exception.detail)
+        finally:
+            release.set()
+            await asyncio.gather(recovery, return_exceptions=True)
+
+    async def test_recovery_owner_can_enqueue_without_waiting_on_itself(self):
+        with patch.object(agent_server, "QUEUE_RECOVERY_TASK", asyncio.current_task()):
+            async with asyncio.timeout(1):
+                await agent_server.wait_for_queue_recovery_admission()
+
     async def test_new_submission_cannot_leapfrog_undiscovered_durable_row(
         self,
     ) -> None:

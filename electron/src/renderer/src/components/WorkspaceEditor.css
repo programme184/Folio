@@ -32,6 +32,41 @@
   overflow: hidden;
 }
 
+.workspace-editor-tabbed-pane .workspace-editor-command-button {
+  width: 34px;
+  padding: 0 10px;
+}
+
+.workspace-editor-tabbed-pane .workspace-editor-chat-tab > span {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-editor-tabbed-pane .workspace-editor-command-button kbd,
+.workspace-editor-tabbed-pane .workspace-editor-open-label {
+  display: none;
+}
+
+.workspace-editor-content.workspace-editor-tabbed-pane {
+  min-width: 0;
+  min-height: 0;
+}
+
+.workspace-editor-tabbed-pane .workspace-editor-editor-toolbar {
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.workspace-editor-tabbed-pane .workspace-editor-breadcrumb {
+  min-width: 0;
+  flex: 1 1 100px;
+}
+
+.workspace-editor-tabbed-pane .workspace-editor-breadcrumb-parent {
+  display: none;
+}
+
 .workspace-editor-tab-strip-split.workspace-editor-right {
   display: grid;
   grid-template-columns: minmax(0, calc(100% - var(--workspace-editor-width) - 6px)) 6px minmax(0, var(--workspace-editor-width));
@@ -102,8 +137,18 @@
 .workspace-editor-tab-active,
 .workspace-editor-file-tab-active .workspace-editor-tab {
   color: var(--text);
-  background: #1d1d1d;
-  box-shadow: inset 0 2px var(--accent);
+  background: var(--surface-2);
+  font-weight: var(--text-weight-label);
+}
+
+.chat-pane.focused .workspace-editor-tab-active,
+.chat-pane.focused .workspace-editor-file-tab-active .workspace-editor-tab {
+  background: color-mix(in srgb, var(--text) 8%, var(--surface-2));
+}
+
+.workspace-editor-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 
 .workspace-editor-chat-tab { min-width: 112px; }
@@ -287,10 +332,7 @@
 
 .workspace-editor-editor-panel {
   display: grid;
-  grid-template-columns:
-    minmax(160px, min(var(--workspace-explorer-width, 232px), calc(100% - 245px)))
-    5px
-    minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .workspace-editor-editor-groups {
@@ -325,29 +367,6 @@
   background: #171717;
   border-right: 1px solid var(--border);
   overflow: hidden;
-}
-
-.workspace-editor-explorer-resize-handle {
-  min-width: 5px;
-  position: relative;
-  z-index: 2;
-  background: #151515;
-  border-right: 1px solid #303030;
-  border-left: 1px solid #303030;
-  cursor: col-resize;
-  touch-action: none;
-}
-
-.workspace-editor-explorer-resize-handle:hover,
-.workspace-editor-explorer-resize-handle:focus-visible,
-.workspace-editor-explorer-dragging .workspace-editor-explorer-resize-handle {
-  background: color-mix(in srgb, var(--accent), #151515 72%);
-  outline: none;
-}
-
-.workspace-editor-explorer-dragging {
-  cursor: col-resize;
-  user-select: none;
 }
 
 .workspace-editor-explorer-header {
@@ -605,8 +624,8 @@
   overflow: hidden;
 }
 
-.workspace-editor-editor-focused {
-  box-shadow: inset 0 2px color-mix(in srgb, var(--accent), transparent 28%);
+.workspace-editor-editor-focused > .workspace-editor-editor-toolbar {
+  background: var(--surface-2);
 }
 
 .workspace-editor-editor-toolbar {
@@ -1583,8 +1602,7 @@
 
 :root[data-theme="light"] .workspace-editor-tab-strip-split::after,
 :root[data-theme="light"] .workspace-editor-split-handle,
-:root[data-theme="light"] .workspace-editor-group-divider,
-:root[data-theme="light"] .workspace-editor-explorer-resize-handle {
+:root[data-theme="light"] .workspace-editor-group-divider {
   background: var(--surface-2);
   border-color: var(--border);
 }
@@ -1599,12 +1617,6 @@
 :root[data-theme="light"] .workspace-editor-close-tab:hover {
   color: var(--text);
   background: var(--interaction-hover);
-}
-
-:root[data-theme="light"] .workspace-editor-tab-active,
-:root[data-theme="light"] .workspace-editor-file-tab-active .workspace-editor-tab {
-  color: var(--text);
-  background: var(--surface);
 }
 
 :root[data-theme="light"] .workspace-editor-command-button {
@@ -1635,10 +1647,7 @@
 :root[data-theme="light"] .workspace-editor-split-handle:hover,
 :root[data-theme="light"] .workspace-editor-split-handle:focus-visible,
 :root[data-theme="light"] .workspace-editor-split-dragging .workspace-editor-split-handle,
-:root[data-theme="light"] .workspace-editor-group-divider:hover,
-:root[data-theme="light"] .workspace-editor-explorer-resize-handle:hover,
-:root[data-theme="light"] .workspace-editor-explorer-resize-handle:focus-visible,
-:root[data-theme="light"] .workspace-editor-explorer-dragging .workspace-editor-explorer-resize-handle {
+:root[data-theme="light"] .workspace-editor-group-divider:hover {
   background: color-mix(in srgb, var(--accent), var(--surface-2) 82%);
 }
 
@@ -1940,11 +1949,4 @@
   }
 }
 
-.workspace-editor-editor-panel.workspace-editor-explorer-compact {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.workspace-editor-explorer-compact > .workspace-editor-explorer,
-.workspace-editor-explorer-compact > .workspace-editor-explorer-resize-handle {
-  display: none;
-}
+.split-workspace-files-browser { display: contents; }

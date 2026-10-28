@@ -10,7 +10,7 @@ import { mailHintPending, type MailArrivalCursor, type MailboxCoverage, type Mai
 import { bulletinHintPending, type BulletinHintRefresh } from '@shared/team-bulletin-hints'
 import { applyOpenCodeSessionEvent, openCodeProviderCommandsAvailable } from '@shared/opencode'
 import { t } from '@shared/i18n'
-import { chatBackendChoice, cursorBackendAvailable, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
+import { chatBackendSelection, cursorBackendAvailable, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { isAsyncCrossChatMessage, isNativeGoalSteerEvent, isNativeSteerTransitionStop, timelineSemanticUnits } from '@shared/semantic-timeline'
 import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
@@ -27,10 +27,11 @@ import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot 
 import { isImportedClaudeControlCompanion, isImportedCodexRuntimeContext, isImportedHistoryRecord, isImportedProviderControlMetadata, isImportedProviderInterruption, mergeProviderInterruptionEvent } from '@shared/provider-origin'
 import { isReasoningSummaryStream } from '@shared/reasoning-stream'
 import { trackEvent } from '../lib/analytics'
+import { isImportedAPIConnection, trackConfirmedSessionChange } from '../lib/session-analytics'
 import { secureRandomUUID } from '../lib/browser-crypto'
 import { nudgeChatFontSize, setChatFontFamily, setChatFontSize } from '../lib/chat-font'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
-import { isUntouchedNewChat, navigableSessions } from '../lib/sessions'
+import { isUnread, isUntouchedNewChat, navigableSessions, type SidebarStatus } from '../lib/sessions'
 import { isAgentVisibleEvent } from '../lib/timeline'
 import {
   AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY,
@@ -54,18 +55,30 @@ import { parseStoredTeamReferences, teamMessagesAvailable, validComposerReferenc
 import { adjacentServerProfileId } from '../lib/server-navigation'
 import { captureWorkspaceScope, getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import {
+  CHAT_PANE_IDS,
+  chatPaneCount,
+  chatPaneForSession,
   closeChatPane as closeChatPaneLayout,
   focusedChatSessionId,
+  parseChatWorkspaces,
   reconcileChatPaneLayout,
   selectChatInPane,
   swapChatPanes as swapChatPaneLayout,
   visibleChatSessionIds,
+  visibleWorkspaceLayout,
+  workspaceRatio,
+  workspaceThreeColumnRatios,
+  workspaceWithLayout,
   type ChatPane,
+  type ChatPaneCount,
+  type ChatThreePaneLayout,
   type ChatPaneLayout,
-  type ChatPanes
+  type ChatPanes,
+  type ChatWorkspace,
+  type ChatWorkspaceState
 } from '../lib/chat-panes'
 
-export type { ChatPane, ChatPanes } from '../lib/chat-panes'
+export type { ChatPane, ChatPaneCount, ChatPanes, ChatThreePaneLayout, ChatWorkspace } from '../lib/chat-panes'
 
 const SEMANTIC_HISTORY_ITEM_LIMIT = 120
 const LEGACY_HISTORY_EVENT_LIMIT = 480
@@ -128,7 +141,13 @@ interface SessionSyncState {
 interface StoredChatPaneLayout {
   primary?: string | null
   secondary?: string | null
+  tertiary?: string | null
+  quaternary?: string | null
   focusedPane?: ChatPane
+}
+
+interface RestoredChatPaneLayout extends ChatPaneLayout {
+  workspaceState?: ChatWorkspaceState
 }
 
 interface RendererProfileScope {
@@ -203,6 +222,9 @@ interface AppState {
   forwardedPortsRevision: number
   chatPanes: ChatPanes
   focusedChatPane: ChatPane
+  chatPaneCount: ChatPaneCount
+  chatWorkspaces: ChatWorkspace[]
+  activeChatWorkspaceId: string
   selectedSessionId: string | null
   snapshots: Record<string, SessionSnapshot>
   loadingSessionIds: Set<string>
@@ -221,6 +243,11 @@ interface AppState {
   collapsedFolders: Set<string>
   projectWorkspaces: ProjectWorkspaceMap
   selectedFolder: string | null
+  collapsedStatusGroups: Set<SidebarStatus>
+  groupUnreadChats: boolean
+  includeCronInUnread: boolean
+  groupRunningChats: boolean
+  pinnedCollapsed: boolean
   archivedCollapsed: boolean
   inspectorVisible: boolean
   activeSessionIds: Set<string>
@@ -248,6 +275,14 @@ interface AppState {
   focusChatPane(pane: ChatPane): void
   closeChatPane(pane: ChatPane): void
   swapChatPanes(): void
+  createChatWorkspace(sessionId?: string): Promise<void>
+  selectChatWorkspace(workspaceId: string): Promise<void>
+  closeChatWorkspace(workspaceId: string): Promise<void>
+  renameChatWorkspace(workspaceId: string, title: string): void
+  moveChatWorkspace(workspaceId: string, targetWorkspaceId: string): void
+  setChatPaneCount(count: ChatPaneCount): void
+  setChatThreePaneLayout(layout: ChatThreePaneLayout): void
+  setChatWorkspaceRatios(ratios: { columnRatio?: number; rowRatio?: number; threeColumnRatios?: [number, number] }): void
   prefetchSession(sessionId: string): Promise<void>
   selectAdjacent(direction: 1 | -1): Promise<void>
   setDraft(text: string): void
@@ -273,7 +308,7 @@ interface AppState {
   selectFolder(folder: string | null): void
   updateSession(
     sessionId: string,
-    patch: Partial<Session>,
+    patch: Partial<Session> & { gemini_connect_api?: boolean },
     options?: { allowDuringWorkspaceFlush?: boolean }
   ): Promise<void>
   deleteFolder(folder: string): Promise<void>
@@ -285,6 +320,7 @@ interface AppState {
   markRead(sessionId: string, force?: boolean): Promise<void>
   markUnread(sessionId: string): Promise<void>
   acknowledgeEmergency(sessionId: string, alertId: string): Promise<boolean>
+  dismissEmergencyAlerts(sessionId: string, throughAlertId: string): Promise<boolean>
   importHistory(sessionId: string): Promise<void>
   loadOlder(limit?: number): Promise<number>
   loadOlderForSession(sessionId: string, limit?: number): Promise<number>
@@ -292,8 +328,13 @@ interface AppState {
   applyQueuedTurnsResponse(sessionId: string, request: number, turns: QueuedTurn[]): boolean
   setQueued(sessionId: string, turns: QueuedTurn[]): void
   toggleFolder(folder: string): void
+  toggleStatusGroup(status: SidebarStatus): void
+  setGroupUnreadChats(value: boolean): void
+  setIncludeCronInUnread(value: boolean): void
+  setGroupRunningChats(value: boolean): void
   setFolderOrder(order: string[]): void
   setArchivedCollapsed(value: boolean): void
+  setPinnedCollapsed(value: boolean): void
   setInspectorVisible(value: boolean): void
   setModal<K extends keyof ModalState>(key: K, value: boolean): void
   setError(error: string | null): void
@@ -303,7 +344,10 @@ const defaultModals: ModalState = { settings: false, appSettings: false, newChat
 export const NEW_CHAT_DEFAULTS_PREFERENCE_KEY = 'newChatDefaults:v1'
 const DIRECT_CHAT_PLACEHOLDER_PREFERENCE_PREFIX = 'directChatPlaceholder:v1:'
 
-export interface NewChatDefaults {
+type NewChatPermissionDefaults = Pick<CreateSessionInput, 'claude_permission_mode' | 'cursor_permission_mode' | 'opencode_permission_mode' | 'gemini_permission_mode' | 'codex_approval_policy' | 'codex_sandbox_mode' | 'codex_permission_profile' | 'codex_approvals_reviewer'>
+type NewChatDefaultsInput = Pick<CreateSessionInput, 'folder' | 'cwd' | 'backend' | 'codex_provider' | 'provider_connection' | 'model' | 'effort' | 'system_prompt' | 'subagent_limit'> & NewChatPermissionDefaults
+
+export interface NewChatDefaults extends NewChatPermissionDefaults {
   version: 1
   folder: string
   cwd: string
@@ -312,9 +356,26 @@ export interface NewChatDefaults {
   provider_connection?: CreateSessionInput['provider_connection']
   model: string | null
   effort: string | null
+  system_prompt?: string | null
+  subagent_limit?: number | null
 }
 
-function normalizedNewChatDefaults(input: Pick<CreateSessionInput, 'folder' | 'cwd' | 'backend' | 'codex_provider' | 'provider_connection' | 'model' | 'effort'>): NewChatDefaults {
+// Only copy the selected provider's permission fields, never jobs,
+// credentials, provider-session identity or another provider's policy.
+export function newChatPermissions(input: NewChatPermissionDefaults, backend: Backend): NewChatPermissionDefaults {
+  if (backend === 'claude') return { claude_permission_mode: input.claude_permission_mode ?? null }
+  if (backend === 'cursor') return { cursor_permission_mode: input.cursor_permission_mode ?? 'default' }
+  if (backend === 'opencode') return { opencode_permission_mode: input.opencode_permission_mode ?? 'default' }
+  if (backend === 'gemini') return { gemini_permission_mode: input.gemini_permission_mode ?? 'default' }
+  return {
+    codex_approval_policy: input.codex_approval_policy ?? null,
+    codex_sandbox_mode: input.codex_sandbox_mode ?? null,
+    codex_permission_profile: input.codex_permission_profile ?? null,
+    codex_approvals_reviewer: input.codex_approvals_reviewer ?? null
+  }
+}
+
+function normalizedNewChatDefaults(input: NewChatDefaultsInput): NewChatDefaults {
   return {
     version: 1,
     folder: input.folder.trim() || 'General',
@@ -323,7 +384,10 @@ function normalizedNewChatDefaults(input: Pick<CreateSessionInput, 'folder' | 'c
     ...(input.backend === 'codex' && input.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
     ...(input.provider_connection === 'custom' ? { provider_connection: 'custom' as const } : {}),
     model: input.model?.trim() || null,
-    effort: input.effort?.trim() || null
+    effort: input.effort?.trim() || null,
+    system_prompt: input.system_prompt || null,
+    subagent_limit: ['claude', 'codex'].includes(input.backend) ? input.subagent_limit ?? null : null,
+    ...newChatPermissions(input, input.backend)
   }
 }
 
@@ -332,14 +396,31 @@ function parseNewChatDefaults(value: unknown): NewChatDefaults | null {
   const candidate = value as Partial<NewChatDefaults>
   if (
     candidate.version !== 1
-    || !['claude', 'codex', 'cursor', 'opencode'].includes(String(candidate.backend))
+    || !['claude', 'codex', 'cursor', 'opencode', 'gemini'].includes(String(candidate.backend))
     || candidate.codex_provider !== undefined && !['default', 'custom'].includes(candidate.codex_provider)
     || candidate.provider_connection !== undefined && !['default', 'custom'].includes(candidate.provider_connection)
     || typeof candidate.folder !== 'string'
     || typeof candidate.cwd !== 'string'
     || candidate.model !== null && typeof candidate.model !== 'string'
     || candidate.effort !== null && typeof candidate.effort !== 'string'
+    || candidate.system_prompt != null && typeof candidate.system_prompt !== 'string'
+    || candidate.subagent_limit != null && (!Number.isInteger(candidate.subagent_limit) || candidate.subagent_limit < 1)
   ) return null
+  const permissions: Record<string, readonly string[]> = {
+    claude_permission_mode: ['default', 'acceptEdits', 'plan', 'bypassPermissions', 'dontAsk', 'auto'],
+    cursor_permission_mode: ['default', 'full_access', 'plan'],
+    opencode_permission_mode: ['default', 'full_access', 'plan'],
+    gemini_permission_mode: ['default', 'autoEdit', 'yolo', 'plan'],
+    codex_approval_policy: ['never', 'on-request', 'untrusted'],
+    codex_sandbox_mode: ['read-only', 'workspace-write', 'danger-full-access'],
+    codex_approvals_reviewer: ['user', 'auto_review', 'guardian_subagent']
+  }
+  for (const [key, allowed] of Object.entries(permissions)) {
+    const field = (candidate as Record<string, unknown>)[key]
+    if (field != null && (typeof field !== 'string' || !allowed.includes(field))) return null
+  }
+  if (candidate.codex_permission_profile != null && (typeof candidate.codex_permission_profile !== 'string'
+    || !candidate.codex_permission_profile.trim() || candidate.codex_permission_profile.length > 240)) return null
   return normalizedNewChatDefaults(candidate as NewChatDefaults)
 }
 
@@ -356,17 +437,29 @@ function newestAvailableSession(sessions: Session[]): Session | null {
 
 function sessionNewChatDefaults(session: Session, defaultCwd: string): NewChatDefaults {
   return normalizedNewChatDefaults({
+    ...newChatPermissions(session, session.backend),
     folder: session.folder || 'General',
     cwd: session.cwd || defaultCwd,
     backend: session.backend,
     codex_provider: session.codex_provider,
     provider_connection: session.provider_connection,
     model: session.model,
-    effort: session.effort
+    effort: session.effort,
+    system_prompt: session.system_prompt,
+    subagent_limit: session.subagent_limit
   })
 }
 
-export function saveNewChatDefaults(scope: WorkspaceProfileScope | null, input: Pick<CreateSessionInput, 'folder' | 'cwd' | 'backend' | 'codex_provider' | 'provider_connection' | 'model' | 'effort'>): Promise<void> {
+export function preferredNewChatDefaults(sessions: Session[], selectedSessionId: string | null, defaultCwd: string, stored: unknown): NewChatDefaults | null {
+  const opened = sessions.find(session => session.id === selectedSessionId && !session.archived)
+  if (opened) return sessionNewChatDefaults(opened, defaultCwd)
+  const saved = parseNewChatDefaults(stored)
+  if (saved) return { ...saved, cwd: saved.cwd || defaultCwd }
+  const newest = newestAvailableSession(sessions)
+  return newest ? sessionNewChatDefaults(newest, defaultCwd) : null
+}
+
+export function saveNewChatDefaults(scope: WorkspaceProfileScope | null, input: NewChatDefaultsInput): Promise<void> {
   try {
     return setWorkspacePreference(scope, NEW_CHAT_DEFAULTS_PREFERENCE_KEY, normalizedNewChatDefaults(input))
   } catch (error) {
@@ -397,6 +490,7 @@ function directChatPlaceholderFingerprint(session: Session): string {
     claudePermissionMode: session.claude_permission_mode ?? null,
     cursorPermissionMode: session.cursor_permission_mode ?? null,
     ...(session.backend === 'opencode' ? { opencodePermissionMode: session.opencode_permission_mode ?? null } : {}),
+    ...(session.backend === 'gemini' ? { geminiPermissionMode: session.gemini_permission_mode ?? 'default' } : {}),
     providerJobsAccess: session.provider_jobs_access ?? null
   })
 }
@@ -542,6 +636,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   forwardedPortsRevision: 0,
   chatPanes: { primary: null, secondary: null },
   focusedChatPane: 'primary',
+  chatPaneCount: 1,
+  chatWorkspaces: [],
+  activeChatWorkspaceId: 'workspace-main',
   selectedSessionId: null,
   snapshots: {},
   loadingSessionIds: new Set(),
@@ -560,7 +657,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   collapsedFolders: new Set(),
   projectWorkspaces: {},
   selectedFolder: readSelectedFolder(),
+  pinnedCollapsed: false,
   archivedCollapsed: false,
+  collapsedStatusGroups: new Set(),
+  groupUnreadChats: true,
+  includeCronInUnread: false,
+  groupRunningChats: true,
   inspectorVisible: false,
   activeSessionIds: new Set(),
   turnAdmissionTokens: {},
@@ -572,6 +674,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   modals: defaultModals,
 
   async initialize() {
+    const openedAt = Date.now()
     if (get().initialized || initializationInFlight) return
     pendingNamespaceAdoption = null
     if (!window.agentsDock) {
@@ -736,6 +839,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.agentsDock.events.on('server:sync', payload => {
         const current = get()
         if (!profileEventMatches(payload, current)) return
+        // Idle means main no longer owns this stream. Let a later selection
+        // reattach cached history; reconnecting streams retain their owner.
+        if (payload.state === 'idle') timelineSubscriptions.delete(payload.sessionId)
         if (payload.state !== 'live' && current.snapshots[payload.sessionId]?.reasoningStream) {
           set(state => ({ snapshots: { ...state.snapshots, [payload.sessionId]: {
             ...state.snapshots[payload.sessionId], reasoningStream: undefined
@@ -831,6 +937,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             sessions,
             snapshots,
             collapsedFolders: new Set([...state.collapsedFolders].filter(folder => !emergencyFolders.has(folder))),
+            pinnedCollapsed: sessions.some(session => session.pinned && !session.archived && activeEmergencyAlert(session)) ? false : state.pinnedCollapsed,
             archivedCollapsed: sessions.some(session => session.archived && activeEmergencyAlert(session)) ? false : state.archivedCollapsed,
             ...focusedPaneAliases(state, layout)
           }
@@ -943,6 +1050,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       window.agentsDock.events.on('server:timeline', payload => {
         if (!profileEventMatches(payload, get())) return
         const { sessionId, snapshot, source, mode } = payload
+        const authoritativeTail = source === 'server' && mode === 'replace'
+          && payload.authoritativeTail === true && snapshot.historyVerified === true
+        // Settle IPC events from the retired stream before replacing its window.
+        if (authoritativeTail) flushLiveEvents(true)
         const currentSnapshot = get().snapshots[sessionId]
         const discontinuity = mode === 'replace'
           && timelineReplacementIsDiscontinuous(currentSnapshot, snapshot)
@@ -954,7 +1065,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
         set(state => {
           const incoming = mode === 'replace'
-            ? replaceSnapshot(state.snapshots[sessionId], snapshot)
+            ? replaceSnapshot(state.snapshots[sessionId], snapshot, authoritativeTail)
             : mergeSnapshots(state.snapshots[sessionId], snapshot)
           const loadingSessionIds = withoutSessionId(state.loadingSessionIds, sessionId)
           const pending = state.pendingTurnSubmissions[sessionId]
@@ -967,7 +1078,7 @@ export const useAppStore = create<AppState>((set, get) => ({
             loadingSessionId: focusedLoadingSessionId(state.selectedSessionId, loadingSessionIds)
           }
         })
-        if (discontinuity) scheduleTimelineRepair(sessionId, captureProfileScope(get()))
+        if (discontinuity && !authoritativeTail) scheduleTimelineRepair(sessionId, captureProfileScope(get()))
       }),
       window.agentsDock.events.on('server:event', payload => {
         if (profileEventMatches(payload, get())) enqueueLiveEvent(payload.event,
@@ -1031,7 +1142,27 @@ export const useAppStore = create<AppState>((set, get) => ({
         handleServerConnection(bootstrapConnection)
       }
       updateBadge(payload.sessions)
-      if (payload.activeProfileId) workspaceTransition.follow(refreshProfileAfterBootstrap(payload.activeProfileId, payload.profileGeneration ?? 0, get, set))
+      if (payload.activeProfileId) {
+        const refreshedScope = captureProfileScope(get())
+        workspaceTransition.follow(refreshProfileAfterBootstrap(payload.activeProfileId, payload.profileGeneration ?? 0, get, set)
+          .then(async () => {
+            if (!profileScopeMatches(refreshedScope, get()) || get().creatingChat) return
+            // The first bootstrap can be cache-only (including pre-upgrade
+            // rows without the server capability). Recheck once after the
+            // startup refresh, never on background polling or navigation.
+            const current = get()
+            const snapshot = { activeProfileId: current.activeProfileId ?? undefined,
+              profileGeneration: current.profileGeneration, profiles: current.profiles,
+              sessions: current.sessions, jobs: current.jobs }
+            const cleanup = startupChatCleanupFromBootstrap(snapshot)
+            if (!cleanup) return
+            cleanup.sessionIds = new Set(snapshot.sessions.filter(session => cleanup.sessionIds.has(session.id)
+              && Date.parse(session.created_at ?? '') < Math.floor(openedAt / 1000) * 1000).map(session => session.id))
+            if (!cleanup.sessionIds.size) return
+            const cleaned = await removeUntouchedStartupChats(snapshot, cleanup, () => profileScopeMatches(refreshedScope, get()))
+            if (profileScopeMatches(refreshedScope, get())) set({ sessions: cleaned.sessions })
+          }))
+      }
       await hydrateVisibleChatPanes(get)
     } catch (error) {
       if (!profileScopeMatches(scope, get())) return
@@ -1184,6 +1315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     const requestEpoch = ++profileSwitchEpoch
+    trackEvent('server_restart_requested')
     try {
       const payload = forceConfirmation
         ? await window.agentsDock.servers.restart(scope, expectedServerInstanceId, forceConfirmation)
@@ -1201,9 +1333,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       updateBadge(payload.sessions)
       workspaceTransition.follow(refreshProfileAfterBootstrap(payload.activeProfileId, payload.profileGeneration, get, set))
       await hydrateVisibleChatPanes(get)
+      if (intent === profileSwitchIntent && requestEpoch === profileSwitchEpoch) trackEvent('server_restart_reconnected', { success: true })
       return true
     } catch (error) {
       if (intent === profileSwitchIntent && requestEpoch === profileSwitchEpoch) {
+        trackEvent('server_restart_reconnected', { success: false })
         set({ switchingProfileId: null, mailHints: consumeBufferedMailHints({ ...get(), switchingProfileId: null }, get().mailHints), error: errorMessage(error) })
         throw error
       }
@@ -1228,11 +1362,25 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async selectSession(sessionId, force = false) {
     const state = get()
-    const pane = state.chatPanes.primary === sessionId
-      ? 'primary'
-      : state.chatPanes.secondary === sessionId
-        ? 'secondary'
-        : state.focusedChatPane
+    if (state.switchingProfileId || !state.sessions.some(session => session.id === sessionId)) return
+    const current = currentChatWorkspaceState(state)
+    const containsSession = (workspace: ChatWorkspace) => Boolean(chatPaneForSession(workspace.panes, sessionId))
+    const destination = current.workspaces.find(workspace => workspace.id === current.activeWorkspaceId && containsSession(workspace))
+      ?? current.workspaces.find(containsSession)
+    const pane = (destination && chatPaneForSession(destination.panes, sessionId)) ?? state.focusedChatPane
+    const requiredCount = (CHAT_PANE_IDS.indexOf(pane) + 1) as ChatPaneCount
+    if (destination && (destination.id !== current.activeWorkspaceId || requiredCount > destination.paneCount)) {
+      const reconciled = parseChatWorkspaces(current, new Set(state.sessions.map(session => session.id)))!
+      const workspaces = reconciled.workspaces.map(workspace => workspace.id === destination.id
+        ? { ...workspace, focusedPane: pane, paneCount: Math.max(workspace.paneCount, requiredCount) as ChatPaneCount }
+        : workspace)
+      captureChatTimelines(state.chatPanes)
+      set(value => chatWorkspaceAliases(value, { workspaces, activeWorkspaceId: destination.id }))
+      unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+      persistChatPaneState(get())
+      await hydrateVisibleChatPanes(get, force ? sessionId : undefined)
+      return
+    }
     await state.selectSessionInPane(sessionId, pane, force)
   },
 
@@ -1251,11 +1399,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const selectedLayout = selectChatInPane(beforeLayout, sessionId, pane)
     const layout = focus
       ? selectedLayout
-      : { panes: selectedLayout.panes, focusedPane: beforeLayout.focusedPane }
+      : { ...selectedLayout, focusedPane: beforeLayout.focusedPane }
     const previousSessionId = beforeLayout.panes[pane]
     const initialSnapshot = get().snapshots[sessionId]
-    const panesChanged = layout.panes.primary !== beforeLayout.panes.primary
-      || layout.panes.secondary !== beforeLayout.panes.secondary
+    const panesChanged = CHAT_PANE_IDS.some(id => layout.panes[id] !== beforeLayout.panes[id])
     const focusChanged = layout.focusedPane !== beforeLayout.focusedPane
     const layoutChanged = panesChanged || focusChanged
     const newlyVisible = !visibleChatSessionIds(beforeLayout.panes).includes(sessionId)
@@ -1441,7 +1588,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   async openSessionInSplit(sessionId, force = false) {
     const scope = captureProfileScope(get())
     const before = get().chatPanes
-    const pane: ChatPane = before.primary ? 'secondary' : 'primary'
+    const pane = chatPaneForSession(before, sessionId)
+      ?? CHAT_PANE_IDS.find(id => !before[id])
+      ?? get().focusedChatPane
     const selection = get().selectSessionInPane(sessionId, pane, force)
     if (profileScopeMatches(scope, get())) {
       const after = get().chatPanes
@@ -1454,11 +1603,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   async reloadSession(sessionId, suppressErrors = false) {
     const state = get()
-    const pane: ChatPane | null = state.chatPanes.primary === sessionId
-      ? 'primary'
-      : state.chatPanes.secondary === sessionId
-        ? 'secondary'
-        : null
+    const pane = chatPaneForSession(state.chatPanes, sessionId)
     if (!pane) return
     // Background continuity repair must not steal keyboard focus from the
     // other visible pane.
@@ -1467,8 +1612,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   focusChatPane(pane) {
     const state = get()
-    if (!state.chatPanes[pane] || state.focusedChatPane === pane) return
-    const layout: ChatPaneLayout = { panes: state.chatPanes, focusedPane: pane }
+    if (CHAT_PANE_IDS.indexOf(pane) >= chatPaneCount(currentChatPaneLayout(state)) || state.focusedChatPane === pane) return
+    const layout = { ...currentChatPaneLayout(state), focusedPane: pane }
     set(current => focusedPaneAliases(current, layout))
     persistChatPaneState(get())
   },
@@ -1476,13 +1621,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   closeChatPane(pane) {
     const state = get()
     const closingSessionId = state.chatPanes[pane]
-    if (!closingSessionId) return
     const before = currentChatPaneLayout(state)
+    if (CHAT_PANE_IDS.indexOf(pane) >= chatPaneCount(before)) return
+    captureChatTimelines(before.panes)
     const layout = closeChatPaneLayout(before, pane)
     set(current => focusedPaneAliases(current, layout))
     persistChatPaneState(get())
     unsubscribeHiddenChatSessions(before.panes, layout.panes, captureProfileScope(get()))
-    if (!visibleChatSessionIds(layout.panes).includes(closingSessionId)) cancelTimelineRepair(closingSessionId)
+    if (closingSessionId && !visibleChatSessionIds(layout.panes).includes(closingSessionId)) cancelTimelineRepair(closingSessionId)
   },
 
   swapChatPanes() {
@@ -1492,6 +1638,117 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (layout === before) return
     set(current => focusedPaneAliases(current, layout))
     persistChatPaneState(get())
+  },
+
+  async createChatWorkspace(sessionId) {
+    const state = get()
+    if (state.switchingProfileId || (sessionId && !state.sessions.some(session => session.id === sessionId))) return
+    const workspaces = currentChatWorkspaceState(state).workspaces
+    const workspace = newChatWorkspace(secureRandomUUID(), {
+      panes: { primary: sessionId ?? null, secondary: null }, focusedPane: 'primary', paneCount: 1
+    })
+    captureChatTimelines(state.chatPanes)
+    set(current => chatWorkspaceAliases(current, { workspaces: [...workspaces, workspace], activeWorkspaceId: workspace.id }))
+    unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+    persistChatPaneState(get())
+    await hydrateVisibleChatPanes(get)
+  },
+
+  async selectChatWorkspace(workspaceId) {
+    const state = get()
+    if (state.switchingProfileId || state.activeChatWorkspaceId === workspaceId) return
+    const workspaces = parseChatWorkspaces(currentChatWorkspaceState(state), new Set(state.sessions.map(session => session.id)))
+    if (!workspaces?.workspaces.some(workspace => workspace.id === workspaceId)) return
+    captureChatTimelines(state.chatPanes)
+    set(current => chatWorkspaceAliases(current, { ...workspaces, activeWorkspaceId: workspaceId }))
+    unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+    persistChatPaneState(get())
+    await hydrateVisibleChatPanes(get)
+  },
+
+  async closeChatWorkspace(workspaceId) {
+    const state = get()
+    if (state.switchingProfileId) return
+    const current = currentChatWorkspaceState(state)
+    const index = current.workspaces.findIndex(workspace => workspace.id === workspaceId)
+    if (index < 0) return
+    const workspaces = current.workspaces.filter(workspace => workspace.id !== workspaceId)
+    if (!workspaces.length) workspaces.push(newChatWorkspace(secureRandomUUID(), {
+      panes: { primary: null, secondary: null }, focusedPane: 'primary', paneCount: 1
+    }))
+    const wasActive = current.activeWorkspaceId === workspaceId
+    const activeWorkspaceId = wasActive ? workspaces[Math.min(index, workspaces.length - 1)].id : current.activeWorkspaceId
+    if (wasActive) captureChatTimelines(state.chatPanes)
+    set(value => chatWorkspaceAliases(value, { workspaces, activeWorkspaceId }))
+    unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+    persistChatPaneState(get())
+    if (wasActive) await hydrateVisibleChatPanes(get)
+  },
+
+  renameChatWorkspace(workspaceId, title) {
+    if (get().switchingProfileId) return
+    const current = currentChatWorkspaceState(get())
+    set({ chatWorkspaces: current.workspaces.map(workspace => workspace.id === workspaceId
+      ? { ...workspace, title: title.trim() || undefined } : workspace) })
+    persistChatPaneState(get())
+  },
+
+  moveChatWorkspace(workspaceId, targetWorkspaceId) {
+    if (get().switchingProfileId || workspaceId === targetWorkspaceId) return
+    const current = currentChatWorkspaceState(get())
+    const from = current.workspaces.findIndex(workspace => workspace.id === workspaceId)
+    const to = current.workspaces.findIndex(workspace => workspace.id === targetWorkspaceId)
+    if (from < 0 || to < 0) return
+    const workspaces = [...current.workspaces]
+    workspaces.splice(to, 0, workspaces.splice(from, 1)[0])
+    // Ordering never selects a different workspace or remounts its panes.
+    set({ chatWorkspaces: workspaces })
+    persistChatPaneState(get())
+  },
+
+  setChatPaneCount(count) {
+    const state = get()
+    if (state.switchingProfileId || ![1, 2, 3, 4].includes(count)) return
+    if (chatPaneCount(currentChatPaneLayout(state)) === count) return
+    const current = currentChatWorkspaceState(state)
+    captureChatTimelines(state.chatPanes)
+    const workspaces = current.workspaces.map(workspace => workspace.id === current.activeWorkspaceId
+      ? { ...workspace, paneCount: count, focusedPane: CHAT_PANE_IDS.indexOf(workspace.focusedPane) < count ? workspace.focusedPane : 'primary' as ChatPane }
+      : workspace)
+    set(value => chatWorkspaceAliases(value, { ...current, workspaces }))
+    unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+    persistChatPaneState(get())
+    void hydrateVisibleChatPanes(get)
+  },
+
+  setChatWorkspaceRatios(ratios) {
+    if (get().switchingProfileId) return
+    const current = currentChatWorkspaceState(get())
+    set({ chatWorkspaces: current.workspaces.map(workspace => workspace.id === current.activeWorkspaceId
+      ? { ...workspace,
+          ...(ratios.columnRatio !== undefined ? { columnRatio: workspaceRatio(ratios.columnRatio) } : {}),
+          ...(ratios.rowRatio !== undefined ? { rowRatio: workspaceRatio(ratios.rowRatio) } : {}),
+          ...(ratios.threeColumnRatios !== undefined ? { threeColumnRatios: workspaceThreeColumnRatios(ratios.threeColumnRatios) } : {}) }
+      : workspace) })
+    persistChatPaneState(get())
+  },
+
+  setChatThreePaneLayout(layout) {
+    const state = get()
+    if (state.switchingProfileId || (layout !== 'split' && layout !== 'columns')) return
+    const current = currentChatWorkspaceState(state)
+    const active = current.workspaces.find(workspace => workspace.id === current.activeWorkspaceId)!
+    const countChanged = active.paneCount !== 3
+    if (!countChanged && (active.threePaneLayout ?? 'split') === layout) return
+    if (countChanged) captureChatTimelines(state.chatPanes)
+    const workspaces = current.workspaces.map(workspace => workspace.id === current.activeWorkspaceId
+      ? { ...workspace, threePaneLayout: layout, paneCount: 3 as const,
+          focusedPane: workspace.focusedPane === 'quaternary' ? 'primary' as const : workspace.focusedPane }
+      : workspace)
+    set(value => chatWorkspaceAliases(value, { ...current, workspaces }))
+    if (countChanged) unsubscribeHiddenChatSessions(state.chatPanes, get().chatPanes, captureProfileScope(state))
+    persistChatPaneState(get())
+    if (countChanged) void hydrateVisibleChatPanes(get)
   },
 
   async prefetchSession(sessionId) {
@@ -1522,7 +1779,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   async selectAdjacent(direction) {
     if (get().switchingProfileId) return
     const scope = captureProfileScope(get())
-    const visible = navigableSessions(get().sessions, get().folderOrder, get().collapsedFolders)
+    const state = get()
+    const visible = navigableSessions(state.sessions, state.folderOrder, state.collapsedFolders, state.activeSessionIds, state.collapsedStatusGroups, state.pinnedCollapsed, {
+      groupUnreadChats: state.groupUnreadChats,
+      includeCronInUnread: state.includeCronInUnread,
+      groupRunningChats: state.groupRunningChats,
+      jobSessionIds: new Set(state.jobs.map(job => job.session_id))
+    })
     if (!visible.length) return
     const current = visible.findIndex(session => session.id === get().selectedSessionId)
     const next = visible[(current + direction + visible.length) % visible.length]
@@ -1917,6 +2180,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         invalidateQueuedTurnsRequests(sessionId)
       }
       const responseQueued = Boolean(response.queued || response.queued_id || response.event?.type === 'turn_queued')
+      // Use the server receipt, not the optimistic busy state. A queue request
+      // can start immediately and steering can require a second admission.
+      if (responseQueued) trackEvent('message_queued', { backend: session?.backend })
+      else if (steer) trackEvent('message_steered', { backend: session?.backend })
       set(state => {
         const snapshot = state.snapshots[sessionId]
         const authoritativeQueuedReceipt = Boolean(
@@ -1966,6 +2233,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           const turns = await steerQueuedTurn(steeringScope, queuedId, options?.confirmSteer)
           if (!profileScopeMatches(scope, get())) return false
           get().applyQueuedTurnsResponse(sessionId, request, turns)
+          trackEvent('message_steered', { backend: session?.backend })
         } catch (error) {
           if (!isSteeringCancellation(error) && profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
         }
@@ -2006,14 +2274,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       set(state => {
         const stoppingSessionIds = new Set(state.stoppingSessionIds)
         stoppingSessionIds.delete(id)
-        if (result.stopped) {
+        const childStopPending = Boolean(result.subagents?.pending?.length || result.subagents?.errors?.length)
+        if (result.stopped && !result.pending && !childStopPending) {
           const activeSessionIds = new Set(state.activeSessionIds)
           activeSessionIds.delete(id)
           return { activeSessionIds, stoppingSessionIds }
         }
         return {
           stoppingSessionIds,
-          error: result.message?.trim() || (result.pending || result.deferred
+          error: childStopPending ? t('subagents.stopPending') : result.message?.trim() || (result.pending || result.deferred
             ? 'Stop is still pending. You can retry.'
             : 'The agent did not stop. You can retry.')
         }
@@ -2044,6 +2313,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } }))
     try {
       const uploaded = await window.agentsDock.files.upload(id, files.map(file => file.path))
+      trackEvent('attachment_uploaded', { success: uploaded.length === files.length })
       if (!profileScopeMatches(scope, get())) return
       set(state => {
         const snapshot = state.snapshots[id]
@@ -2065,6 +2335,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         }
       })
     } catch (error) {
+      trackEvent('attachment_uploaded', { success: false })
       if (!profileScopeMatches(scope, get())) return
       set(state => ({
         uploadPathsBySession: {
@@ -2109,7 +2380,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       // reconciled, re-pull the history of every open chat pane too (this is
       // what the removed per-chat header refresh used to do).
       const { chatPanes } = get()
-      const openPanes = [chatPanes.primary, chatPanes.secondary].filter((id): id is string => Boolean(id))
+      const openPanes = visibleChatSessionIds(chatPanes)
       await Promise.all(openPanes.map(id => get().reloadSession(id)))
     } catch (error) { if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) }) }
   },
@@ -2120,12 +2391,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     const requestedFolder = folder?.trim() || initial.selectedFolder?.trim() || null
     const preferenceScope = captureWorkspaceScope(initial)
     if (!preferenceScope) {
-      initial.setModal('newChat', true)
+      set({ error: t('newChat.connectFirst') })
       return
     }
     const profileScope = captureProfileScope(initial)
-    const lastOpenedSessionId = initial.selectedSessionId
-    set({ creatingChat: true })
+    // Freeze the initiating pane/settings before the asynchronous preference read.
+    const openedDefaults = preferredNewChatDefaults(initial.sessions.filter(session => session.id === initial.selectedSessionId), initial.selectedSessionId, initial.health?.default_cwd?.trim() || '', null)
+    set(state => ({ creatingChat: true, modals: { ...state.modals, newChat: false } }))
     try {
       let stored: unknown = null
       try {
@@ -2135,48 +2407,33 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       if (!workspaceScopeMatches(preferenceScope, get()) || !profileScopeMatches(profileScope, get())) return
       const current = get()
-      const lastOpened = current.sessions.find(session => session.id === lastOpenedSessionId && !session.archived) ?? null
-      const seed = lastOpened ?? newestAvailableSession(current.sessions)
       const storedDefaults = parseNewChatDefaults(stored)
       const defaultCwd = current.health?.default_cwd?.trim() || ''
-      let defaults = storedDefaults
-        ?? (seed ? sessionNewChatDefaults(seed, defaultCwd) : null)
-      // Cursor is the default runtime until the user saves a different one.
-      // A saved Folio API key is a separate connection from CLI login. When
-      // CLI login is not ready, start on that key instead of a chat that
-      // will fail the CLI authentication check.
       const chatChoices = selectableChatBackendChoices(current.health, current.runtimeCatalog)
       const cursorReady = cursorBackendAvailable(current.health, current.runtimeCatalog)
+      // Creation opens the composer. A saved or open-chat choice is kept, and a
+      // native Gemini login is never recreated. With no saved runtime, Cursor is
+      // the default; when CLI login is down, a saved Grok dashboard key is used.
+      let defaults = openedDefaults ?? preferredNewChatDefaults(current.sessions, null, defaultCwd, stored)
+        ?? normalizedNewChatDefaults({
+          ...chatBackendSelection(chatChoices[0] ?? 'codex'),
+          folder: 'General', cwd: defaultCwd, model: null, effort: null
+        })
+      if (defaults.backend === 'gemini' && defaults.provider_connection !== 'custom') {
+        defaults = { ...defaults,
+          ...chatBackendSelection(chatChoices[0] ?? 'codex'),
+          model: null, effort: null }
+      }
       if (!storedDefaults && chatChoices.includes('cursor') && cursorReady) {
-        defaults = {
-          version: 1,
-          folder: defaults?.folder || 'General',
-          cwd: defaults?.cwd || defaultCwd,
-          backend: 'cursor',
-          model: null,
-          effort: null
-        }
-      } else if (!storedDefaults && chatChoices.includes('cursor-custom') && !cursorReady) {
-        defaults = {
-          version: 1,
-          folder: defaults?.folder || 'General',
-          cwd: defaults?.cwd || defaultCwd,
-          backend: 'cursor',
-          provider_connection: 'custom',
-          model: null,
-          effort: null
-        }
+        defaults = { ...defaults, backend: 'cursor', provider_connection: undefined, model: null, effort: null }
+      } else if (!storedDefaults && !cursorReady && chatChoices.includes('cursor-custom')) {
+        defaults = { ...defaults, backend: 'cursor', provider_connection: 'custom', model: null, effort: null }
       }
-      if (!defaults) {
-        set({ creatingChat: false })
-        current.setModal('newChat', true)
-        return
-      }
-      const lastOpenedFolder = lastOpened ? lastOpened.folder?.trim() || 'General' : null
-      const lastOpenedCwd = lastOpened ? lastOpened.cwd?.trim() || defaultCwd : null
-      const folder = requestedFolder || lastOpenedFolder || defaults.folder
+      const lastOpened = current.sessions.find(session => session.id === initial.selectedSessionId && !session.archived) ?? null
+      const folder = requestedFolder || defaults.folder
       const directories = projectDirectories(current.projectWorkspaces ?? {}, folder)
-      const inheritedCwd = lastOpened && (lastOpened.folder?.trim() || 'General') === folder && directories.includes(lastOpenedCwd || '')
+      const lastOpenedCwd = lastOpened?.cwd?.trim() || ''
+      const inheritedCwd = lastOpened && (lastOpened.folder?.trim() || 'General') === folder && directories.includes(lastOpenedCwd)
         ? lastOpenedCwd
         : ''
       defaults = {
@@ -2184,22 +2441,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         folder,
         cwd: inheritedCwd || directories[0] || lastOpenedCwd || defaults.cwd || defaultCwd
       }
-      const choices = selectableChatBackendChoices(current.health, current.runtimeCatalog)
-      const connection = defaults.provider_connection === 'custom' ? 'custom' : defaults.codex_provider
-      if (
-        !choices.includes(chatBackendChoice(defaults))
-        || runtimeSelectionError(current.health, current.runtimeCatalog, defaults.backend, defaults.model, connection)
-      ) {
-        // A saved Cursor CLI default cannot run while login is down. The
-        // project + button still creates the chat in that project's folder,
-        // using the API key already saved in Folio.
-        if (defaults.backend === 'cursor' && defaults.provider_connection !== 'custom' && choices.includes('cursor-custom')) {
-          defaults = { ...defaults, provider_connection: 'custom', model: null, effort: null }
-        } else {
-          set({ creatingChat: false })
-          current.setModal('newChat', true)
-          return
-        }
+      if (defaults.backend === 'cursor' && defaults.provider_connection !== 'custom' && !cursorReady && chatChoices.includes('cursor-custom')) {
+        defaults = { ...defaults, provider_connection: 'custom', model: null, effort: null }
       }
       if (requestedFolder && get().collapsedFolders.has(requestedFolder)) get().toggleFolder(requestedFolder)
       const input: CreateSessionInput = {
@@ -2211,13 +2454,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...(defaults.provider_connection === 'custom' ? { provider_connection: 'custom' as const } : {}),
         model: defaults.model,
         effort: defaults.effort,
-        system_prompt: null,
-        cursor_permission_mode: defaults.backend === 'cursor' ? 'default' : null,
-        opencode_permission_mode: defaults.backend === 'opencode' ? 'default' : null
+        system_prompt: defaults.system_prompt ?? null,
+        subagent_limit: defaults.subagent_limit ?? null,
+        ...newChatPermissions(defaults, defaults.backend)
       }
       const session = await window.agentsDock.sessions.create(input)
       if (!workspaceScopeMatches(preferenceScope, get()) || !profileScopeMatches(profileScope, get())) return
-      trackEvent('chat_created')
+      trackEvent('chat_created', { backend: session.backend })
       await Promise.all([
         saveNewChatDefaults(preferenceScope, input),
         markNewChatPlaceholder(preferenceScope, session)
@@ -2259,8 +2502,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         const updatedCwd = updated.cwd?.trim() || ''
         if (previousCwd !== updatedCwd) trackEvent('working_directory_changed')
       }
+      if (previousSession) trackConfirmedSessionChange(previousSession, patch, updated)
+      if (isImportedAPIConnection(previousSession, patch)) trackEvent('imported_chat_api_connected', {
+        backend: 'gemini', success: updated.provider_connection === 'custom'
+      })
     } catch (error) {
       if (!profileScopeMatches(scope, get())) return
+      if (isImportedAPIConnection(previousSession, patch)) trackEvent('imported_chat_api_connected', { backend: 'gemini', success: false })
       const pending = pendingSessionPatches.get(sessionId)
       if (pending?.version === version) {
         pendingSessionPatches.delete(sessionId)
@@ -2565,13 +2813,20 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const updated = await window.agentsDock.sessions.acknowledgeEmergency(sessionId, alertId)
       if (!profileScopeMatches(scope, get())) return false
-      const [reconciled] = applyPendingSessionPatches([updated])
-      set(state => ({
-        sessions: state.sessions.map(candidate => candidate.id === sessionId ? reconciled : candidate),
-        snapshots: state.snapshots[sessionId]
-          ? { ...state.snapshots, [sessionId]: { ...state.snapshots[sessionId], session: reconciled } }
-          : state.snapshots
-      }))
+      set(state => applyEmergencyReceipt(state, sessionId, updated))
+      return true
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
+      return false
+    }
+  },
+  async dismissEmergencyAlerts(sessionId, throughAlertId) {
+    if (get().switchingProfileId) return false
+    const scope = captureProfileScope(get())
+    try {
+      const updated = await window.agentsDock.sessions.dismissEmergencyAlerts(sessionId, throughAlertId)
+      if (!profileScopeMatches(scope, get())) return false
+      set(state => applyEmergencyReceipt(state, sessionId, updated))
       return true
     } catch (error) {
       if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
@@ -2696,6 +2951,33 @@ export const useAppStore = create<AppState>((set, get) => ({
     writeSelectedFolder(next)
     set({ selectedFolder: next })
   },
+  toggleStatusGroup(status) {
+    if (get().switchingProfileId) return
+    set(state => {
+      const collapsedStatusGroups = new Set(state.collapsedStatusGroups)
+      if (collapsedStatusGroups.has(status)) collapsedStatusGroups.delete(status)
+      else collapsedStatusGroups.add(status)
+      return { collapsedStatusGroups }
+    })
+  },
+  setGroupUnreadChats(value) {
+    if (get().switchingProfileId) return
+    const scope = captureWorkspaceScope(get())
+    set({ groupUnreadChats: value })
+    void setWorkspacePreference(scope, 'groupUnreadChats', value).catch(() => undefined)
+  },
+  setIncludeCronInUnread(value) {
+    if (get().switchingProfileId) return
+    const scope = captureWorkspaceScope(get())
+    set({ includeCronInUnread: value })
+    void setWorkspacePreference(scope, 'includeCronInUnread', value).catch(() => undefined)
+  },
+  setGroupRunningChats(value) {
+    if (get().switchingProfileId) return
+    const scope = captureWorkspaceScope(get())
+    set({ groupRunningChats: value })
+    void setWorkspacePreference(scope, 'groupRunningChats', value).catch(() => undefined)
+  },
   toggleFolder(folder) {
     const next = new Set(get().collapsedFolders)
     if (next.has(folder)) next.delete(folder); else next.add(folder)
@@ -2704,6 +2986,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setFolderOrder(order) { const scope = captureWorkspaceScope(get()); set({ folderOrder: order }); void setWorkspacePreference(scope, 'folderOrder', order).catch(() => undefined) },
   setArchivedCollapsed(value) { const scope = captureWorkspaceScope(get()); set({ archivedCollapsed: value }); void setWorkspacePreference(scope, 'archivedCollapsed', value).catch(() => undefined) },
+  setPinnedCollapsed(value) {
+    if (get().switchingProfileId) return
+    const scope = captureWorkspaceScope(get())
+    set({ pinnedCollapsed: value })
+    void setWorkspacePreference(scope, 'pinnedCollapsed', value).catch(() => undefined)
+  },
   setInspectorVisible(value) { const scope = captureWorkspaceScope(get()); set({ inspectorVisible: value }); void setWorkspacePreference(scope, 'inspectorVisible', value).catch(() => undefined) },
   setModal(key, value) {
     set(state => ({
@@ -2766,20 +3054,21 @@ function selectedSessionFromBootstrap(payload: BootstrapPayload): string | null 
     : payload.sessions.find(session => !session.archived)?.id ?? null
 }
 
-function currentChatPaneLayout(state: Pick<AppState, 'chatPanes' | 'focusedChatPane' | 'selectedSessionId'>): ChatPaneLayout {
+function currentChatPaneLayout(state: Pick<AppState, 'chatPanes' | 'focusedChatPane' | 'selectedSessionId' | 'chatPaneCount'>): ChatPaneLayout {
   const panes = state.chatPanes ?? { primary: state.selectedSessionId, secondary: null }
   let focusedPane = state.focusedChatPane ?? 'primary'
+  const paneCount = Math.max(state.chatPaneCount ?? 1, chatPaneCount({ panes, focusedPane })) as ChatPaneCount
   // Tests and older persisted Zustand snapshots may still set only the
   // compatibility alias. Honor that until every caller uses pane state.
   if (state.selectedSessionId && panes[focusedPane] !== state.selectedSessionId) {
-    if (panes.primary === state.selectedSessionId) focusedPane = 'primary'
-    else if (panes.secondary === state.selectedSessionId) focusedPane = 'secondary'
-    else return { panes: { ...panes, [focusedPane]: state.selectedSessionId }, focusedPane }
+    const existing = chatPaneForSession(panes, state.selectedSessionId)
+    if (existing) focusedPane = existing
+    else return { panes: { ...panes, [focusedPane]: state.selectedSessionId }, focusedPane, paneCount }
   }
-  return { panes, focusedPane }
+  return { panes, focusedPane, paneCount }
 }
 
-function focusedPaneAliases(state: AppState, layout: ChatPaneLayout): Partial<AppState> {
+function focusedPaneAliases(state: AppState, layout: ChatPaneLayout, updateWorkspace = true): Partial<AppState> {
   const selectedSessionId = focusedChatSessionId(layout)
   const visible = new Set(visibleChatSessionIds(layout.panes))
   const loadingSessionIds = new Set([...state.loadingSessionIds].filter(sessionId => visible.has(sessionId)))
@@ -2789,8 +3078,10 @@ function focusedPaneAliases(state: AppState, layout: ChatPaneLayout): Partial<Ap
     ? sync?.status ?? (state.connected ? (state.snapshots[selectedSessionId] ? 'cached' : 'syncing') : 'offline')
     : 'idle'
   return {
+    ...(updateWorkspace ? { chatWorkspaces: currentChatWorkspaceState(state, layout).workspaces } : {}),
     chatPanes: layout.panes,
     focusedChatPane: layout.focusedPane,
+    chatPaneCount: chatPaneCount(layout),
     selectedSessionId,
     loadingSessionIds,
     loadingSessionId: focusedLoadingSessionId(selectedSessionId, loadingSessionIds),
@@ -2798,6 +3089,39 @@ function focusedPaneAliases(state: AppState, layout: ChatPaneLayout): Partial<Ap
     syncSessionId: selectedSessionId,
     syncStatus,
     syncError: sync?.error ?? null
+  }
+}
+
+function newChatWorkspace(id: string, layout: ChatPaneLayout): ChatWorkspace {
+  return {
+    id, ...layout, paneCount: chatPaneCount(layout), columnRatio: 0.5, rowRatio: 0.5,
+    threePaneLayout: 'split', threeColumnRatios: [1 / 3, 2 / 3]
+  }
+}
+
+function currentChatWorkspaceState(state: AppState, layout = currentChatPaneLayout(state)): ChatWorkspaceState {
+  const activeWorkspaceId = state.activeChatWorkspaceId || 'workspace-main'
+  const workspaces = state.chatWorkspaces ?? []
+  return {
+    activeWorkspaceId,
+    workspaces: workspaces.some(workspace => workspace.id === activeWorkspaceId)
+      ? workspaces.map(workspace => workspace.id === activeWorkspaceId ? workspaceWithLayout(workspace, layout) : workspace)
+      : [...workspaces, newChatWorkspace(activeWorkspaceId, layout)]
+  }
+}
+
+function chatWorkspaceAliases(state: AppState, workspaces: ChatWorkspaceState): Partial<AppState> {
+  const active = workspaces.workspaces.find(workspace => workspace.id === workspaces.activeWorkspaceId)!
+  return {
+    ...focusedPaneAliases(state, visibleWorkspaceLayout(active), false),
+    activeChatWorkspaceId: active.id,
+    chatWorkspaces: workspaces.workspaces
+  }
+}
+
+function captureChatTimelines(panes: ChatPanes): void {
+  for (const sessionId of visibleChatSessionIds(panes)) {
+    window.dispatchEvent(new CustomEvent('agentsdock:capture-timeline', { detail: { sessionId } }))
   }
 }
 
@@ -2855,7 +3179,7 @@ function sessionLoadingAndSyncState(
 async function restoredChatPaneLayout(
   payload: BootstrapPayload | ProfileBootstrapPayload,
   fallbackSessionId: string | null
-): Promise<ChatPaneLayout> {
+): Promise<RestoredChatPaneLayout> {
   const profileId = payload.activeProfileId ?? null
   const profileGeneration = payload.profileGeneration ?? 0
   const serverIdentity = payload.profiles?.find(profile => profile.id === profileId)?.serverIdentity ?? null
@@ -2866,9 +3190,17 @@ async function restoredChatPaneLayout(
   }
   try {
     if (!window.agentsDock.preferences) return fallback
-    const stored = parseStoredChatPaneLayout(
-      await getWorkspacePreference<unknown>(scope, 'chatPaneLayout', null)
-    )
+    const validSessionIds = new Set(payload.sessions.map(session => session.id))
+    const [storedWorkspaces, storedLayout] = await Promise.all([
+      getWorkspacePreference<unknown>(scope, 'chatWorkspaces', null),
+      getWorkspacePreference<unknown>(scope, 'chatPaneLayout', null)
+    ])
+    const workspaceState = parseChatWorkspaces(storedWorkspaces, validSessionIds)
+    if (workspaceState) {
+      const active = workspaceState.workspaces.find(workspace => workspace.id === workspaceState.activeWorkspaceId)!
+      return { ...visibleWorkspaceLayout(active), workspaceState }
+    }
+    const stored = parseStoredChatPaneLayout(storedLayout)
     if (!stored) return fallback
     return reconcileChatPaneLayout(stored, new Set(payload.sessions.map(session => session.id)), fallbackSessionId)
   } catch {
@@ -2881,17 +3213,18 @@ function parseStoredChatPaneLayout(value: unknown): ChatPaneLayout | null {
   const stored = value as StoredChatPaneLayout
   const primary = typeof stored.primary === 'string' ? stored.primary : null
   const secondary = typeof stored.secondary === 'string' ? stored.secondary : null
-  if (!primary && !secondary) return null
+  const tertiary = typeof stored.tertiary === 'string' ? stored.tertiary : null
+  const quaternary = typeof stored.quaternary === 'string' ? stored.quaternary : null
+  if (!primary && !secondary && !tertiary && !quaternary) return null
   return {
-    panes: { primary, secondary },
-    focusedPane: stored.focusedPane === 'secondary' ? 'secondary' : 'primary'
+    panes: { primary, secondary, ...(tertiary ? { tertiary } : {}), ...(quaternary ? { quaternary } : {}) },
+    focusedPane: stored.focusedPane && CHAT_PANE_IDS.includes(stored.focusedPane) ? stored.focusedPane : 'primary'
   }
 }
 
 function storedChatPaneLayout(layout: ChatPaneLayout): StoredChatPaneLayout {
   return {
-    primary: layout.panes.primary,
-    secondary: layout.panes.secondary,
+    ...layout.panes,
     focusedPane: layout.focusedPane
   }
 }
@@ -2899,29 +3232,28 @@ function storedChatPaneLayout(layout: ChatPaneLayout): StoredChatPaneLayout {
 function persistChatPaneState(state: AppState): void {
   if (!window.agentsDock.preferences) return
   const scope = captureWorkspaceScope(state)
-  const layout = {
-    primary: state.chatPanes.primary,
-    secondary: state.chatPanes.secondary,
-    focusedPane: state.focusedChatPane
-  }
+  const layout = storedChatPaneLayout(currentChatPaneLayout(state))
   void Promise.all([
+    setWorkspacePreference(scope, 'chatWorkspaces', currentChatWorkspaceState(state)),
     setWorkspacePreference(scope, 'chatPaneLayout', layout),
     setWorkspacePreference(scope, 'selectedSessionId', state.selectedSessionId)
   ]).catch(() => undefined)
 }
 
-async function hydrateVisibleChatPanes(get: () => AppState): Promise<void> {
+async function hydrateVisibleChatPanes(get: () => AppState, forceSessionId?: string): Promise<void> {
   const panes = get().chatPanes
   const tasks: Promise<void>[] = []
-  if (panes.primary) tasks.push(get().selectSessionInPane(panes.primary, 'primary', false, false))
-  if (panes.secondary) tasks.push(get().selectSessionInPane(panes.secondary, 'secondary', false, false))
+  for (const pane of CHAT_PANE_IDS) {
+    const sessionId = panes[pane]
+    if (sessionId) tasks.push(get().selectSessionInPane(sessionId, pane, sessionId === forceSessionId, false))
+  }
   await Promise.all(tasks)
 }
 
 function chatPaneLayoutsEqual(left: ChatPaneLayout, right: ChatPaneLayout): boolean {
   return left.focusedPane === right.focusedPane
-    && left.panes.primary === right.panes.primary
-    && left.panes.secondary === right.panes.secondary
+    && chatPaneCount(left) === chatPaneCount(right)
+    && CHAT_PANE_IDS.every(pane => left.panes[pane] === right.panes[pane])
 }
 
 function unsubscribeHiddenChatSessions(before: ChatPanes, after: ChatPanes, scope: RendererProfileScope): void {
@@ -3119,7 +3451,7 @@ function workspaceStateFromBootstrap(
   payload: BootstrapPayload | ProfileBootstrapPayload,
   selectedSessionId: string | null,
   initialized: boolean,
-  restoredLayout?: ChatPaneLayout
+  restoredLayout?: RestoredChatPaneLayout
 ): Partial<AppState> {
   const validSessionIds = new Set(payload.sessions.map(session => session.id))
   const layout = reconcileChatPaneLayout(
@@ -3128,6 +3460,9 @@ function workspaceStateFromBootstrap(
     selectedSessionId
   )
   const focusedSessionId = focusedChatSessionId(layout)
+  const workspaceState = restoredLayout?.workspaceState ?? {
+    activeWorkspaceId: 'workspace-main', workspaces: [newChatWorkspace('workspace-main', layout)]
+  }
   const syncStatus: ChatSyncStatus = focusedSessionId ? (payload.health?.ok ? 'syncing' : 'offline') : 'idle'
   const emergencyFolders = new Set(
     payload.sessions
@@ -3153,6 +3488,9 @@ function workspaceStateFromBootstrap(
     runtimeCatalog: payload.runtimeCatalog ?? null,
     chatPanes: layout.panes,
     focusedChatPane: layout.focusedPane,
+    chatPaneCount: chatPaneCount(layout),
+    chatWorkspaces: workspaceState.workspaces,
+    activeChatWorkspaceId: workspaceState.activeWorkspaceId,
     selectedSessionId: focusedSessionId,
     snapshots: {},
     loadingSessionIds: new Set(),
@@ -3170,6 +3508,13 @@ function workspaceStateFromBootstrap(
     folderOrder: payload.folderOrder,
     collapsedFolders: new Set(payload.collapsedFolders.filter(folder => !emergencyFolders.has(folder))),
     projectWorkspaces: normalizeProjectWorkspaces(payload.projectWorkspaces),
+    collapsedStatusGroups: new Set(),
+    groupUnreadChats: payload.groupUnreadChats !== false,
+    includeCronInUnread: payload.includeCronInUnread === true,
+    groupRunningChats: payload.groupRunningChats !== false,
+    pinnedCollapsed: payload.sessions.some(session => session.pinned && !session.archived && activeEmergencyAlert(session))
+      ? false
+      : payload.pinnedCollapsed ?? false,
     archivedCollapsed: payload.sessions.some(session => session.archived && activeEmergencyAlert(session))
       ? false
       : payload.archivedCollapsed,
@@ -3242,15 +3587,23 @@ async function runProfileRefresh(
         validSessionIds,
         fallbackSessionId
       )
-      const canonicalStoredLayout = parseStoredChatPaneLayout(
-        await getWorkspacePreference<unknown>(canonicalScope, 'chatPaneLayout', null).catch(() => null)
-      )
-      let layout = reconcileChatPaneLayout(
+      const [storedWorkspaces, storedLayout] = await Promise.all([
+        getWorkspacePreference<unknown>(canonicalScope, 'chatWorkspaces', null).catch(() => null),
+        getWorkspacePreference<unknown>(canonicalScope, 'chatPaneLayout', null).catch(() => null)
+      ])
+      const canonicalWorkspaces = parseChatWorkspaces(storedWorkspaces, validSessionIds)
+      const canonicalStoredLayout = parseStoredChatPaneLayout(storedLayout)
+      let layout: RestoredChatPaneLayout = reconcileChatPaneLayout(
         canonicalStoredLayout ?? fallbackLayout,
         validSessionIds,
         fallbackSessionId
       )
-      const visibleSessionIds = visibleChatSessionIds(layout.panes)
+      let workspaceState = canonicalWorkspaces ?? (canonicalStoredLayout
+        ? { activeWorkspaceId: 'workspace-main', workspaces: [newChatWorkspace('workspace-main', layout)] }
+        : parseChatWorkspaces(currentChatWorkspaceState(current), validSessionIds)!)
+      const activeWorkspace = workspaceState.workspaces.find(workspace => workspace.id === workspaceState.activeWorkspaceId)!
+      layout = { ...visibleWorkspaceLayout(activeWorkspace), workspaceState }
+      const visibleSessionIds = [...new Set(workspaceState.workspaces.flatMap(workspace => visibleChatSessionIds(workspace.panes)))]
       const canonicalComposerState = await Promise.all(visibleSessionIds.map(async sessionId => {
         const [draft, references, teamReferences] = await Promise.all([
           getWorkspacePreference<unknown>(canonicalScope, `draft:${sessionId}`, null).catch(() => null),
@@ -3262,19 +3615,22 @@ async function runProfileRefresh(
       if (!isLatestRefresh()) return
       current = get()
       if (requestedScope.switchEpoch !== profileSwitchEpoch || current.activeProfileId !== profileId || current.profileGeneration !== profileGeneration) return
-      if (!canonicalStoredLayout) {
-        layout = reconcileChatPaneLayout(currentChatPaneLayout(current), validSessionIds, fallbackSessionId)
+      if (!canonicalStoredLayout && !canonicalWorkspaces) {
+        workspaceState = parseChatWorkspaces(currentChatWorkspaceState(current), validSessionIds)!
+        const active = workspaceState.workspaces.find(workspace => workspace.id === workspaceState.activeWorkspaceId)!
+        layout = { ...visibleWorkspaceLayout(active), workspaceState }
       }
       const drafts: Record<string, string> = {}
       const chatReferencesBySession: Record<string, ChatReference[]> = {}
       const teamReferencesBySession: Record<string, TeamReference[]> = {}
       const migrationWrites: Promise<void>[] = []
-      if (!canonicalStoredLayout) {
+      if (!canonicalStoredLayout && !canonicalWorkspaces) {
         migrationWrites.push(
           setWorkspacePreference(canonicalScope, 'chatPaneLayout', storedChatPaneLayout(layout)),
           setWorkspacePreference(canonicalScope, 'selectedSessionId', focusedChatSessionId(layout))
         )
       }
+      if (!canonicalWorkspaces) migrationWrites.push(setWorkspacePreference(canonicalScope, 'chatWorkspaces', workspaceState))
       for (const composerState of canonicalComposerState) {
         const { sessionId } = composerState
         const localDraft = current.drafts[sessionId] ?? ''
@@ -3341,6 +3697,10 @@ async function runProfileRefresh(
       folderOrder: payload.folderOrder,
       collapsedFolders: new Set(payload.collapsedFolders),
       projectWorkspaces: normalizeProjectWorkspaces(payload.projectWorkspaces),
+      pinnedCollapsed: payload.pinnedCollapsed ?? false,
+      groupUnreadChats: payload.groupUnreadChats !== false,
+      includeCronInUnread: payload.includeCronInUnread === true,
+      groupRunningChats: payload.groupRunningChats !== false,
       archivedCollapsed: payload.archivedCollapsed,
       inspectorVisible: payload.inspectorVisible
     })
@@ -3413,10 +3773,12 @@ async function removeUntouchedStartupChats<T extends CleanupSnapshot>(
     serverIdentity
   }
   try {
-    const markers = new Map<string, DirectChatPlaceholderMarker>()
+    const markers = new Map<string, DirectChatPlaceholderMarker | null>()
     await Promise.all([...cleanup.sessionIds].map(async sessionId => {
       const marker = await getWorkspacePreference<unknown>(preferenceScope, directChatPlaceholderKey(sessionId), null)
-      if (isDirectChatPlaceholderMarker(marker)) markers.set(sessionId, marker)
+      const session = payload.sessions.find(candidate => candidate.id === sessionId)
+      if (session?.empty_chat_cleanup === 'client-v1') markers.set(sessionId, null)
+      else if (isDirectChatPlaceholderMarker(marker)) markers.set(sessionId, marker)
     }))
     if (!profileScopeIsCurrent() || !markers.size) return payload
 
@@ -3461,7 +3823,7 @@ async function removeUntouchedStartupChats<T extends CleanupSnapshot>(
         ])
         if (!profileScopeIsCurrent()) return payload
         if (
-          !directChatPlaceholderMarkerMatches(marker, session)
+          !(session.empty_chat_cleanup === 'client-v1' || directChatPlaceholderMarkerMatches(marker, session))
           || typeof draft !== 'string'
           || draft.length > 0
           || !Array.isArray(chatReferences)
@@ -3487,7 +3849,7 @@ async function removeUntouchedStartupChats<T extends CleanupSnapshot>(
         if (
           !confirmed
           || !isUntouchedNewChat(confirmed)
-          || !directChatPlaceholderMarkerMatches(marker, confirmed)
+          || !(confirmed.empty_chat_cleanup === 'client-v1' || directChatPlaceholderMarkerMatches(marker, confirmed))
           || liveJobs.some(job => job.session_id === sessionId)
           || livePorts.some(port => port.sessionId === sessionId)
         ) continue
@@ -3566,6 +3928,9 @@ function releaseFailedNamespaceAdoption(
     selectedSessionId,
     chatPanes: { primary: selectedSessionId, secondary: null },
     focusedChatPane: 'primary',
+    chatPaneCount: 1,
+    chatWorkspaces: [newChatWorkspace('workspace-main', { panes: { primary: selectedSessionId, secondary: null }, focusedPane: 'primary', paneCount: 1 })],
+    activeChatWorkspaceId: 'workspace-main',
     snapshots: {},
     loadingSessionIds: new Set(),
     loadingSessionId: null,
@@ -4308,6 +4673,21 @@ function mergeFiles(a: AgentFile[], b: AgentFile[]): AgentFile[] {
 }
 function mergeUploadPaths(a: NativeFileRef[], b: NativeFileRef[]): NativeFileRef[] {
   return [...new Map([...a, ...b].map(file => [file.path, file])).values()]
+}
+function applyEmergencyReceipt(state: AppState, sessionId: string, receipt: Session): Pick<AppState, 'sessions' | 'snapshots'> {
+  // Recheck at IPC completion: a newer emergency packet can already be rendered
+  // even when main correctly reconciled the earlier HTTP response.
+  let latest = receipt
+  for (const current of [state.sessions.find(session => session.id === sessionId), state.snapshots[sessionId]?.session]) {
+    if (current && (current.latest_event_seq ?? 0) > (latest.latest_event_seq ?? 0)) latest = current
+  }
+  const [reconciled] = applyPendingSessionPatches([latest])
+  return {
+    sessions: state.sessions.map(candidate => candidate.id === sessionId ? reconciled : candidate),
+    snapshots: state.snapshots[sessionId]
+      ? { ...state.snapshots, [sessionId]: { ...state.snapshots[sessionId], session: reconciled } }
+      : state.snapshots
+  }
 }
 function mergeReadStateReceipt(
   current: Session,
@@ -5084,7 +5464,8 @@ function eventMayRenderInTimeline(event: Event): boolean {
   return event.type === 'error' || event.type.endsWith('_error') || event.is_error === true || Boolean(event.error)
 }
 
-function normalizeSessionPatch(patch: Partial<Session>) { return {
+function normalizeSessionPatch(patch: Partial<Session> & { gemini_connect_api?: boolean }) { return {
+  ...(patch.gemini_connect_api === true ? { gemini_connect_api: true } : {}),
   title: patch.title,
   folder: patch.folder ?? undefined,
   cwd: patch.cwd ?? undefined,
@@ -5102,6 +5483,7 @@ function normalizeSessionPatch(patch: Partial<Session>) { return {
   claude_permission_mode: patch.claude_permission_mode,
   cursor_permission_mode: patch.cursor_permission_mode,
   opencode_permission_mode: patch.opencode_permission_mode,
+  gemini_permission_mode: patch.gemini_permission_mode,
   provider_jobs_access: patch.provider_jobs_access ?? undefined,
   pinned: patch.pinned ?? undefined,
   archived: patch.archived ?? undefined
@@ -5113,7 +5495,7 @@ export function interactiveClientCapabilities(
   selectedSkill = false
 ): string[] {
   const opencode = session?.backend === 'opencode'
-  const capabilities = opencode
+  const capabilities = session?.backend === 'gemini' ? ['gemini_acp_v1'] : opencode
     ? selectedSkill && openCodeProviderCommandsAvailable(health) ? ['opencode_provider_commands_v1'] : []
     : ['codex_interactive_v1', 'codex_goal_steer_v1']
   if (opencode && !supportedCrossChatTargetBackends(health).includes('opencode')) return capabilities
@@ -5152,7 +5534,6 @@ function applyPendingSessionPatches(sessions: Session[]): Session[] {
     return pending ? { ...session, ...pending.patch } : session
   })
 }
-function isUnread(session: Session): boolean { return Boolean(session.manual_unread) || (session.latest_agent_event_seq ?? 0) > (session.last_read_agent_event_seq ?? 0) }
 function updateBadge(sessions: Session[]): void { void window.agentsDock.native.setBadge(sessions.filter(session => !session.archived && isUnread(session)).length) }
 
 export function handleMenuCommand(command: string, get: () => AppState, set: (value: Partial<AppState>) => void): void {

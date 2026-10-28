@@ -4,11 +4,11 @@ import { FlashList, type FlashListRef } from '@shopify/flash-list'
 import { ArrowDown, ArrowUp, RefreshCw } from 'lucide-react-native'
 import { codexLifecycleSemanticKey, isHandoffDigestEvent, isTimelineError, projectPresentableHistory, projectTimeline, type TimelineRow } from '../lib/timeline'
 import { shouldFinishTimelineKeyboardDismissal } from '../lib/keyboard-gesture'
-import { liveTimelineAdvanced, shouldShowTimelineLatest, timelineMaintainVisiblePosition, timelineTargetRowIndex } from '../lib/timeline-history-navigation'
+import { liveTimelineAdvanced, shouldShowInitialTimelineLoading, shouldShowTimelineLatest, timelineMaintainVisiblePosition, timelineTargetRowIndex } from '../lib/timeline-history-navigation'
 import { mergeHistoryWithLiveSnapshot } from '../lib/timeline-memory'
 import { reuseStableTimelineRows } from '../lib/timeline-row-reuse'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import { Text } from './AppText'
 import { Loading } from './ui'
 import { TimelineRowView } from './TimelineRows'
@@ -24,6 +24,7 @@ const MAX_RECYCLED_TIMELINE_ITEMS = 18
 export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSettleRequest, bottomInset, onReview }: { sessionId: string; scrollRequest: number; keyboardVisible: boolean; keyboardSettleRequest: number; bottomInset: number; onReview: (runId: string) => void }) {
   const colors = usePalette()
   const liveSnapshot = useAppStore(state => state.snapshots[sessionId])
+  const selectedSession = useAppStore(state => state.sessions.find(session => session.id === sessionId))
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const historyWindow = useAppStore(state => state.historyWindow)
   const exitHistory = useAppStore(state => state.exitHistory)
@@ -380,7 +381,15 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
   )
 
   const selectedSyncStatus = syncSessionId === sessionId ? syncStatus : 'cached'
-  if (!snapshot && (loading || selectedSyncStatus === 'syncing' || selectedSyncStatus === 'reconnecting')) return <Loading label={selectedSyncStatus === 'reconnecting' ? 'Reconnecting to this chat' : 'Loading latest messages'} />
+  const hasKnownHistory = Math.max(
+    snapshot?.total ?? 0,
+    snapshot?.latestSeq ?? 0,
+    snapshot?.session.latest_event_seq ?? 0,
+    selectedSession?.latest_event_seq ?? 0,
+  ) > 0
+  if (shouldShowInitialTimelineLoading({ rowCount: rows.length, loading, hasKnownHistory, syncStatus: selectedSyncStatus })) {
+    return <Loading label={selectedSyncStatus === 'reconnecting' ? 'Reconnecting to this chat' : 'Loading latest messages'} />
+  }
   return (
     <View style={styles.root} onLayout={handleLayout}>
       <FlashList
@@ -415,23 +424,23 @@ export function Timeline({ sessionId, scrollRequest, keyboardVisible, keyboardSe
           ? <Pressable accessibilityRole={canLoadOlder ? 'button' : undefined} accessibilityLabel={canLoadOlder ? 'Load older messages' : 'Beginning of chat'} disabled={!canLoadOlder || loadingOlder || olderRequestInFlight.current} onPress={() => void requestOlder(true)} style={[styles.older, { borderColor: colors.border, backgroundColor: colors.surface }]}>
             {canLoadOlder
               ? loadingOlder
-                ? <Text style={{ color: colors.muted }}>Loading…</Text>
-                : <><ArrowUp size={14} color={colors.muted} /><Text style={{ color: colors.muted, fontSize: 12 }}>{activeHistoryWindow?.detached ? 'Viewing search result · Load earlier messages' : 'Load older messages'}</Text></>
-              : <Text style={{ color: colors.muted, fontSize: 12 }}>{activeHistoryWindow?.detached ? 'Viewing search result · Beginning of chat' : 'Beginning of chat'}</Text>}
+                ? <Text style={{ color: colors.muted }} localize>Loading…</Text>
+                : <><ArrowUp size={14} color={colors.muted} /><Text style={{ color: colors.muted, fontSize: 12 }} localize>{activeHistoryWindow?.detached ? 'Viewing search result · Load earlier messages' : 'Load older messages'}</Text></>
+              : <Text style={{ color: colors.muted, fontSize: 12 }} localize>{activeHistoryWindow?.detached ? 'Viewing search result · Beginning of chat' : 'Beginning of chat'}</Text>}
           </Pressable>
           : null}
         ListEmptyComponent={selectedSyncStatus === 'error' || selectedSyncStatus === 'offline'
           ? <View style={styles.empty}>
-            <Text style={[styles.emptyTitle, { color: colors.text }]}>Messages unavailable</Text>
+            <Text style={[styles.emptyTitle, { color: colors.text }]} localize>Messages unavailable</Text>
             <Text style={[styles.emptyDetail, { color: colors.muted }]} numberOfLines={3}>{syncError || 'The server could not sync this chat.'}</Text>
             <Pressable accessibilityRole="button" accessibilityLabel="Retry chat sync" onPress={() => void retryConnection()} style={[styles.retry, { backgroundColor: colors.raised, borderColor: colors.border }]}>
               <RefreshCw size={14} color={colors.text} />
-              <Text style={{ color: colors.text, fontWeight: '700', fontSize: 12 }}>Retry</Text>
+              <Text style={{ color: colors.text, fontWeight: '700', fontSize: 12 }} localize>Retry</Text>
             </Pressable>
           </View>
-          : <View style={styles.empty}><Text style={{ color: colors.muted }}>No messages yet.</Text></View>}
+          : <View style={styles.empty}><Text style={{ color: colors.muted }} localize>No messages yet.</Text></View>}
       />
-      {shouldShowTimelineLatest(rows.length, nearBottom, Boolean(activeHistoryWindow?.detached)) ? <Pressable accessibilityRole="button" accessibilityLabel={activeHistoryWindow ? 'Return to latest message' : 'Scroll to latest message'} onPress={scrollToLatest} style={[styles.bottom, activeHistoryWindow ? styles.bottomLatest : styles.bottomIcon, { bottom: bottomInset + 12, backgroundColor: colors.raised, borderColor: colors.border }]}><ArrowDown size={17} color={colors.text} />{activeHistoryWindow ? <Text style={[styles.bottomLabel, { color: colors.text }]}>Latest</Text> : null}</Pressable> : null}
+      {shouldShowTimelineLatest(rows.length, nearBottom, Boolean(activeHistoryWindow?.detached)) ? <Pressable accessibilityRole="button" accessibilityLabel={activeHistoryWindow ? 'Return to latest message' : 'Scroll to latest message'} onPress={scrollToLatest} style={[styles.bottom, activeHistoryWindow ? styles.bottomLatest : styles.bottomIcon, { bottom: bottomInset + 12, backgroundColor: colors.raised, borderColor: colors.border }]}><ArrowDown size={17} color={colors.text} />{activeHistoryWindow ? <Text style={[styles.bottomLabel, { color: colors.text }]} localize>Latest</Text> : null}</Pressable> : null}
     </View>
   )
 }
@@ -456,12 +465,12 @@ function timelineRowType(row: TimelineRow): string {
 function Separator() { return <View style={{ height: 10 }} /> }
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  older: { minHeight: 44, marginHorizontal: 14, marginBottom: 10, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  older: { minHeight: 44, marginHorizontal: 14, marginBottom: 10, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   empty: { minHeight: 220, paddingHorizontal: 28, alignItems: 'center', justifyContent: 'center' },
   emptyTitle: { fontSize: 15, fontWeight: '800', marginBottom: 7 },
   emptyDetail: { fontSize: 12, lineHeight: 17, textAlign: 'center', maxWidth: 360 },
-  retry: { marginTop: 14, minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  bottom: { position: 'absolute', right: 17, minWidth: 44, height: 44, borderRadius: 22, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  retry: { marginTop: 14, minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  bottom: { position: 'absolute', right: 17, minWidth: 44, height: 44, borderRadius: radius.round, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
   bottomIcon: { width: 44 },
   bottomLatest: { paddingHorizontal: 13, flexDirection: 'row', gap: 6 },
   bottomLabel: { fontSize: 12, fontWeight: '800' },

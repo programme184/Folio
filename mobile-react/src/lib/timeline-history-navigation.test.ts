@@ -5,6 +5,7 @@ import {
   LIVE_TIMELINE_MAINTAIN_VISIBLE_POSITION,
   SEARCH_TIMELINE_MAINTAIN_VISIBLE_POSITION,
   liveTimelineAdvanced,
+  shouldShowInitialTimelineLoading,
   shouldShowTimelineLatest,
   timelineMaintainVisiblePosition,
   timelineRowSequenceRange,
@@ -84,6 +85,12 @@ assert.equal(shouldShowTimelineLatest(3, true, true), true, 'detached history mu
 assert.equal(shouldShowTimelineLatest(3, true, false), false)
 assert.equal(shouldShowTimelineLatest(3, false, false), true)
 assert.equal(shouldShowTimelineLatest(0, false, true), false)
+
+assert.equal(shouldShowInitialTimelineLoading({ rowCount: 0, loading: false, hasKnownHistory: true, syncStatus: 'cached' }), true, 'an empty stale cache for a known non-empty chat should keep showing a loading state')
+assert.equal(shouldShowInitialTimelineLoading({ rowCount: 0, loading: false, hasKnownHistory: false, syncStatus: 'cached' }), false, 'a genuinely empty new chat should not show a spinner')
+assert.equal(shouldShowInitialTimelineLoading({ rowCount: 0, loading: false, hasKnownHistory: false, syncStatus: 'syncing' }), true, 'an uncached selection should show sync progress')
+assert.equal(shouldShowInitialTimelineLoading({ rowCount: 2, loading: false, hasKnownHistory: true, syncStatus: 'syncing' }), false, 'cached visible messages should remain on screen while refreshing')
+assert.equal(shouldShowInitialTimelineLoading({ rowCount: 0, loading: false, hasKnownHistory: true, syncStatus: 'live' }), false, 'a completed sync should not leave an empty chat spinner')
 
 assert.equal(liveTimelineAdvanced(200, 200), false, 'publishing older rows must not trigger live-edge following')
 assert.equal(liveTimelineAdvanced(200, 201), true)

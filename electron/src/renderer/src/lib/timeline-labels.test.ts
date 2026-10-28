@@ -18,6 +18,7 @@ describe('timeline semantic labels', () => {
     setLocale('zh-CN')
     expect(timelineStatusLabel('completed')).toBe('已完成')
     expect(timelineEventLabel('session_created')).toBe('会话已创建')
+    expect(timelineEventLabel('runtime_model_migrated')).toBe('模型已更新')
     expect(timelineEventLabel('reasoning_summary')).toBe('Reasoning 摘要')
     expect(timelineEventLabel('new_provider_event')).toBe('New Provider Event')
   })

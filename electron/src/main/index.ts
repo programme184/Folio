@@ -244,7 +244,10 @@ if (!app.requestSingleInstanceLock()) {
         mainWindow?.show()
       }
     })
-    powerMonitor.on('resume', () => language?.refreshSystemLocale())
+    powerMonitor.on('resume', () => {
+      language?.refreshSystemLocale()
+      service?.resumeLiveUpdates()
+    })
   }).catch(error => {
     appLog('fatal', 'app readiness failed', errorDetails(error))
     app.quit()

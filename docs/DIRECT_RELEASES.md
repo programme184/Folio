@@ -82,6 +82,12 @@ and its legacy mirror. Coordinated releases also require the exact npm archive
 and matching signed legacy server bridge to be available, with identical runtime
 contents and executable permissions.
 
+New releases containing the short `agentsdock` command also prepare and verify
+both npm packages before desktop publication. Follow the
+[matched npm CLI release procedure](NPM_CLI_RELEASES.md), including first-package
+ownership/bootstrap and native CLI acceptance. Runtime-only publication does not
+mean the short CLI is public. Existing frozen releases are not rebuilt.
+
 Both workflows are manual, restricted to the canonical repository and reviewed
 `main` or `release/*` branches. Jobs using signing credentials or the release
 token use the `direct-production` environment with matching branch restrictions.
@@ -91,9 +97,31 @@ reviewed release branch. Registering the workflows does not replace application
 source on a diverged default branch.
 
 The public workflow has a separate run counter from the former private workflow.
-Reserve its native build number explicitly; the first public run starts above
-the last accepted local build, 1185, and every later run increments the number.
-Never reuse the old private counter formula or a previously accepted build.
+Reserve its native build number explicitly using the audited epochs in
+`scripts/validate_desktop_build_number.mjs`:
+
+| Preparation workflow run | Exact reserved native build |
+| --- | --- |
+| 1–20 | `1185 + run` |
+| 21–22 | `1232 + (run - 20)` |
+| 23 onward | `1239 + (run - 22)` |
+
+These epochs retain historical allocations while advancing past intervening
+local builds. Failed runs consume their reservation; reruns retain it. For
+example, run 33 reserved 1250 and run 34 reserves 1251. Check the current run
+counter before dispatch; this example does not reserve the next available run.
+Never restore the old flat formula, reuse a build, or remap an existing epoch.
+
+For a sealed coordinated desktop draft, `direct-desktop-release-publish.yml`
+also supports `verification_only=true`. Supply the exact `version`, `track`,
+`expected_source_sha` and `expected_manifest_sha256` (the SHA-256 of its
+`SHA256SUMS` file), and the appropriate `allow_unsigned_windows` policy. Dispatch
+on the draft's reviewed source branch. The helper allows only canonical draft
+GET/download operations and reuses the same four native verification jobs.
+It records a receipt only when all platform seals match; publication and public
+migration jobs are skipped. This mode uploads replay/verification artifacts,
+so it still requires explicit authorization to run. It does not create a draft,
+prove hosted signing credentials, or establish product/update acceptance.
 
 When macOS signing is performed locally, dispatch the same preparation workflow
 with `artifacts_only=true`. It retains the source ancestry, release version,
@@ -125,6 +153,15 @@ must be supplied again. Do not put them in source, chat, release assets or logs.
 | `APPLE_API_KEY_ID` | ID of that API key |
 | `APPLE_API_ISSUER` | App Store Connect issuer ID |
 | `AGENTSDOCK_RELEASE_TOKEN` | Fine-grained token with Contents write access to AgentsDock and AgentsDock-Releases |
+
+The dedicated token also needs Workflows write when a release target changes
+workflow files relative to the default branch. Its owner must already have the
+required repository access; a token cannot elevate that owner's permissions.
+Operators may dispatch hosted release jobs without copying these secrets to
+their own computers. Use the non-publishing credential preflight and operator
+checklist in [the npm release procedure](NPM_CLI_RELEASES.md#operating-releases-from-another-computer).
+Secret-name presence, artifact-only preparation and verification-only success
+do not establish that hosted Mac signing or public publishing is configured.
 
 For file-backed values, the CLI can send encoded bytes directly without printing
 them or placing the value in command history:

@@ -25,7 +25,7 @@ import { AgentServerClient, ServerError } from '../api/AgentServerClient'
 import { claudeMcpManagementCapability } from '../lib/claude-mcp'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette, type Palette } from '../theme'
+import { radius, usePalette, type Palette } from '../theme'
 import type { ClaudeMcpActionType, ClaudeMcpServer, ClaudeMcpSnapshot } from '../types'
 import { Text } from './AppText'
 import { SheetCloseButton } from './ui'
@@ -290,8 +290,8 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
       <View style={[styles.header, { borderBottomColor: colors.border }]}>
         <View style={[styles.headerMark, { backgroundColor: colors.raised }]}><Network size={20} color={colors.blue} /></View>
         <View style={styles.headerCopy}>
-          <Text accessibilityRole="header" style={[styles.title, { color: colors.text }]}>Claude MCP servers</Text>
-          <Text style={[styles.subtitle, { color: colors.muted }]}>Current Claude session for this chat</Text>
+          <Text accessibilityRole="header" style={[styles.title, { color: colors.text }]} localize>Claude MCP servers</Text>
+          <Text style={[styles.subtitle, { color: colors.muted }]} localize>Current Claude session for this chat</Text>
         </View>
         {endpointAvailable && connectionReady ? <Pressable
           testID="claude-mcp-refresh"
@@ -334,7 +334,7 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
           color={colors.orange}
         /> : initialLoading && !snapshot ? <View accessibilityLiveRegion="polite" style={styles.loading}>
           <ActivityIndicator accessibilityLabel="Loading Claude MCP servers" size="small" color={colors.blue} />
-          <Text style={[styles.loadingText, { color: colors.muted }]}>Loading MCP servers…</Text>
+          <Text style={[styles.loadingText, { color: colors.muted }]} localize>Loading MCP servers…</Text>
         </View> : loadError && !snapshot ? <StateCard
           icon={AlertTriangle}
           title="Couldn’t load MCP servers"
@@ -354,14 +354,14 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
           <View accessibilityLiveRegion="polite" style={[styles.summary, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.summaryCopy}>
               <Text style={[styles.summaryTitle, { color: colors.text }]}>{servers.length ? `${connectedCount} of ${enabledCount} enabled servers connected` : snapshot.truncated ? 'No displayable MCP servers' : 'No MCP servers configured'}</Text>
-              <Text style={[styles.summaryDetail, { color: colors.muted }]}>{snapshot.session_loaded ? 'Changes to enabled servers last only while this Claude session remains loaded.' : 'Claude SDK session is starting for this chat.'}</Text>
+              <Text style={[styles.summaryDetail, { color: colors.muted }]} localize>{snapshot.session_loaded ? 'Changes to enabled servers last only while this Claude session remains loaded.' : 'Claude SDK session is starting for this chat.'}</Text>
             </View>
             {refreshing ? <ActivityIndicator accessibilityLabel="Refreshing Claude MCP servers" size="small" color={colors.blue} /> : <CircleCheck size={18} color={colors.green} />}
           </View>
 
           {snapshot.truncated ? <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.raised, borderColor: colors.border }]}>
             <AlertTriangle size={17} color={colors.orange} />
-            <Text style={[styles.noticeText, { color: colors.muted }]}>This server has more MCP servers than can be shown here. Use Claude Code on the AgentsServer host to manage the complete list.</Text>
+            <Text style={[styles.noticeText, { color: colors.muted }]} localize>This server has more MCP servers than can be shown here. Use Claude Code on the AgentsServer host to manage the complete list.</Text>
           </View> : null}
 
           {reconnectableCount > 0 ? <Pressable
@@ -373,16 +373,16 @@ export function ClaudeMcpDialog({ visible, sessionId, onClose }: ClaudeMcpDialog
             disabled={actionsDisabled}
             onPress={() => void mutate('reconnect_all', null)}
             style={({ pressed }) => [styles.reconnectAll, { backgroundColor: colors.raised, borderColor: colors.border, opacity: actionsDisabled ? 0.35 : pressed ? 0.62 : 1 }]}
-          >{busyServer === '*' ? <ActivityIndicator size="small" color={colors.blue} /> : <RefreshCw size={17} color={colors.blue} />}<Text style={[styles.reconnectAllText, { color: colors.text }]}>Reconnect unavailable servers</Text></Pressable> : null}
+          >{busyServer === '*' ? <ActivityIndicator size="small" color={colors.blue} /> : <RefreshCw size={17} color={colors.blue} />}<Text style={[styles.reconnectAllText, { color: colors.text }]} localize>Reconnect unavailable servers</Text></Pressable> : null}
 
           {turnActive ? <View accessibilityLiveRegion="polite" style={[styles.notice, { backgroundColor: colors.raised, borderColor: colors.border }]}>
             <Clock3 size={17} color={colors.orange} />
-            <Text style={[styles.noticeText, { color: colors.muted }]}>This is the last loaded status. Wait for Claude to finish before refreshing, enabling, disabling, or reconnecting servers.</Text>
+            <Text style={[styles.noticeText, { color: colors.muted }]} localize>This is the last loaded status. Wait for Claude to finish before refreshing, enabling, disabling, or reconnecting servers.</Text>
           </View> : null}
           {actionError ? <Text accessibilityRole="alert" style={[styles.error, { color: colors.red, borderColor: colors.red }]}>{actionError}</Text> : null}
           {loadError ? <View accessibilityRole="alert" style={[styles.inlineError, { borderColor: colors.red }]}>
             <Text style={[styles.inlineErrorText, { color: colors.red }]}>{loadError}</Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Retry loading Claude MCP servers" onPress={() => void load()} style={({ pressed }) => [styles.smallButton, { borderColor: colors.red, opacity: pressed ? 0.6 : 1 }]}><Text style={[styles.smallButtonText, { color: colors.red }]}>Retry</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Retry loading Claude MCP servers" onPress={() => void load()} style={({ pressed }) => [styles.smallButton, { borderColor: colors.red, opacity: pressed ? 0.6 : 1 }]}><Text style={[styles.smallButtonText, { color: colors.red }]} localize>Retry</Text></Pressable>
           </View> : null}
 
           {servers.length ? <View accessibilityLabel="Configured Claude MCP servers" style={styles.serverList}>
@@ -444,11 +444,11 @@ function McpServerRow({ server, colors, busy, disabled, onEnabledChange, onRecon
       </View>
     </View>
     {server.enabled && server.error ? <Text accessibilityRole="alert" style={[styles.serverError, { color: colors.red }]}>{server.error}</Text> : null}
-    {effectiveStatus === 'needs-auth' ? <Text style={[styles.authHelp, { color: colors.orange }]}>Authentication is required. Open Claude Code in the AgentsDock terminal and run /mcp to authenticate this server.</Text> : null}
+    {effectiveStatus === 'needs-auth' ? <Text style={[styles.authHelp, { color: colors.orange }]} localize>Authentication is required. Open Claude Code in the AgentsDock terminal and run /mcp to authenticate this server.</Text> : null}
     <View style={[styles.serverControls, { borderTopColor: colors.border }]}>
       <View style={styles.enableCopy}>
-        <Text style={[styles.enableTitle, { color: colors.text }]}>Enabled</Text>
-        <Text style={[styles.enableHelp, { color: colors.muted }]}>For the current Claude session</Text>
+        <Text style={[styles.enableTitle, { color: colors.text }]} localize>Enabled</Text>
+        <Text style={[styles.enableHelp, { color: colors.muted }]} localize>For the current Claude session</Text>
       </View>
       {busy ? <ActivityIndicator accessibilityLabel={`Updating ${server.name}`} size="small" color={colors.blue} /> : null}
       <Switch
@@ -468,7 +468,7 @@ function McpServerRow({ server, colors, busy, disabled, onEnabledChange, onRecon
         disabled={reconnectDisabled}
         onPress={onReconnect}
         style={({ pressed }) => [styles.reconnect, { borderColor: colors.border, backgroundColor: colors.raised, opacity: reconnectDisabled ? 0.35 : pressed ? 0.62 : 1 }]}
-      ><RefreshCw size={15} color={colors.muted} /><Text style={[styles.reconnectText, { color: colors.text }]}>Reconnect</Text></Pressable>
+      ><RefreshCw size={15} color={colors.muted} /><Text style={[styles.reconnectText, { color: colors.text }]} localize>Reconnect</Text></Pressable>
     </View>
   </View>
 }
@@ -575,7 +575,7 @@ function statusPresentation(status: ClaudeMcpServer['status'], colors: Palette):
 const styles = StyleSheet.create({
   sheet: { flex: 1 },
   header: { minHeight: 70, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerMark: { width: 40, height: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
+  headerMark: { width: 40, height: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
   headerCopy: { flex: 1, minWidth: 0 },
   title: { fontSize: 17, fontWeight: '900' },
   subtitle: { marginTop: 2, fontSize: 10.5 },
@@ -584,27 +584,27 @@ const styles = StyleSheet.create({
   content: { width: '100%', maxWidth: 720, alignSelf: 'center', padding: 14, paddingBottom: 48, gap: 10 },
   loading: { minHeight: 160, alignItems: 'center', justifyContent: 'center', gap: 10 },
   loadingText: { fontSize: 12, fontWeight: '700' },
-  summary: { minHeight: 64, borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  summary: { minHeight: 64, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 10 },
   summaryCopy: { flex: 1, minWidth: 0, gap: 3 },
   summaryTitle: { fontSize: 13, fontWeight: '800' },
   summaryDetail: { fontSize: 10.5, lineHeight: 15 },
-  notice: { minHeight: 54, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  notice: { minHeight: 54, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
   noticeText: { flex: 1, fontSize: 10.5, lineHeight: 15 },
-  reconnectAll: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  reconnectAll: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   reconnectAllText: { fontSize: 11.5, fontWeight: '800' },
-  error: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 10, fontSize: 11, lineHeight: 16 },
-  inlineError: { minHeight: 52, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  error: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10, fontSize: 11, lineHeight: 16 },
+  inlineError: { minHeight: 52, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 8, flexDirection: 'row', alignItems: 'center', gap: 8 },
   inlineErrorText: { flex: 1, fontSize: 11, lineHeight: 15 },
-  smallButton: { minWidth: 68, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 6, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
+  smallButton: { minWidth: 68, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center' },
   smallButtonText: { fontSize: 11.5, fontWeight: '800' },
   serverList: { gap: 9 },
-  serverCard: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 9, padding: 10, gap: 8 },
+  serverCard: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10, gap: 8 },
   serverHeader: { minHeight: 46, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  serverIcon: { width: 38, height: 38, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  serverIcon: { width: 38, height: 38, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   serverCopy: { minWidth: 0, flex: 1, gap: 2 },
   serverName: { fontSize: 13, fontWeight: '800' },
   serverMetadata: { fontSize: 10, lineHeight: 14 },
-  statusPill: { minHeight: 30, maxWidth: 110, borderRadius: 15, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  statusPill: { minHeight: 30, maxWidth: 110, borderRadius: radius.sm, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
   statusText: { flexShrink: 1, fontSize: 9.5, fontWeight: '800' },
   serverError: { paddingHorizontal: 3, fontSize: 10.5, lineHeight: 15 },
   authHelp: { paddingHorizontal: 3, fontSize: 10.5, lineHeight: 15 },
@@ -612,13 +612,13 @@ const styles = StyleSheet.create({
   enableCopy: { flex: 1, minWidth: 70, gap: 1 },
   enableTitle: { fontSize: 11.5, fontWeight: '800' },
   enableHelp: { fontSize: 9.5, lineHeight: 13 },
-  reconnect: { minWidth: 102, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  reconnect: { minWidth: 102, minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   reconnectText: { fontSize: 10.5, fontWeight: '800' },
-  stateCard: { minHeight: 180, borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 18, alignItems: 'center', justifyContent: 'center', gap: 8 },
-  stateIcon: { width: 48, height: 48, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  stateCard: { minHeight: 180, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 18, alignItems: 'center', justifyContent: 'center', gap: 8 },
+  stateIcon: { width: 48, height: 48, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   stateTitle: { marginTop: 2, textAlign: 'center', fontSize: 15, fontWeight: '900' },
   stateBody: { maxWidth: 520, textAlign: 'center', fontSize: 11.5, lineHeight: 17 },
   stateDetail: { maxWidth: 520, textAlign: 'center', fontSize: 10.5, lineHeight: 15 },
-  stateAction: { minWidth: 92, minHeight: 44, marginTop: 4, borderRadius: 7, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
+  stateAction: { minWidth: 92, minHeight: 44, marginTop: 4, borderRadius: radius.md, paddingHorizontal: 14, alignItems: 'center', justifyContent: 'center' },
   stateActionText: { color: 'white', fontSize: 12, fontWeight: '800' },
 })

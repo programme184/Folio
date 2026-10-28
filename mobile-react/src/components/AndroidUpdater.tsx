@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { AppState, Linking, Platform, Pressable, StyleSheet, View } from 'react-native'
 import { Download, ExternalLink, RefreshCw, ShieldCheck, X } from 'lucide-react-native'
 import { useAndroidUpdaterStore } from '../store/useAndroidUpdaterStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import { Text } from './AppText'
 
 export function AndroidUpdateCoordinator() {
@@ -91,19 +91,19 @@ export function AndroidUpdateSettings() {
     <View style={styles.cardHeader}>
       <ShieldCheck size={18} color={channel === 'sideload' ? colors.green : colors.muted} />
       <View style={styles.cardCopy}>
-        <Text style={[styles.cardTitle, { color: colors.text }]}>Android updates</Text>
+        <Text style={[styles.cardTitle, { color: colors.text }]} localize>Android updates</Text>
         <Text style={[styles.caption, { color: colors.muted }]}>{status}</Text>
       </View>
     </View>
-    {stage === 'permission' ? <Text style={[styles.notice, { color: colors.orange }]}>Enable “Allow from this source” for AgentsDock, return here, then continue. Android still asks you to confirm the update.</Text> : null}
-    {stage === 'installer' ? <Text style={[styles.notice, { color: colors.green }]}>The APK passed checksum, package, version, and signing-certificate verification. Confirm the update in Android’s installer.</Text> : null}
+    {stage === 'permission' ? <Text style={[styles.notice, { color: colors.orange }]} localize>Enable “Allow from this source” for AgentsDock, return here, then continue. Android still asks you to confirm the update.</Text> : null}
+    {stage === 'installer' ? <Text style={[styles.notice, { color: colors.green }]} localize>The APK passed checksum, package, version, and signing-certificate verification. Confirm the update in Android’s installer.</Text> : null}
     {error ? <Text accessibilityRole="alert" style={[styles.notice, { color: colors.red }]}>{error}</Text> : null}
     <View style={styles.actions}>
       <SmallButton testID="android-update-action" label={action.label} disabled={busy} onPress={() => void action.run()} primary={Boolean(update)} />
       {update ? <SmallButton label="Release notes" onPress={() => void Linking.openURL(update.releaseUrl)} icon={ExternalLink} /> : null}
       {update && !busy ? <SmallButton label="Check again" onPress={() => void check(true)} icon={RefreshCw} /> : null}
     </View>
-    {channel === 'sideload' && nativeState ? <Text style={[styles.detail, { color: colors.muted }]}>Installed build {nativeState.versionCode} · release signer pinned</Text> : null}
+    {channel === 'sideload' && nativeState ? <Text style={[styles.detail, { color: colors.muted }]} localize>Installed build {nativeState.versionCode} · release signer pinned</Text> : null}
   </View>
 }
 
@@ -146,17 +146,17 @@ function SmallButton({ label, onPress, disabled, primary, icon: Icon, testID }: 
 
 const styles = StyleSheet.create({
   bannerSlot: { flexShrink: 0, paddingHorizontal: 12, paddingTop: 8 },
-  banner: { width: '100%', maxWidth: 740, minHeight: 58, alignSelf: 'center', borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  banner: { width: '100%', maxWidth: 740, minHeight: 58, alignSelf: 'center', borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
   bannerCopy: { flex: 1, gap: 2 },
   bannerTitle: { fontSize: 12, fontWeight: '800' },
   caption: { fontSize: 10.5, lineHeight: 14 },
   iconButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 11, gap: 9 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 11, gap: 9 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 9 },
   cardCopy: { flex: 1, gap: 2 },
   cardTitle: { fontSize: 13, fontWeight: '800' },
   notice: { fontSize: 11, lineHeight: 16 },
   detail: { fontSize: 9.5 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
-  button: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  button: { minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
 })

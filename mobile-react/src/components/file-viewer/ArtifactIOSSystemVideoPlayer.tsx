@@ -1,3 +1,4 @@
+import { radius } from '../../theme'
 import {
   requireAgentsDockNativeVideo,
   type AgentsDockNativeVideoHandle,
@@ -78,10 +79,10 @@ export function ArtifactIOSSystemVideoPlayer({ sourceURI, registerPause, onDownl
       style={styles.loading}
     >
       <ActivityIndicator color="white" />
-      <Text style={styles.loadingText}>Opening with Apple video player…</Text>
+      <Text style={styles.loadingText} localize>Opening with Apple video player…</Text>
     </View> : null}
     {problem ? <View accessibilityRole="alert" testID="artifact-ios-system-video-problem" style={styles.problem}>
-      <Text style={styles.problemTitle}>Video could not be opened</Text>
+      <Text style={styles.problemTitle} localize>Video could not be opened</Text>
       <Text style={styles.problemBody} numberOfLines={5}>{problem}</Text>
       <View style={styles.actions}>
         <Action icon={RefreshCw} label="Retry" testID="artifact-ios-system-video-retry" onPress={retry} />
@@ -118,6 +119,6 @@ const styles = StyleSheet.create({
   problemTitle: { color: 'white', fontSize: 16, fontWeight: '800', textAlign: 'center' },
   problemBody: { color: '#b7bbc2', fontSize: 12, lineHeight: 17, textAlign: 'center' },
   actions: { marginTop: 8, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  button: { minWidth: 96, minHeight: 44, borderRadius: 10, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
+  button: { minWidth: 96, minHeight: 44, borderRadius: radius.md, paddingHorizontal: 13, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: '#23262b' },
   buttonText: { color: 'white', fontSize: 12, lineHeight: 16, fontWeight: '800' },
 })

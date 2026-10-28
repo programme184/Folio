@@ -9,9 +9,13 @@ const composer = readFileSync(new URL('../src/components/Composer.tsx', import.m
 const sidebar = readFileSync(new URL('../src/components/Sidebar.tsx', import.meta.url), 'utf8')
 const store = readFileSync(new URL('../src/store/useAppStore.ts', import.meta.url), 'utf8')
 
-test('first launch exposes a local welcome chat without a blocking setup sheet', () => {
+test('first launch exposes a centered welcome surface, not a synthetic chat or blocking sheet', () => {
   assert.match(appShell, /const \[setupDismissed, setSetupDismissed\] = useState\(true\)/)
-  assert.match(appShell, /welcomeWorkspacePatch\(useAppStore\.getState\(\), needsSetup\)/)
+  assert.match(appShell, /welcomeWorkspacePatch\(useAppStore\.getState\(\), false\)/)
+  assert.match(sidebar, /if \(needsServerSetup\) return \[\]/)
+  assert.match(sidebar, /sessions\.filter\(session => !isWelcomeSession\(session\.id\)\)/)
+  assert.match(sidebar, /ListEmptyComponent=\{needsServerSetup \? <View testID="sidebar-welcome"/)
+  assert.match(sidebar, /welcome: \{ flex: 1, alignItems: 'center', justifyContent: 'center'/)
   assert.match(appShell, /onSetupServer=\{\(\) => openServers\('add'\)\}/)
   assert.match(sidebar, /testID="sidebar-setup-server"[\s\S]*?onAddServer\(\)/)
   assert.match(chatHeader, /if \(isWelcomeSession\(sessionId\)\) return[\s\S]*?testID="welcome-setup-server"/)

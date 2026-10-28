@@ -1,12 +1,13 @@
-import { useCallback, useMemo } from 'react'
-import { UITextView as SelectableText } from '@bsky.app/react-native-uitextview'
+import { useCallback, useMemo, type ComponentType } from 'react'
 import { Linking, ScrollView, StyleSheet, Text as NativeText, View, type TextStyle } from 'react-native'
-import Markdown, { MarkdownIt, type ASTNode, type RenderRules } from 'react-native-markdown-display'
+import MarkdownRenderer, { MarkdownIt, type ASTNode, type MarkdownProps, type RenderRules } from 'react-native-markdown-display'
 import { SvgXml } from 'react-native-svg'
 
 import type { ChatReference } from '../types'
+import { SelectableText } from './SelectableText'
 import { createMarkdownStyle, markdownTableColumnCount, markdownTableMinimumWidth } from '../lib/markdown'
 import { installMathMarkdown } from '../lib/math-markdown'
+import { stableMarkdownAst } from '../lib/markdown-ast'
 import {
   inlineRouteReferenceIsInteractive,
   prepareInlineRouteMarkdown,
@@ -16,11 +17,12 @@ import {
 } from '../lib/timeline-inline-references'
 import { texToSvg } from '../lib/tex-svg'
 import { scaleChatFont } from '../lib/typography'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 
 const mathMarkdown = installMathMarkdown(new MarkdownIt({ typographer: true }))
+const Markdown = MarkdownRenderer as ComponentType<MarkdownProps & { children: ASTNode[] }>
 const EMPTY_CHAT_REFERENCES: readonly ChatReference[] = []
-const inlineReferenceStyles = StyleSheet.create({ marker: { borderRadius: 4, fontWeight: '800' } })
+const inlineReferenceStyles = StyleSheet.create({ marker: { borderRadius: radius.sm, fontWeight: '800' } })
 
 export function MarkdownContent({
   value,
@@ -49,12 +51,17 @@ export function MarkdownContent({
     () => prepareInlineRouteMarkdown(value, inlineChatReferences, sourceSessionId),
     [inlineChatReferences, sourceSessionId, value],
   )
+  const ast = useMemo(() => stableMarkdownAst(prepared.text, mathMarkdown), [prepared.text])
   const defaultMathFontSize = scaleChatFont(compact ? 12 : 15.5, fontScale)
   const openLink = useCallback((url: string) => {
     void Linking.openURL(url).catch(() => undefined)
     return false
   }, [])
   const markdownRules = useMemo<RenderRules>(() => ({
+    // AstRenderer generates a fresh root key even when given a stable AST.
+    body: (_node, children, _parents, styles) => (
+      <View key="markdown-body" style={styles._VIEW_SAFE_body}>{children}</View>
+    ),
     // Fabric's built-in `Text selectable` only exposes a whole-paragraph Copy
     // command. UITextView provides the normal iOS range handles while keeping
     // each paragraph synchronously measured for FlashList. Inline native
@@ -190,7 +197,7 @@ export function MarkdownContent({
   }), [colors.blue, colors.muted, textColor, defaultMathFontSize, fontScale, onChatReferencePress, openLink, prepared.markers])
 
   return (
-    <Markdown markdownit={mathMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{prepared.text}</Markdown>
+    <Markdown markdownit={mathMarkdown} rules={markdownRules} style={markdownStyle} onLinkPress={openLink}>{ast}</Markdown>
   )
 }
 

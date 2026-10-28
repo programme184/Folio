@@ -12,7 +12,7 @@ export interface LanguageSettingsSnapshot {
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue }
 
-export type Backend = 'claude' | 'codex' | 'cursor' | 'opencode'
+export type Backend = 'claude' | 'codex' | 'cursor' | 'opencode' | 'gemini'
 export type CodexProvider = 'default' | 'custom'
 export type ChatSyncStatus = 'idle' | 'cached' | 'syncing' | 'live' | 'reconnecting' | 'offline' | 'error'
 export type ServerConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
@@ -22,6 +22,13 @@ export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-ac
 export type CodexApprovalsReviewer = 'user' | 'auto_review' | 'guardian_subagent'
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk' | 'auto'
 export type CursorPermissionMode = 'default' | 'full_access' | 'plan'
+export type GeminiPermissionMode = 'default' | 'autoEdit' | 'yolo' | 'plan'
+export interface GeminiRuntimeSnapshot {
+  pending_interactions: CodexPendingInteraction[]
+  permission_modes?: GeminiPermissionMode[]
+  permission_mode?: GeminiPermissionMode
+  active_permission_mode?: GeminiPermissionMode | null
+}
 export type OpenCodePermissionMode = 'default' | 'full_access' | 'plan'
 export type CodexGoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
 export type CodexThreadActiveFlag = 'waitingOnApproval' | 'waitingOnUserInput'
@@ -133,6 +140,8 @@ export interface ClaudeRuntimeSnapshot {
   goal?: ClaudeGoal | null
   /** Native command accepted; awaiting an authoritative goal status record. */
   goal_starting?: boolean
+  /** A native goal command was accepted but later rejected by Claude. */
+  goal_error?: string | null
   /** The initial provider transcript goal projection is still loading. */
   goal_loading?: boolean
 }
@@ -278,6 +287,8 @@ export type CodexServerSettingsScope = Pick<WorkspaceProfileScope, 'profileId' |
 
 /** Native Codex account metadata only. Credentials never cross back to the renderer. */
 export interface CodexAuthStatus {
+  login_reload_available?: boolean
+  login_reload_pending?: boolean
   available: boolean
   auth_mode: 'apiKey' | 'chatgpt' | 'other' | 'none'
   email: string | null
@@ -387,6 +398,11 @@ export interface TurnStopResult {
   native_interrupt?: boolean
   goal_paused?: boolean
   message?: string | null
+  subagents?: {
+    pending?: string[]
+    errors?: string[]
+    interrupted?: string[]
+  }
 }
 
 export interface CodexRollbackInput {
@@ -427,6 +443,9 @@ export interface SessionSubagentLimitControl {
 }
 
 export interface Session {
+  /** Recoverable, desktop-scoped empty-row cleanup; absent on older servers. */
+  empty_chat_cleanup?: 'client-v1'
+
   id: string
   title: string
   folder?: string | null
@@ -462,7 +481,10 @@ export interface Session {
   cursor_session_id?: string | null
   cursor_permission_mode?: CursorPermissionMode | null
   opencode_session_id?: string | null
+  gemini_permission_modes?: GeminiPermissionMode[]
+  gemini_session_id?: string | null
   opencode_permission_mode?: OpenCodePermissionMode | null
+  gemini_permission_mode?: GeminiPermissionMode | null
   /** Server-enforced scheduled-job access granted to this chat's agent. */
   provider_jobs_access?: ProviderJobsAccess | null
   claude_pending_interaction_count?: number | null
@@ -481,6 +503,8 @@ export interface Session {
   latest_agent_event_seq?: number | null
   latest_agent_event_at?: string | null
   latest_agent_event_type?: string | null
+  /** Latest visible output outside scheduled jobs; omitted by older servers. */
+  latest_non_job_agent_event_seq?: number | null
   last_read_agent_event_seq?: number | null
   last_read_agent_event_at?: string | null
   manual_unread?: boolean | null
@@ -534,6 +558,8 @@ export interface RuntimeDiagnostic {
   last_error_at?: string | null
 }
 export interface RuntimeBackendCatalog {
+  /** Authentication-scoped retirement policy; never applies to custom catalogs. */
+  model_replacements?: Record<string, string>
   native_credentials_present?: boolean
   /** Safe metadata only; credentials stay on the server. */
   custom_provider?: {
@@ -1147,6 +1173,10 @@ export interface Event extends SharedChatAttribution {
   subagent_summary?: string | null
   subagent_started_at?: string | null
   subagent_provider_ref?: string | null
+  subagent_parent_thread_id?: string | null
+  subagent_root_thread_id?: string | null
+  /** Copied history is not ownership of the source thread's native children. */
+  forked?: boolean
   subagent_log?: Array<{ ts: string; text: string }> | null
   file?: AgentFile | null
   artifact?: AgentFile | null
@@ -1207,6 +1237,8 @@ export interface Event extends SharedChatAttribution {
   native_steer?: boolean | null
   /** Accepted user input on the existing native goal owner; not a new turn or Stop. */
   native_goal_steer?: boolean | null
+  /** Accepted human follow-up on the existing Claude SDK run, without interruption. */
+  native_followup?: boolean | null
   superseded_by_run_id?: string | null
   steer_interrupted_run_id?: string | null
   codex_thread_status?: CodexThreadStatus | null
@@ -1726,6 +1758,7 @@ export interface HealthCapabilities {
   claude_controls?: InteractiveProviderCapability
   cursor_backend?: CursorBackendCapability
   opencode_backend?: OpenCodeBackendCapability
+  gemini_backend?: ServerCapability & { version?: number; transport?: string; history_mode?: string; permission_modes?: GeminiPermissionMode[]; features?: Record<string, boolean> }
   local_provider_commands_v1?: ServerCapability & { version?: number; supported_backends?: Backend[] }
   agent_team_mail_v1?: AgentTeamMailCapability
   agent_team_messages_v1?: AgentTeamMessagesCapability
@@ -1745,6 +1778,7 @@ export interface HealthCapabilities {
   pinned_items?: PinnedItemsCapability
   port_forwarding_v1?: PortForwardingCapability
   websocket_auth_v1?: ServerCapability
+  event_stream_liveness_v1?: ServerCapability & { version?: number }
   [key: string]: SideQuestionsCapability | ServerCapability | ServerRestartCapability | TeamHubV1Capability | TeamHubHostControlCapability | LocalSessionImportCapability | SessionForkCompletedPrefixCapability | AgentEmergencyAlertsCapability | TeamMailHintsCapability | TeamActivityHintsCapability | AgentTeamMailCapability | AgentTeamMessagesCapability | TeamBulletinAliasCapability | TeamAllServersAliasCapability | PinnedItemsCapability | JsonValue | undefined
 }
 
@@ -1768,6 +1802,8 @@ export type GatewayHealth = ServerComponentHealth & {
 
 export interface Health {
   ok: boolean
+  /** Transport health stays available while durable chat admission recovers. */
+  chat_readiness?: { ready: boolean; state: 'ready' | 'recovering' | 'failed'; message: string | null }
   state_dir?: string
   server_identity?: string
   server_name?: string
@@ -1891,6 +1927,8 @@ export interface ProfileTimelineEvent extends ProfileEventContext {
   snapshot: SessionSnapshot
   source: 'cache' | 'server'
   mode?: 'merge' | 'replace'
+  /** Main-process latest-page read; accept a disjoint window without refetching. */
+  authoritativeTail?: boolean
 }
 export interface ProfileTerminalDataEvent extends ProfileEventContext { sessionId: string; data: string }
 export interface ProfileTerminalStateEvent extends ProfileEventContext {
@@ -2250,8 +2288,8 @@ export interface SessionSnapshot {
 export interface ReasoningSummaryStreamItem extends Omit<Partial<Event>, 'seq' | 'id' | 'session_id' | 'type' | 'run_id' | 'item_id' | 'backend' | 'phase' | 'text' | 'ts'> {
   run_id: string
   item_id: string
-  backend: 'codex'
-  phase: 'summary' | 'reasoning'
+  backend: 'codex' | 'gemini'
+  phase: 'summary' | 'reasoning' | 'assistant'
   text: string
   ts: string
   after_seq: number
@@ -2321,6 +2359,11 @@ export interface BootstrapPayload {
   collapsedFolders: string[]
   /** Local folders that belong to each sidebar project. Absent on older cached payloads. */
   projectWorkspaces?: Record<string, { directories: string[] }>
+  pinnedCollapsed?: boolean
+  /** Local server-scoped sidebar display preferences. */
+  groupUnreadChats?: boolean
+  includeCronInUnread?: boolean
+  groupRunningChats?: boolean
   archivedCollapsed: boolean
   inspectorVisible: boolean
   /** Present for profile-aware bootstraps; omitted by the legacy single-server path. */
@@ -2371,6 +2414,7 @@ export interface CreateSessionInput {
   claude_permission_mode?: ClaudePermissionMode | null
   cursor_permission_mode?: CursorPermissionMode | null
   opencode_permission_mode?: OpenCodePermissionMode | null
+  gemini_permission_mode?: GeminiPermissionMode | null
 }
 export interface ResumeSessionInput extends CreateSessionInput { providerId: string }
 export interface LocalSessionCandidate {
@@ -2381,6 +2425,7 @@ export interface LocalSessionCandidate {
   cwd: string | null
 }
 export interface BulkImportSessionItem {
+  provider_connection?: 'custom'
   provider_session_id: string
   backend: Backend
   cwd?: string | null
@@ -2396,6 +2441,7 @@ export interface BulkImportSessionResult {
   error?: string
 }
 export interface UpdateSessionInput {
+  gemini_connect_api?: boolean
   title?: string
   folder?: string
   cwd?: string
@@ -2413,11 +2459,13 @@ export interface UpdateSessionInput {
   claude_permission_mode?: ClaudePermissionMode | null
   cursor_permission_mode?: CursorPermissionMode | null
   opencode_permission_mode?: OpenCodePermissionMode | null
+  gemini_permission_mode?: GeminiPermissionMode | null
   provider_jobs_access?: ProviderJobsAccess
   pinned?: boolean
   archived?: boolean
 }
 export interface SendTurnInput {
+  clientRequestId?: string
   sessionId: string
   prompt: string
   fileIds: string[]

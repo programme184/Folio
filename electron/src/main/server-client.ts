@@ -284,12 +284,15 @@ interface ClientConfiguration {
   baseURL: string
   token: string
   websocketSubprotocolAuth: boolean
+  eventStreamLiveness: boolean
   abortController: AbortController
   transports: Set<() => void>
   securePeerAdmissions: Map<string, SecurePeerRequestAdmission>
 }
 
 export interface AgentServerClientOptions {
+  placeholderClientId?: string
+
   /** Test seam; production derives a bounded deadline from the opened file size. */
   uploadTimeoutMs?: number
   /** Test seam which avoids wall-clock waits when exercising upload expiry. */
@@ -324,17 +327,21 @@ export class TeamHubBootstrapTransportError extends Error {
 }
 
 export class AgentServerClient {
+  private readonly placeholderClientId?: string
   private configuration: ClientConfiguration
+  private readonly historyProjectionRevisions = new Map<string, string>()
   private readonly uploadTimeoutMs: number | null
   private readonly timeoutSignal: (timeoutMs: number) => AbortSignal
 
   constructor(baseURL: string, token: string, options: AgentServerClientOptions = {}) {
+    this.placeholderClientId = options.placeholderClientId
     this.configuration = createConfiguration(baseURL, token)
     this.uploadTimeoutMs = options.uploadTimeoutMs === undefined ? null : positiveTimeout(options.uploadTimeoutMs)
     this.timeoutSignal = options.timeoutSignal ?? (timeoutMs => AbortSignal.timeout(timeoutMs))
   }
 
   configure(baseURL: string, token: string): void {
+    this.historyProjectionRevisions.clear()
     const previous = this.configuration
     this.configuration = createConfiguration(baseURL, token)
     cancelConfiguration(previous)
@@ -396,6 +403,10 @@ export class AgentServerClient {
     if (response?.side_chat_id !== sideChatId || response.status !== 'closed') throw new Error('side_question_invalid_response')
   }
 
+  async connectionAddresses(): Promise<{ version: number; server_identity: string; urls: string[] }> {
+    return this.privilegedNativeRequest('/api/connection-addresses', { method: 'GET' }, 10_000, 200, 8192)
+  }
+
   async health(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, redirect: 'follow' | 'error' = 'error'): Promise<Health> {
     const configuration = this.configuration
     const health = await this.request<Health>('/api/health', {
@@ -405,6 +416,10 @@ export class AgentServerClient {
     if (this.configuration === configuration) {
       configuration.websocketSubprotocolAuth = (
         health.capabilities?.websocket_auth_v1?.available === true
+      )
+      configuration.eventStreamLiveness = (
+        health.capabilities?.event_stream_liveness_v1?.available === true
+        && health.capabilities.event_stream_liveness_v1.version === 1
       )
     }
     const agentTeamMessages = health.capabilities?.agent_team_messages_v1
@@ -788,8 +803,10 @@ export class AgentServerClient {
   codexServerGoals(): Promise<CodexGoalsConfiguration> {
     return this.privilegedNativeRequest('/api/admin/codex/goals')
   }
-  codexAuth(): Promise<CodexAuthStatus> {
-    return this.codexAuthRequest('/api/admin/codex/auth')
+  codexAuth(reloadLogin = false): Promise<CodexAuthStatus> {
+    return reloadLogin
+      ? this.codexAuthRequest('/api/admin/codex/auth/reload', { method: 'POST', body: '{}' })
+      : this.codexAuthRequest('/api/admin/codex/auth')
   }
   async importCodexAuth(raw: unknown): Promise<{ imported: true }> {
     const document: CodexChatGPTAuthImport = codexAuthImportDocument(raw)
@@ -945,7 +962,11 @@ export class AgentServerClient {
       body: JSON.stringify({ enabled })
     })
   }
-  async sessions(): Promise<Session[]> { return (await this.get<{ sessions: Session[] }>('/api/sessions?summary=true')).sessions }
+  async sessions(): Promise<Session[]> {
+    const query = new URLSearchParams({ summary: 'true' })
+    if (this.placeholderClientId) query.set('placeholder_client_id', this.placeholderClientId)
+    return (await this.get<{ sessions: Session[] }>(`/api/sessions?${query}`)).sessions
+  }
   async jobs(): Promise<Job[]> { return (await this.get<{ jobs: Job[] }>('/api/jobs')).jobs }
 
   async pinnedItems(sessionId: string): Promise<PinnedItemsSnapshot> {
@@ -1001,7 +1022,7 @@ export class AgentServerClient {
 
   async createSession(input: CreateSessionInput | ResumeSessionInput): Promise<Session> {
     const connection = validateCodexProviderSelection(input.provider_connection)
-    if (connection === 'custom' && !['claude', 'opencode', 'cursor'].includes(input.backend)) throw new Error('Unsupported custom API backend.')
+    if (connection === 'custom' && !['claude', 'opencode', 'cursor', 'gemini'].includes(input.backend)) throw new Error('Unsupported custom API backend.')
     const codexProvider = validateCodexProviderSelection(input.codex_provider)
     if (codexProvider === 'custom' && input.backend !== 'codex') throw new Error('Custom endpoints require Codex.')
     const providerId = 'providerId' in input ? input.providerId : undefined
@@ -1022,6 +1043,7 @@ export class AgentServerClient {
       codex_permission_profile: input.codex_permission_profile ?? null,
       codex_approvals_reviewer: input.codex_approvals_reviewer ?? null,
       claude_permission_mode: input.claude_permission_mode ?? null,
+      ...(input.backend === 'gemini' ? { gemini_permission_mode: input.gemini_permission_mode ?? 'default' } : {}),
       cursor_permission_mode: input.backend === 'cursor'
         ? normalizeCursorPermissionMode(input.cursor_permission_mode)
         : null,
@@ -1036,12 +1058,12 @@ export class AgentServerClient {
     return response.session
   }
 
-  async listLocalSessions(limit = LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, includeCursor = false): Promise<LocalSessionCandidate[]> {
+  async listLocalSessions(limit = LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT, includeCursor = false, includeGemini = false): Promise<LocalSessionCandidate[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > LOCAL_SESSION_IMPORT_HARD_LIST_LIMIT) {
       throw new Error('Import Chat local session limit is invalid.')
     }
     const response = await this.get<unknown>(
-      `/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}`,
+      `/api/local-sessions?limit=${limit}${includeCursor ? '&include_cursor=true' : ''}${includeGemini ? '&include_gemini=true' : ''}`,
       this.configuration,
       DEFAULT_REQUEST_TIMEOUT_MS,
       LOCAL_SESSION_LIST_RESPONSE_MAX_BYTES
@@ -1103,9 +1125,10 @@ export class AgentServerClient {
   }
 
   async discardEmptySession(sessionId: string, updatedAt: string): Promise<boolean> {
-    const query = new URLSearchParams({ expected_updated_at: updatedAt })
-    const response = await this.post<{ deleted?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/discard-empty?${query}`, {})
-    return response.deleted === true
+    if (!this.placeholderClientId) return false
+    const query = new URLSearchParams({ expected_updated_at: updatedAt, placeholder_client_id: this.placeholderClientId })
+    const response = await this.post<{ dismissed?: boolean }>(`/api/sessions/${encodeURIComponent(sessionId)}/dismiss-empty?${query}`, {})
+    return response.dismissed === true
   }
 
   async forkSession(sessionId: string): Promise<{ session: Session; sessions?: Session[] }> {
@@ -1151,9 +1174,28 @@ export class AgentServerClient {
   }
 
   async acknowledgeEmergency(sessionId: string, alertId: string): Promise<Session> {
-    const response = await this.post<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/emergency/acknowledge`, {
-      expected_alert_id: alertId
-    })
+    return this.acknowledgeEmergencyRequest(sessionId, { expected_alert_id: alertId })
+  }
+
+  async dismissEmergencyAlerts(sessionId: string, throughAlertId: string): Promise<Session> {
+    try {
+      return await this.acknowledgeEmergencyRequest(sessionId, { through_alert_id: throughAlertId })
+    } catch (error) {
+      const details = error instanceof ServerError && error.status === 422 && Array.isArray(error.detail)
+        ? error.detail : []
+      const hasIssue = (type: string, field: string): boolean => details.some(issue => (
+        issue && typeof issue === 'object' && issue.type === type && Array.isArray(issue.loc)
+        && issue.loc.length === 2 && issue.loc[0] === 'body' && issue.loc[1] === field
+      ))
+      if (details.length === 2 && hasIssue('missing', 'expected_alert_id') && hasIssue('extra_forbidden', 'through_alert_id')) {
+        throw new Error('Update AgentsServer to dismiss all alerts in this chat.')
+      }
+      throw error
+    }
+  }
+
+  private async acknowledgeEmergencyRequest(sessionId: string, body: Record<string, string>): Promise<Session> {
+    const response = await this.post<unknown>(`/api/sessions/${encodeURIComponent(sessionId)}/emergency/acknowledge`, body)
     const session = response && typeof response === 'object' && !Array.isArray(response)
       ? (response as Record<string, unknown>).session
       : null
@@ -1300,11 +1342,13 @@ export class AgentServerClient {
     clientCapabilities: string[] = ['codex_interactive_v1'],
     chatReferences: ChatReference[] = [],
     teamReferences: TeamReference[] = [],
-    skillSelection?: ProviderCommandSelection
+    skillSelection?: ProviderCommandSelection,
+    clientRequestId?: string
   ): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }> {
     const selection = providerCommandSelectionPayload(skillSelection)
     const response = await this.post<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }>(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, {
       prompt,
+      ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
       file_ids: fileIds,
       model: model ?? '',
       effort: effort ?? '',
@@ -1313,6 +1357,9 @@ export class AgentServerClient {
       ...(teamReferences.length ? { team_references: teamReferences } : {}),
       ...(selection ? { skill_selection: selection } : {})
     })
+    if ((response as { acceptance?: string }).acceptance === 'pending') {
+      throw new Error('The server is still accepting this message. Your draft is retained; retry the same message to check its acceptance safely.')
+    }
     return response.event ? { ...response, event: compactTimelineEvent(response.event) } : response
   }
 
@@ -1352,6 +1399,17 @@ export class AgentServerClient {
 
   claudeRuntime(sessionId: string): Promise<ClaudeRuntimeSnapshot> {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/claude/runtime`)
+  }
+
+  geminiRuntime(sessionId: string): Promise<import('../shared/types').GeminiRuntimeSnapshot> {
+    return this.privilegedNativeRequest(`/api/sessions/${encodeURIComponent(sessionId)}/gemini/runtime`, {}, 15_000, 200, 512 * 1024)
+  }
+
+  async resolveGeminiInteraction(sessionId: string, interactionId: string, response: Record<string, JsonValue>): Promise<CodexPendingInteraction> {
+    return (await this.privilegedNativeRequest<{ interaction: CodexPendingInteraction }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/gemini/interactions/${encodeURIComponent(interactionId)}/resolve`,
+      { method: 'POST', body: JSON.stringify({ response }) }, 15_000, 200, 512 * 1024
+    )).interaction
   }
 
   setClaudeGoal(sessionId: string, condition: string): Promise<ClaudeRuntimeSnapshot> {
@@ -2195,12 +2253,13 @@ export class AgentServerClient {
     sessionId: string,
     after: number,
     onEvent: (event: Event) => void,
-    onState: (connected: boolean, error?: string) => void,
+    onState: (connected: boolean, error?: string, phase?: 'catching-up') => void,
     onProviderRuntime?: (event: ProviderRuntimeChanged) => void,
     onPinnedItemsChanged?: (event: TimelinePinsChanged) => void,
     onReasoningStream?: (snapshot: ReasoningSummaryStreamSnapshot) => void,
     onSideChatChanged?: (revision: number) => void,
-    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void
+    onProviderUsageChanged?: (backend: 'codex' | 'claude') => void,
+    onHistoryProjectionChanged?: () => void
   ): () => void {
     const configuration = this.configuration
     const endpoint = new URL(configurationURL(configuration, `/api/sessions/${encodeURIComponent(sessionId)}/events`))
@@ -2211,21 +2270,30 @@ export class AgentServerClient {
     let socket: WebSocket | null = null
     let retry: NodeJS.Timeout | null = null
     let connectWatchdog: NodeJS.Timeout | null = null
+    let livenessWatchdog: NodeJS.Timeout | null = null
+    let deliveryFailed = false
     const stop = (): void => {
       if (stopped) return
       stopped = true
       if (retry) clearTimeout(retry)
       if (connectWatchdog) clearTimeout(connectWatchdog)
+      if (livenessWatchdog) clearTimeout(livenessWatchdog)
       retry = null
       connectWatchdog = null
+      livenessWatchdog = null
       configuration.transports.delete(stop)
       socket?.close()
     }
     const connect = (): void => {
       if (stopped) return
       const url = new URL(endpoint)
+      // Opt in only after health negotiation. Old servers ignore unknown query
+      // parameters but cannot promise heartbeats or catch-up acknowledgement.
+      const liveness = configuration.eventStreamLiveness
+      if (liveness) url.searchParams.set('liveness', 'true')
       url.searchParams.set('after', String(lastSeq))
       url.searchParams.set('visible', 'true')
+      if (onHistoryProjectionChanged) url.searchParams.set('history_projection', 'true')
       if (onReasoningStream) {
         url.searchParams.set('reasoning_stream', 'true')
         url.searchParams.set('reasoning_text', 'true')
@@ -2238,17 +2306,33 @@ export class AgentServerClient {
       const current = new WebSocket(url, protocols)
       socket = current
       let disconnected = false
+      let caughtUp = false
       let reasoningInstance = ''
       let reasoningRevision = -1
       const disconnect = (error?: string): void => {
         if (stopped || disconnected) return
         disconnected = true
         if (connectWatchdog) clearTimeout(connectWatchdog)
+        if (livenessWatchdog) clearTimeout(livenessWatchdog)
         connectWatchdog = null
+        livenessWatchdog = null
         onState(false, error)
         const jitter = Math.floor(Math.random() * Math.min(250, retryDelay / 3))
         retry = setTimeout(connect, retryDelay + jitter)
         retryDelay = Math.min(10_000, retryDelay * 2)
+      }
+      const noteProgress = (): void => {
+        if (!liveness) return
+        if (livenessWatchdog) {
+          livenessWatchdog.refresh()
+          return
+        }
+        // Three missed server heartbeats. This is a transport deadline, not a
+        // model-response deadline: healthy idle chats also receive heartbeats.
+        livenessWatchdog = setTimeout(() => {
+          disconnect('Live updates stalled; reconnecting')
+          current.close()
+        }, 45_000)
       }
       connectWatchdog = setTimeout(() => {
         if (stopped || disconnected || current.readyState !== 0) return
@@ -2259,13 +2343,41 @@ export class AgentServerClient {
         if (stopped || disconnected) return
         if (connectWatchdog) clearTimeout(connectWatchdog)
         connectWatchdog = null
-        retryDelay = 500
-        onState(true)
+        noteProgress()
+        if (!liveness) {
+          if (!deliveryFailed) retryDelay = 500
+          onState(true)
+        } else onState(false, undefined, 'catching-up')
       })
       current.addEventListener('message', message => {
         if (stopped || disconnected) return
+        let packet: unknown
+        try { packet = JSON.parse(String(message.data)) }
+        catch { return } // Malformed input is not a successful delivery.
+        if (!packet || typeof packet !== 'object') return
         try {
-          const packet = JSON.parse(String(message.data)) as unknown
+          if ('type' in packet && packet.type === 'event_stream_status') {
+            const status = packet as { session_id?: string; version?: number; phase?: string }
+            if (liveness && status.session_id === sessionId && status.version === 1
+              && (status.phase === 'ready' || (caughtUp && status.phase === 'heartbeat'))) {
+              noteProgress()
+              if (!caughtUp) {
+                caughtUp = true
+                if (!deliveryFailed) retryDelay = 500
+                onState(true)
+              }
+            }
+            return // Control packets never acknowledge durable event sequence.
+          }
+          if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'history_projection_changed') {
+            if ('session_id' in packet && packet.session_id === sessionId && 'revision' in packet
+              && typeof packet.revision === 'string' && packet.revision.length <= 128
+              && this.historyProjectionRevisions.get(sessionId) !== packet.revision) {
+              this.historyProjectionRevisions.set(sessionId, packet.revision)
+              onHistoryProjectionChanged?.()
+            }
+            return
+          }
           if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'reasoning_summary_stream') {
             if (isReasoningSummaryStream(packet) && packet.session_id === sessionId
               && (!reasoningInstance || packet.instance_id === reasoningInstance)
@@ -2295,10 +2407,19 @@ export class AgentServerClient {
             return
           }
           const event = packet as Event
-          if (!Number.isFinite(event.seq) || event.seq <= lastSeq) return
-          lastSeq = event.seq
+          if (!Number.isSafeInteger(event.seq) || event.seq <= lastSeq || event.session_id !== sessionId) return
           onEvent(compactTimelineEvent(event))
-        } catch { /* ignore malformed packets */ }
+          // Only acknowledge after the synchronous consumer accepted the row.
+          // Otherwise reconnect would permanently skip the failed delivery.
+          lastSeq = event.seq
+          deliveryFailed = false
+          retryDelay = 500
+          noteProgress()
+        } catch {
+          deliveryFailed = true
+          disconnect('Live updates could not be applied; reconnecting')
+          current.close()
+        }
       })
       current.addEventListener('close', () => disconnect())
       current.addEventListener('error', () => {
@@ -2812,7 +2933,7 @@ function isEmergencySessionPacket(value: unknown): value is Session {
     || typeof session.title !== 'string'
     || !session.title
     || session.title.length > 240
-    || (session.backend !== 'codex' && session.backend !== 'claude' && session.backend !== 'cursor' && session.backend !== 'opencode')
+    || (session.backend !== 'codex' && session.backend !== 'claude' && session.backend !== 'cursor' && session.backend !== 'opencode' && session.backend !== 'gemini')
     || typeof session.unacknowledged_emergency_count !== 'number'
     || !Number.isSafeInteger(session.unacknowledged_emergency_count)
     || session.unacknowledged_emergency_count < 0
@@ -2978,6 +3099,7 @@ function createConfiguration(baseURL: string, token: string): ClientConfiguratio
     baseURL: normalizeServerURL(baseURL),
     token,
     websocketSubprotocolAuth: false,
+    eventStreamLiveness: false,
     abortController: new AbortController(),
     transports: new Set(),
     securePeerAdmissions: new Map()
@@ -3212,6 +3334,7 @@ function isPrivilegedNativeControlTarget(
     || !target.pathname.startsWith(`${serverPrefix}/api/`)
   ) return false
   const path = target.pathname.slice(serverPrefix.length)
+  if (path === '/api/connection-addresses') return !target.search && method === 'GET'
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/claude\/goal$/.test(path)) {
     return !target.search && (method === 'PUT' || method === 'DELETE')
   }
@@ -3244,13 +3367,16 @@ function isPrivilegedNativeControlTarget(
       && /^[A-Za-z0-9_-]{1,128}$/.test(target.searchParams.get('session_id') ?? '')
       && (!target.searchParams.has('refresh') || target.searchParams.get('refresh') === 'true')
   }
-  if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor)$/.test(path)) return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
-  if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor)\/check$/.test(path)) return !target.search && method === 'POST'
+  if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor|gemini)$/.test(path)) return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
+  if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor|gemini)\/check$/.test(path)) return !target.search && method === 'POST'
   if (/^\/api\/admin\/provider-accounts\/(claude|cursor|opencode)$/.test(path)) return !target.search && method === 'GET'
-  if (/^\/api\/admin\/provider-models\/(codex|claude|opencode|cursor)$/.test(path)) return method === 'PUT' ? !target.search : method === 'GET' && [...target.searchParams.keys()].every(key => key === 'session_id') && target.searchParams.getAll('session_id').length <= 1
+  if (/^\/api\/admin\/provider-models\/(codex|claude|opencode|cursor|gemini)$/.test(path)) return method === 'PUT' ? !target.search : method === 'GET' && [...target.searchParams.keys()].every(key => key === 'session_id') && target.searchParams.getAll('session_id').length <= 1
+  if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/gemini\/runtime$/.test(path)) return !target.search && method === 'GET'
+  if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/gemini\/interactions\/geminireq_[a-f0-9]{32}\/resolve$/.test(path)) return !target.search && method === 'POST'
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
   if (path === '/api/admin/codex/auth/import') return !target.search && method === 'POST'
   if (path === '/api/admin/cursor/auth/import') return !target.search && method === 'POST'
+  if (path === '/api/admin/codex/auth/reload') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider/models') return method === 'GET' && (!target.search

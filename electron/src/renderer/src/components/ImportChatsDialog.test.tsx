@@ -47,6 +47,26 @@ function deferred<T>() {
 }
 
 describe('ImportChatsDialog', () => {
+  it('lets Gemini imports explicitly choose the saved API while history-only remains the default', async () => {
+    useAppStore.setState({ health: { ...supportedHealth, capabilities: { ...supportedHealth.capabilities,
+      gemini_backend: { available: true, required: false, message: '', action: null, version: 1, history_mode: 'initial_text_snapshot', features: { external_import: true, native_import_api: true } }
+    } }, runtimeCatalog: { backends: { gemini: { models: [], efforts: [], custom_provider: {
+      configured: true, available: true, model: null, base_url: 'https://example.invalid', models: []
+    } } } }, refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined) })
+    const bulkImport = vi.fn().mockResolvedValue([{ provider_session_id: 'gemini-native', backend: 'gemini', ok: true, session_id: 'new-import', imported: 2 }])
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { sessions: {
+      listLocal: vi.fn().mockResolvedValue([{ provider_session_id: 'gemini-native', backend: 'gemini', label: 'Gemini conversation', cwd: null }]), bulkImport
+    } } as unknown as AgentsDockAPI })
+    render(<ImportChatsDialog />)
+    const choice = await screen.findByRole('combobox', { name: 'Gemini imports' })
+    expect(choice).toHaveValue('default')
+    const user = userEvent.setup()
+    await user.selectOptions(choice, 'custom')
+    expect(screen.getByText(/https:\/\/example.invalid/)).toBeInTheDocument()
+    await user.type(screen.getByRole('textbox', { name: 'Session ID' }), 'gemini-native')
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(bulkImport).toHaveBeenCalledWith([{ provider_session_id: 'gemini-native', backend: 'gemini', cwd: null, provider_connection: 'custom' }]))
+  })
   beforeEach(() => {
     setLocale('en')
     vi.clearAllMocks()
@@ -172,7 +192,7 @@ describe('ImportChatsDialog', () => {
       cwd: '/work/b'
     }]))
     await waitFor(() => expect(selectSession).toHaveBeenCalledWith('imported-chat'))
-    expect(trackEvent).toHaveBeenCalledWith('chat_resumed')
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('chat_resumed', { backend: 'codex' })
     expect(useAppStore.getState().modals.importChats).toBe(false)
     expect(useAppStore.getState().modals.resume).toBe(false)
   })
@@ -204,7 +224,7 @@ describe('ImportChatsDialog', () => {
       cwd: '/work/project'
     })))
     await waitFor(() => expect(selectSession).toHaveBeenCalledWith('resumed-chat'))
-    expect(trackEvent).toHaveBeenCalledWith('chat_resumed')
+    expect(trackEvent).toHaveBeenCalledExactlyOnceWith('chat_resumed', { backend: 'codex' })
     expect(useAppStore.getState().modals.importChats).toBe(false)
     expect(useAppStore.getState().modals.resume).toBe(false)
   })

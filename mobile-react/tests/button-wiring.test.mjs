@@ -124,7 +124,7 @@ test('audited keyboard and failure paths cannot swallow the first tap silently',
   assert.doesNotMatch(media, /testID="media-viewer-close"/)
   assert.doesNotMatch(media, /video-close-inline|videoClose: \{/)
   assert.match(controls, /setOpen\(true\); requestAnimationFrame\(dismissAppKeyboard\)/)
-  assert.match(inspector, /setOpen\(true\); requestAnimationFrame\(dismissAppKeyboard\)/)
+  assert.match(inspector, /const openChoices = \(\) => \{[\s\S]*?if \(disabled\) return[\s\S]*?dismissAppKeyboard\(\)[\s\S]*?if \(Platform\.OS === 'ios'\)[\s\S]*?ActionSheetIOS\.showActionSheetWithOptions[\s\S]*?setOpen\(true\)/)
 })
 
 test('known compact controls retain 44-point minimum targets', () => {
@@ -147,7 +147,9 @@ test('scheduled-job saving is single-flight and cannot dismiss its sheet mid-sav
   assert.match(dialogs, /dismissable=\{!saving\}/)
 })
 
-test('disabled server selector does not open a dead native menu', () => {
+test('disabled server selector cannot open the server drawer', () => {
   const servers = fs.readFileSync(path.resolve('src/components/ServerProfiles.tsx'), 'utf8')
-  assert.match(servers, /if \(unavailable\) return trigger/)
+  const selector = servers.slice(servers.indexOf('export function ServerProfileSelector'), servers.indexOf('export function ServerManagementDialog'))
+  assert.match(selector, /disabled=\{unavailable\}[\s\S]*?onPress=\{onPress\}/)
+  assert.match(selector, /accessibilityState=\{\{ disabled: unavailable, expanded: false, busy:/)
 })

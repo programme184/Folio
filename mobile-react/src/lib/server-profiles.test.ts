@@ -3,6 +3,7 @@ import {
   applyStoredServerProfileUpdate,
   assertUniqueServerProfile,
   createStoredServerProfile,
+  defaultProfileName,
   findDuplicateProfileByIdentity,
   findDuplicateProfileByURL,
   legacyURLCacheNamespace,
@@ -46,7 +47,7 @@ assertEqual(migrated.settings, {
   activeProfileId: 'default-profile',
   profiles: [{
     id: 'default-profile',
-    name: 'server.example',
+    name: 'server.example:7850',
     serverURL: 'http://server.example:7850',
     serverIdentity: null,
     serverConfigured: true,
@@ -93,7 +94,31 @@ const profileA = createStoredServerProfile({
 }, 'profile-a', timestamp)
 const profileB = createStoredServerProfile({ serverURL: 'beta.example:7850' }, 'profile-b', timestamp)
 assertEqual(profileA.serverURL, 'http://alpha.example:7850')
-assertEqual(profileB.name, 'beta.example')
+assertEqual(profileB.name, 'beta.example:7850')
+assertEqual(defaultProfileName('https://EXAMPLE.COM'), 'example.com')
+assertEqual(defaultProfileName('http://[::1]:7850'), '[::1]:7850')
+assertEqual(defaultProfileName('https://user:secret@example.com:7850/api/health?token=secret'), 'example.com:7850')
+const unnamedProfile = createStoredServerProfile({
+  serverURL: 'http://192.0.2.10:7850',
+  serverIdentity: 'opaque-server-identity',
+}, 'unnamed', timestamp)
+assertEqual(unnamedProfile.name, '192.0.2.10:7850')
+assertEqual(profileNamespace(unnamedProfile), 'opaque-server-identity')
+assertEqual(migrateLegacyProfileSettings({
+  serverURL: unnamedProfile.serverURL,
+  serverIdentity: unnamedProfile.serverIdentity,
+}, timestamp).settings.profiles[0].name, unnamedProfile.name)
+
+const identityNamedSettings: StoredProfileSettings = {
+  schemaVersion: 2,
+  activeProfileId: unnamedProfile.id,
+  profiles: [{ ...unnamedProfile, name: unnamedProfile.serverIdentity! }, profileA],
+  fontScale: 1,
+}
+const repairedNames = normalizeStoredProfileSettings(identityNamedSettings)
+assertEqual(repairedNames.profiles, [unnamedProfile, profileA])
+assertEqual(repairedNames.activeProfileId, unnamedProfile.id)
+assertEqual(normalizeStoredProfileSettings(repairedNames), repairedNames)
 assertEqual(findDuplicateProfileByURL([profileA, profileB], 'HTTP://ALPHA.EXAMPLE:7850/')?.id, 'profile-a')
 assertEqual(findDuplicateProfileByIdentity([profileA, profileB], ' server-alpha ')?.id, 'profile-a')
 assertThrows(() => assertUniqueServerProfile([profileA, profileB], {
@@ -133,3 +158,20 @@ assertThrows(() => normalizeStoredProfileSettings({
 }), /already belongs/)
 
 console.log('server profile regressions passed')
+
+const stressProfiles = Array.from({ length: 64 }, (_, index) => createStoredServerProfile({
+  name: index % 3 === 0 ? `Custom ${index}` : undefined,
+  serverURL: `https://server-${index}.example:${7800 + index}`,
+  serverIdentity: `identity-${index}`,
+}, `profile-${index}`, timestamp))
+let stressSettings: StoredProfileSettings = {
+  schemaVersion: 2, activeProfileId: stressProfiles[0].id, fontScale: 1,
+  profiles: stressProfiles.map((profile, index) => ({ ...profile, name: index % 3 === 0 ? profile.name : profile.serverIdentity! })),
+}
+for (let pass = 0; pass < 100; pass += 1) {
+  stressSettings = normalizeStoredProfileSettings(JSON.parse(JSON.stringify(stressSettings)))
+  assertEqual(stressSettings.profiles, stressProfiles)
+  assertEqual(stressSettings.profiles.map(profileNamespace), stressProfiles.map(profileNamespace))
+  assertEqual(stressSettings.activeProfileId, stressProfiles[0].id)
+}
+console.log('server profile stress passed: 64 profiles, 100 serialization/migration passes')

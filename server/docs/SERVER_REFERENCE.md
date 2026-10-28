@@ -654,6 +654,13 @@ On macOS, the installer creates the LaunchAgent
 `com.agentsdock.server` and writes logs under
 `~/Library/Logs/AgentsServer/`.
 
+The source CLI also provides `agentsdock logs [NAME]` (`default` when omitted),
+with `--lines N` and `--follow`. It selects the installed service layout,
+including both gateway and worker logs for split default installations. This
+command is not in the published 1.0.10 / 1.0.11-beta.1 packages yet; use the
+platform commands above until a CLI release includes it. See
+[the log command guide](../npm/agentsdock/README.md#read-service-logs).
+
 ### Managed updates from AgentsDock
 
 Managed update endpoints use the same access token as the rest of the API.
@@ -784,23 +791,45 @@ without losing chat state:
 | `AGENTSDOCK_BACKEND` | Default backend, `claude` or `codex` | `claude` |
 | `CLAUDE_BIN` | Claude Code executable name/path | `claude` |
 | `AGENTSDOCK_CLAUDE_TRANSPORT` | Interactive Claude transport: `auto`, `agent-sdk`, or `print` | `auto` |
-| `AGENTSDOCK_CLAUDE_SDK_IDLE_TTL_SECONDS` | Idle per-chat SDK client retention | `300` |
-| `AGENTSDOCK_CLAUDE_SDK_MAX_LOADED_CHATS` | Maximum retained per-chat SDK clients | `4` |
+| `AGENTSDOCK_CLAUDE_SDK_IDLE_TTL_SECONDS` | Optional idle SDK connection eviction; `0` retains until explicit cleanup | `0` |
+| `AGENTSDOCK_CLAUDE_SDK_MAX_LOADED_CHATS` | Optional retained SDK connection cap; `0` disables count eviction | `0` |
 | `CODEX_BIN` | Codex executable name/path | `codex` |
+| `AGENTSDOCK_CODEX_APP_SERVER_MAX_LOADED_THREADS` | Optional retained native thread cap; `0` disables count eviction | `0` |
 | `AGENTSDOCK_RUNTIME_CATALOG_TIMEOUT_SECONDS` | Per-command CLI version/help/model probe timeout | `6` |
 | `AGENTSDOCK_RUNTIME_DIAGNOSTIC_TTL_SECONDS` | Cache lifetime for safe CLI version/auth probes | `60` |
 | `CLAUDE_PROJECTS_ROOT` | Claude history search root | `~/.claude/projects` |
 | `CODEX_SESSIONS_ROOT` | Codex history search root | `~/.codex/sessions` |
 | `AGENTSDOCK_JOB_MAX_ACTIVE_RUNS` | Scheduled-job concurrency cap (`0` disables this dedicated cap) | `0` |
 | `AGENTSDOCK_MAX_ACTIVE_AGENT_RUNS` | Optional server-wide concurrency cap for chat, cron and goal runs (`0` means no count limit) | `0` |
-| `AGENTSDOCK_JOB_MIN_AVAILABLE_MEM_MB` | Job launch memory guardrail | `4096` |
-| `AGENTSDOCK_MIN_START_AVAILABLE_MEM_MB` | Interactive launch memory guardrail | `2048` |
+| `AGENTSDOCK_JOB_MIN_AVAILABLE_MEM_MB` | Optional job launch memory floor; `0` disables | `0` |
+| `AGENTSDOCK_MIN_START_AVAILABLE_MEM_MB` | Optional interactive launch memory floor; `0` disables | `0` |
 | `AGENTSDOCK_HANDOFF_DIGEST_BACKEND` | LLM backend for context digests, `claude` or `codex` | `claude` |
 | `AGENTSDOCK_HANDOFF_DIGEST_MODEL` | LLM model for context digests | `sonnet` |
 | `AGENTSDOCK_HANDOFF_DIGEST_EFFORT` | Optional digest reasoning/effort setting | unset |
 | `AGENTSDOCK_HANDOFF_DIGEST_TIMEOUT_SECONDS` | Digest summarizer timeout | `180` |
 | `AGENTSDOCK_HANDOFF_DIGEST_CHARS` | Final digest character cap | `56000` |
 | `AGENTSDOCK_CODE_DIFF_SNAPSHOT_TIMEOUT_SECONDS` | Maximum time for each isolated Git worktree snapshot | `120` |
+
+Provider execution deadlines are opt-in. Zero disables the execution deadline
+for `AGENTSDOCK_IDLE_KILL_SECONDS`,
+`AGENTSDOCK_CODEX_APP_SERVER_FIRST_ACTIVITY_TIMEOUT_SECONDS`,
+`AGENTSDOCK_CODEX_RESUME_ACTIVITY_TIMEOUT_SECONDS`,
+`AGENTSDOCK_CLAUDE_SDK_PRE_ACK_TIMEOUT_SECONDS`,
+`AGENTSDOCK_CLAUDE_SDK_POST_ACK_FIRST_ACTIVITY_TIMEOUT_SECONDS`,
+`AGENTSDOCK_CLAUDE_SDK_IDLE_TIMEOUT_SECONDS`, and
+`AGENTSDOCK_CLAUDE_SDK_TURN_TIMEOUT_SECONDS`. Cursor and OpenCode likewise accept
+zero for their `STARTUP_TIMEOUT_SECONDS`, `TURN_TIMEOUT_SECONDS` and
+`IDLE_TIMEOUT_SECONDS` settings. These default to zero; positive operator
+settings remain enforced. Informational idle warnings, explicit Stop, transport
+errors, connection establishment and control-request deadlines remain active.
+
+Claude connections and loaded Codex threads are retained by default so native
+background work and provider schedules are not ended by automatic eviction.
+This retains more processes and memory. Operators can opt into a positive
+retained-client/thread cap or Claude idle TTL; explicit closure and server
+shutdown still release owned connections. Native
+background work and timers follow the provider lifecycle; AgentsDock Jobs are
+available for schedules that must outlive a provider connection.
 
 Runtime catalog refreshes share a 25-second CLI/network-probe budget so they
 can finish before the desktop and mobile clients' 30-second request timeout.
@@ -948,6 +977,12 @@ The health response includes cached `runtimes` entries. The catalog endpoint's
 reports `ready`, `missing`, `unauthenticated`, `unknown`, or probe `error`, plus an
 actionable recovery instruction. It never returns account identity, auth
 output, or tokens.
+
+Catalog refresh is not a request to reload Codex sign-in. An unknown native
+login revision must not retire a working Codex process. Explicit sign-in reload
+uses the native-admin `POST /api/admin/codex/auth/reload` with `{}`; account GET
+advertises `login_reload_available` and the POST reports `login_reload_pending`.
+See [Codex login handoff](CODEX_LOGIN_HANDOFF.md) for ownership and audit behavior.
 
 Claude startup, automatic refresh, manual **Recheck CLIs**, and turn admission
 never execute `claude auth status`. Short-lived auth-status commands can start
@@ -1453,6 +1488,42 @@ The endpoint uses the same bearer-token authentication as the rest of the API.
 Binary changes remain compact Git binary markers rather than being copied into
 the event log.
 
+## Agent notification levels
+
+An authorized live provider turn can call the `notify` helper with
+`send --level normal|important|emergency --message TEXT`. The helper binds the
+request to that exact server, chat, and run. The agent chooses the level;
+clients do not infer it from message wording. Normal and important notices
+become durable `agent_notification` timeline events. Emergency uses the
+existing acknowledged emergency-alert lifecycle. All three advance the
+session's unread cursor, and `unread_notification_level` in session summaries
+retains the highest level until the chat is marked read. The contract is
+advertised as `capabilities.agent_notification_levels_v1`.
+
+System notifications are still scheduled by connected clients. This helper
+does not provide APNs or FCM delivery to a terminated mobile app.
+
+## Dismissing emergency alerts
+
+`POST /api/sessions/{session_id}/emergency/acknowledge` accepts exactly one
+of these fields:
+
+- `expected_alert_id`: acknowledge that one alert (existing behavior).
+- `through_alert_id`: acknowledge every still-active alert raised through
+  that alert's durable position, including the boundary alert itself.
+
+Clients discover the batch option through
+`capabilities.agent_emergency_alerts_v1.acknowledge_through_alert_id`. Capture
+the displayed alert ID when the user clicks; alerts raised after that boundary
+remain active. The boundary remains valid after another device acknowledges
+it, and repeating the request is harmless. An unknown boundary returns 409;
+a missing chat returns 404; both fields or neither field returns 422.
+
+Batch responses contain `session`, `acknowledged`, and `acknowledged_count`.
+The server persists ordinary acknowledgement events together and broadcasts
+the resulting summary. Reopening the chat or connecting another device sees
+the same result. Dismissal retains alert history and does not stop running work.
+
 ## Public API Sketch
 
 The server exposes JSON endpoints under `/api`.
@@ -1495,6 +1566,20 @@ The server exposes JSON endpoints under `/api`.
 
 The event stream is append-only JSONL on disk and paged through the events API.
 Large clients should page history instead of loading every event at once.
+
+Servers advertising `event_stream_liveness_v1` (available, version 1) support
+`liveness=true` on `/api/sessions/{session_id}/events`. After complete catch-up
+and live registration, the socket sends
+`{"type":"event_stream_status","version":1,"session_id":"…","phase":"ready"}`.
+Idle sockets then receive the same control shape with `phase:"heartbeat"`
+every 15 seconds. These opt-in frames are ephemeral: they have no event `seq`,
+never change history, and do not invoke an agent or scan its transcript.
+Clients must not advance their durable cursor from a control frame. A quiet
+model is not a broken connection. Desktop uses a 45-second no-progress deadline
+and resumes after its last successfully accepted event; it never resends a turn
+to repair a disconnected stream. Older clients and servers retain their existing
+protocol, without imposing heartbeat expectations on servers lacking this capability.
+
 The subagents endpoint folds Claude local-agent lifecycle records into bounded
 `subagent_state` snapshots without returning provider prompts, raw events,
 tool-result output, commands, or output-file paths.
@@ -1561,7 +1646,7 @@ FIFO order.
 Before publishing:
 
 ```bash
-python3 -m py_compile agent_server.py agentsdock_jobs.py agentsdock_chats.py agentsdock_emergency.py agentsdock_publish.py provider_commands.py claude_sdk_client.py codex_app_server.py cursor_agent_client.py update_runner.py
+python3 -m py_compile agent_server.py agentsdock_jobs.py agentsdock_chats.py agentsdock_emergency.py agentsdock_notify.py agentsdock_publish.py provider_commands.py claude_sdk_client.py codex_app_server.py cursor_agent_client.py update_runner.py
 rg -n 'private-host|/home/<name>|/Users/<name>|token-value' .
 ```
 
@@ -1572,3 +1657,42 @@ Do not commit:
 - `.env` files or access tokens
 - machine-specific hostnames, IP addresses, or user home paths
 - compiled Python caches
+
+
+### Recoverable desktop empty-chat cleanup
+
+New desktops pass a durable random `placeholder_client_id` to `GET /api/sessions`.
+A candidate session advertises `empty_chat_cleanup: "client-v1"`; this is a
+capability, not evidence that a row is safe to remove. On startup and explicit
+sidebar refresh, the desktop checks its unsent drafts, references and uploads,
+then calls `POST /api/sessions/{id}/dismiss-empty` with that client identity and
+`expected_updated_at`. The server repeats the existing conditional empty-history
+and live-resource checks under the session lifecycle lock and admission fence.
+
+The result `{ "dismissed": true }` hides only the unchanged row in that desktop's
+list. It persists across restarts without deleting the session or provider
+history, and never removes another desktop's offline drafts. Reading with no
+client identity still exposes retained rows; subsequent session/content changes
+invalidate a dismissal. Legacy blank records are adopted only after the same
+proof. Each row accepts at most 256 client identities and rejects overflow.
+
+An unsupported endpoint, stale session or failed proof preserves the chat. The
+new client never falls back to DELETE or the legacy `discard-empty` route.
+Explicit user deletion retains its existing behavior. Updating only the server
+or only an older client does not provide the complete new cleanup workflow.
+
+### Chat readiness after restart
+
+`GET /api/health` keeps transport health (`ok`) available for diagnostics and
+recovery controls. `chat_readiness` separately reports `ready`, `recovering`, or
+`failed`, with a boolean `ready` and a bounded, non-private message. Queue
+restoration must succeed before new turns can be admitted. A failed restoration
+remains closed to protect durable message ordering; restarting the managed
+server retries the restoration. Repeated failures require server log diagnosis,
+not repeated message submissions. A completed recovery task's own timeout is a
+failure, not a still-running scan.
+
+Emergency acknowledgement reads lifecycle metadata without retaining unrelated
+message/media bodies, and scans outside the global session-store lock. Exact
+alert IDs, durable acknowledgement receipts and cancellation-safe projection
+remain unchanged.

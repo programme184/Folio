@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Health } from './types'
 import {
   cursorLocalSessionImportSupported,
+  geminiLocalSessionImportSupported,
   localSessionImportBatchLimit,
   localSessionImportCapability,
   localSessionImportListLimit,
@@ -30,6 +31,31 @@ function supportedHealth(overrides: Partial<Health> = {}): Health {
 }
 
 describe('local session import contract', () => {
+  it('preserves explicit API selection only for Gemini imports', () => {
+    const item = { provider_session_id: 'native', backend: 'gemini', provider_connection: 'custom' }
+    expect(parseBulkImportSessionItems([item])).toEqual([item])
+    expect(() => parseBulkImportSessionItems([{ ...item, backend: 'claude' }])).toThrow()
+    expect(() => parseBulkImportSessionItems([{ ...item, provider_connection: 'other' }])).toThrow()
+  })
+  it('negotiates Gemini initial text imports without enabling them on older servers', () => {
+    const base = supportedHealth()
+    expect(geminiLocalSessionImportSupported(base)).toBe(false)
+    for (const [override, expected] of [
+      [{}, true], [{ available: false }, false], [{ version: 0 }, false],
+      [{ history_mode: 'unknown' }, false], [{ features: { external_import: false } }, false]
+    ] as const) {
+      expect(geminiLocalSessionImportSupported({ ...base, capabilities: {
+        ...base.capabilities,
+        gemini_backend: { available: true, required: false, message: '', action: null, version: 1,
+          history_mode: 'initial_text_snapshot', features: { external_import: true }, ...override }
+      } })).toBe(expected)
+    }
+    const item = { provider_session_id: '12345678-1234-1234-1234-123456789abc', backend: 'gemini' as const, cwd: '/work' }
+    expect(parseBulkImportSessionItems([item])).toEqual([item])
+    expect(parseLocalSessionCandidatesResponse({ sessions: [{ ...item, label: 'Native Gemini title', updated_at: '2026-10-16T00:00:00Z' }] })[0].backend).toBe('gemini')
+    expect(parseBulkImportSessionResultsResponse({ results: [{ ...item, session_id: 'imported', ok: true, imported: 2 }] }, [item])[0].ok).toBe(true)
+  })
+
   it('requires the explicit Cursor public-snapshot capability', () => {
     const base = supportedHealth()
     expect(cursorLocalSessionImportSupported(base)).toBe(false)

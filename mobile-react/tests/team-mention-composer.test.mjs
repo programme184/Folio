@@ -27,10 +27,11 @@ const mocks = {
   'react-native-safe-area-context': `export const SafeAreaView='SafeAreaView'; export const useSafeAreaInsets=()=>({top:0,bottom:0,left:0,right:0});`,
   'expo-image': `export const Image='Image';`,
   'expo-document-picker': `export async function getDocumentAsync(){return {canceled:true}}`,
-  'expo-image-picker': `export async function launchImageLibraryAsync(){return {canceled:true}}`,
+  'expo-image-picker': `export async function requestMediaLibraryPermissionsAsync(){return {granted:true}} export async function launchImageLibraryAsync(){return {canceled:true}}`,
   '@expo/ui/community/menu': `export const MenuView='MenuView';`,
-  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Search='Search', Send='Send', Square='Square', Trash2='Trash2', X='X', Server='Server', RefreshCw='RefreshCw';`,
+  'lucide-react-native': `export const AlertCircle='AlertCircle', ArrowDown='ArrowDown', ArrowUp='ArrowUp', Check='Check', ChevronDown='ChevronDown', ChevronRight='ChevronRight', CornerDownRight='CornerDownRight', File='File', Mail='Mail', MessageCircleMore='MessageCircleMore', MessageSquareShare='MessageSquareShare', Paperclip='Paperclip', Search='Search', Send='Send', Square='Square', Trash2='Trash2', Video='Video', X='X', Server='Server', RefreshCw='RefreshCw';`,
   '../store/useAppStore': `export const useAppStore=globalThis.__teamComposerFixture.store; export const client=globalThis.__teamComposerFixture.client;`,
+  './store/useAppearanceStore': `export const useAppearanceStore=selector=>selector({preference:'system'});`,
   '../lib/analytics': `export function trackEvent(){}`,
   '../lib/app-keyboard': `export async function dismissAppKeyboard(){}`,
   './AppText': `import {forwardRef,createElement} from 'react'; export const Text='Text'; export const TextInput=forwardRef((props,ref)=>createElement('TextInput',{...props,ref}));`,
@@ -38,6 +39,7 @@ const mocks = {
   './CodexPermissionMenu': `export const CodexPermissionMenu=()=>null;`,
   './ClaudePermissionMenu': `export const ClaudePermissionMenu=()=>null;`,
   './CursorPermissionMenu': `export const CursorPermissionMenu=()=>null;`,
+  './OptionalAgentPermissionMenu': `export const OptionalAgentPermissionMenu=()=>null;`,
   './CodexGoalBar': `export const CodexGoalBar=()=>null;`,
   './CodexRuntimeContext': `export const useCodexRuntime=()=>({refresh:async()=>{}});`,
   './ClaudeRuntimeContext': `export const useClaudeRuntime=()=>({refresh:async()=>{}});`,
@@ -97,6 +99,46 @@ async function render() {
 const byID=(renderer,id)=>renderer.root.findAll(node=>typeof node.type==='string'&&node.props.testID===id)
 const texts=renderer=>renderer.root.findAllByType('Text').map(node=>node.children.filter(child=>typeof child==='string').join('')).join('\n')
 const type=async(renderer,value)=>act(async()=>byID(renderer,'chat-composer-input')[0].props.onChangeText(value))
+
+test('new-chat agent choices carry logos and explicit API routing after dismissal', async () => {
+  const updates = []
+  reset({
+    health: { ...health(), capabilities: { ...health().capabilities, codex_provider_v1: { per_chat: true, per_chat_models: true } } },
+    runtime: { backends: { codex: { native_credentials_present: true, custom_provider: { configured: true, available: true } } } },
+    updateSession: async (...args) => { updates.push(args); return true },
+  })
+  const renderer = await render()
+  try {
+    await act(async () => byID(renderer, 'chat-runtime-menu')[0].props.onPress())
+    const row = byID(renderer, 'agent-choice-codex-custom')[0]
+    assert.equal(row.findByType('BackendMark').props.backend, 'codex')
+    assert.equal(byID(renderer, 'agent-choice-codex')[0].props.accessibilityLabel, 'Codex')
+    const dismissed = renderer.root.findByType('Modal').props.onDismiss
+    await act(async () => row.props.onPress())
+    assert.deepEqual(updates, [])
+    await act(async () => dismissed())
+    assert.deepEqual(updates, [['chat', { backend: 'codex', codex_provider: 'custom', provider_connection: 'default', model: null, effort: null }, 1]])
+  } finally { await act(async () => renderer.unmount()) }
+})
+
+test('agent selection rejects an old server scope and started chats expose no switch choices', async () => {
+  const updates = []
+  reset({ updateSession: async (...args) => { updates.push(args); return true } })
+  const renderer = await render()
+  try {
+    await act(async () => byID(renderer, 'chat-runtime-menu')[0].props.onPress())
+    const dismissed = renderer.root.findByType('Modal').props.onDismiss
+    await act(async () => byID(renderer, 'agent-choice-claude')[0].props.onPress())
+    await act(async () => store.setState({ profileGeneration: 2 }))
+    await act(async () => dismissed())
+    assert.deepEqual(updates, [])
+    await act(async () => store.setState({ sessions: [{ id: 'chat', backend: 'codex', title: 'Started', backend_locked: true }] }))
+    await act(async () => byID(renderer, 'chat-runtime-menu')[0].props.onPress())
+    assert.equal(byID(renderer, 'agent-choice-claude').length, 0)
+    assert.equal(byID(renderer, 'agent-choice-codex').length, 0)
+    assert.equal(byID(renderer, 'agent-reload').length, 1)
+  } finally { await act(async () => renderer.unmount()) }
+})
 
 test('composer native-host harness keeps ordinary draft typing local without team discovery',async()=>{
   reset()
@@ -376,6 +418,15 @@ test('route capacity blocks only new grants; existing and already-pending target
     await act(async()=>renderer.update(React.createElement(ChatTargetPicker,{...props,referenceLimitReached:true})))
     assert.equal(byID(renderer,'chat-target-target')[0].props.disabled,true)
     assert.equal(byID(renderer,'chat-route-revoke-route')[0].props.disabled,false,'Access may still be revoked when the draft reference limit is full')
+  }finally{await act(async()=>renderer.unmount())}
+})
+
+test('unlimited route metadata leaves new grants available',async()=>{
+  resetRoutes({agentRoutesBySession:{chat:{routes:[route()],max_routes:null}}})
+  const {renderer}=await renderChatPicker()
+  try{
+    assert.equal(byID(renderer,'chat-target-new')[0].props.disabled,false)
+    assert.equal(byID(renderer,'chat-route-capacity').length,0)
   }finally{await act(async()=>renderer.unmount())}
 })
 

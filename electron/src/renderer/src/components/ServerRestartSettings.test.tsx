@@ -127,8 +127,23 @@ function openAppUpdates() {
   fireEvent.click(screen.getByRole('button', { name: 'Updates', hidden: true }))
 }
 
+function expandActiveServer() {
+  const state = useAppStore.getState()
+  const active = state.profiles.find(profile => profile.id === state.activeProfileId)
+  const toggle = active && screen.queryByRole('button', { name: `Server details for ${active.name}` })
+  if (toggle?.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle)
+}
+
+function renderSettings() {
+  const view = render(<SettingsDialog />)
+  // Restart is inside the active server's collapsed card.
+  expandActiveServer()
+  return view
+}
+
 function openServerSettingsFromApp() {
   fireEvent.click(screen.getByRole('button', { name: 'Server' }))
+  expandActiveServer()
 }
 
 function updatesSurface() {
@@ -193,6 +208,7 @@ function installBridge(
         cancel: vi.fn()
       },
       servers: {
+        tokenPreview: vi.fn().mockResolvedValue('test••••••••'),
         restartStatus: serverRestartStatus,
         refresh: refreshServer
       },
@@ -252,7 +268,7 @@ async function refuseAtomicForceUpdate(
   }))
   const restartServer = vi.fn().mockRejectedValue(new Error(refusal))
   useAppStore.setState({ restartServer })
-  render(<SettingsDialog />)
+  renderSettings()
   openAppUpdates()
 
   fireEvent.click(await screen.findByRole('button', { name: 'Update now' }))
@@ -289,7 +305,7 @@ describe('SettingsDialog managed server restart', () => {
     const status = vi.fn().mockResolvedValue({ phase: 'current', current_version: '1.0.3', track: 'stable' })
     installBridge(status)
     showSettings(recoveryHealth({ server_version: '1.0.3' }))
-    render(<SettingsDialog />)
+    renderSettings()
     await waitFor(() => expect(status).toHaveBeenCalledOnce())
     expect(screen.getByRole('button', { name: 'Server' })).toHaveAttribute('aria-current', 'page')
     expect(window.agentsDock.serverUpdates.check).not.toHaveBeenCalled()
@@ -310,7 +326,7 @@ describe('SettingsDialog managed server restart', () => {
     vi.mocked(window.agentsDock.updates.check).mockResolvedValue(enrolled)
     showSettings(recoveryHealth({ server_version: '1.0.4-beta.9' }))
     useAppStore.setState(state => ({ modals: { ...state.modals, settings: false, appSettings: true } }))
-    render(<SettingsDialog />)
+    renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'Updates' }))
     expect(await screen.findByRole('button', { name: 'Retry server update' })).toBeEnabled()
     expect(screen.queryByText('Advanced server recovery')).not.toBeInTheDocument()
@@ -335,7 +351,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings()
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     const restart = screen.getByRole('button', { name: 'Restart server' })
     expect(restart).toBeEnabled()
@@ -360,7 +376,7 @@ describe('SettingsDialog managed server restart', () => {
     const refusal = 'The server refused this restart; review its active work before retrying.'
     const restartServer = vi.fn().mockRejectedValue(new Error(refusal))
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     const restart = updatesSurface().getByRole('button', { name: 'Force restart server' })
@@ -387,7 +403,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth())
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     expect(await updatesSurface().findByText('0.1.26-beta.51')).toBeInTheDocument()
@@ -417,7 +433,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth({ managed_updates: false }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
     await act(async () => { await Promise.resolve() })
 
@@ -438,7 +454,7 @@ describe('SettingsDialog managed server restart', () => {
   it('does not advertise an Updates restart action on an old server with no restart capability', async () => {
     installBridge(vi.fn().mockResolvedValue(currentServerUpdate))
     showSettings({ ok: true, managed_updates: true, server_identity: 'server-a', capabilities: {} })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     expect(await updatesSurface().findByRole('button', { name: 'Check server' })).toBeInTheDocument()
@@ -450,7 +466,7 @@ describe('SettingsDialog managed server restart', () => {
     installBridge()
     showSettings({ ok: true, capabilities: {} }, false)
     useAppStore.setState(state => ({ profiles: state.profiles.map(profile => ({ ...profile, serverVersion: '0.1.26' })) }))
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
     await act(async () => { await Promise.resolve() })
 
@@ -469,7 +485,7 @@ describe('SettingsDialog managed server restart', () => {
     if (state === 'switching') useAppStore.setState({ switchingProfileId: 'profile-2' })
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     const restart = await updatesSurface().findByRole('button', { name: /^(?:Force restart server|Restart server)$/ })
@@ -494,7 +510,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth())
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     expect(await updatesSurface().findByText(pending.message!)).toBeInTheDocument()
@@ -520,7 +536,7 @@ describe('SettingsDialog managed server restart', () => {
     let finishRestart!: (value: boolean) => void
     const restartServer = vi.fn(() => new Promise<boolean>(resolve => { finishRestart = resolve }))
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
     openAppUpdates()
 
@@ -546,7 +562,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth())
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
     openAppUpdates()
 
@@ -562,7 +578,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth({ managed_updates: false }))
     const restartServer = vi.fn(async () => false)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
     openAppUpdates()
     fireEvent.click(updatesSurface().getByRole('button', { name: 'Force restart server' }))
@@ -577,7 +593,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(restartHealth({ capabilities: {
       server_restart: { ...serverRestartCapability, version: 1, force_restart: false, force_confirmation_required: false }
     } }))
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
     expect(updatesSurface().queryByRole('button', { name: 'Force restart server' })).not.toBeInTheDocument()
     fireEvent.click(updatesSurface().getByRole('button', { name: 'Restart server' }))
@@ -592,7 +608,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(restartHealth({ managed_updates: false }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
     fireEvent.click(updatesSurface().getByRole('button', { name: 'Force restart server' }))
     const force = await screen.findByRole('button', { name: 'Force Restart' })
@@ -618,7 +634,7 @@ describe('SettingsDialog managed server restart', () => {
     } } }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
     fireEvent.click(updatesSurface().getByRole('button', { name: 'Force restart server' }))
     const force = await screen.findByRole('button', { name: 'Force Restart' })
@@ -641,7 +657,7 @@ describe('SettingsDialog managed server restart', () => {
       showSettings(recoveryHealth())
       const restartServer = vi.fn(async () => forceConfirmed)
       useAppStore.setState({ restartServer })
-      render(<SettingsDialog />)
+      renderSettings()
       await act(async () => { await Promise.resolve() })
 
       fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -675,7 +691,7 @@ describe('SettingsDialog managed server restart', () => {
     installBridge()
     showSettings({ ok: true, server_identity: 'server-a', capabilities: {} })
 
-    render(<SettingsDialog />)
+    renderSettings()
 
     expect(screen.queryByRole('button', { name: 'Restart server' })).not.toBeInTheDocument()
   })
@@ -692,7 +708,7 @@ describe('SettingsDialog managed server restart', () => {
       }
     }))
 
-    render(<SettingsDialog />)
+    renderSettings()
 
     const restart = screen.getByRole('button', { name: 'Restart server' })
     expect(restart).toBeDisabled()
@@ -703,7 +719,7 @@ describe('SettingsDialog managed server restart', () => {
     installBridge()
     showSettings(restartHealth(), false)
 
-    render(<SettingsDialog />)
+    renderSettings()
 
     const restart = screen.getByRole('button', { name: 'Restart server' })
     expect(restart).toBeDisabled()
@@ -732,7 +748,7 @@ describe('SettingsDialog managed server restart', () => {
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
 
-    render(<SettingsDialog />)
+    renderSettings()
 
     await waitFor(() => expect(serverUpdateStatus).toHaveBeenCalled())
     const restart = screen.getByRole('button', { name: 'Restart server' })
@@ -788,7 +804,7 @@ describe('SettingsDialog managed server restart', () => {
         throw new Error('restart outcome is unknown')
       })
       useAppStore.setState({ restartServer })
-      render(<SettingsDialog />)
+      renderSettings()
 
       await act(async () => { await Promise.resolve() })
       fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -836,7 +852,7 @@ describe('SettingsDialog managed server restart', () => {
       }
     }))
 
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     expect(await screen.findByText(pending.message!)).toBeInTheDocument()
@@ -871,7 +887,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: { ...durableQueueCapability, version: 9 }
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     const updateNow = await screen.findByRole('button', { name: 'Update now' })
@@ -908,7 +924,7 @@ describe('SettingsDialog managed server restart', () => {
     }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     const updateNow = await screen.findByRole('button', { name: 'Update now' })
@@ -954,7 +970,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: { ...durableQueueCapability, version: 10 }
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Update now' }))
@@ -995,7 +1011,7 @@ describe('SettingsDialog managed server restart', () => {
     let finishRestart!: (value: boolean) => void
     const restartServer = vi.fn(() => new Promise<boolean>(resolve => { finishRestart = resolve }))
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     const updateNow = await screen.findByRole('button', { name: 'Update now' })
@@ -1057,7 +1073,7 @@ describe('SettingsDialog managed server restart', () => {
     }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Update now' }))
@@ -1218,7 +1234,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(recoveryHealth())
     const restartServer = vi.fn(async () => false)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
     openAppUpdates()
     fireEvent.click(await updatesSurface().findByRole('button', { name: 'Force restart server' }))
@@ -1399,7 +1415,7 @@ describe('SettingsDialog managed server restart', () => {
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
 
-    render(<SettingsDialog />)
+    renderSettings()
 
     await waitFor(() => expect(serverUpdateStatus).toHaveBeenCalled())
     const restart = screen.getByRole('button', { name: 'Restart server' })
@@ -1440,7 +1456,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings(restartHealth({ managed_updates: true }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     openAppUpdates()
 
     expect(await screen.findByText(pending.message!)).toBeInTheDocument()
@@ -1491,7 +1507,7 @@ describe('SettingsDialog managed server restart', () => {
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
 
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
 
     await waitFor(() => expect(check).toHaveBeenCalledWith('beta'))
@@ -1510,7 +1526,7 @@ describe('SettingsDialog managed server restart', () => {
   it('names the exact active profile and URL in an accessible confirmation and focuses Cancel first', async () => {
     installBridge()
     showSettings()
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
 
@@ -1526,7 +1542,7 @@ describe('SettingsDialog managed server restart', () => {
   it('keeps safe Restart available when work is active and still permits durable queued work', () => {
     installBridge()
     showSettings(restartHealth({ active_sessions: ['chat-1'] }))
-    const view = render(<SettingsDialog />)
+    const view = renderSettings()
 
     let restart = screen.getByRole('button', { name: 'Restart server' })
     expect(restart).toBeEnabled()
@@ -1566,7 +1582,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
 
@@ -1580,7 +1596,7 @@ describe('SettingsDialog managed server restart', () => {
     showSettings()
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1595,7 +1611,7 @@ describe('SettingsDialog managed server restart', () => {
     installBridge()
     showSettings()
     useAppStore.setState({ restartServer: vi.fn(async () => true) })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1620,7 +1636,7 @@ describe('SettingsDialog managed server restart', () => {
         return true
       })
     })
-    render(<SettingsDialog />)
+    renderSettings()
     await act(async () => { await Promise.resolve() })
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1637,7 +1653,7 @@ describe('SettingsDialog managed server restart', () => {
     let resolveRestart!: (value: boolean) => void
     const restartServer = vi.fn(() => new Promise<boolean>(resolve => { resolveRestart = resolve }))
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1650,14 +1666,14 @@ describe('SettingsDialog managed server restart', () => {
     expect(await screen.findByText('AgentsServer restarted and reconnected.')).toHaveAttribute('role', 'status')
   })
 
-  it('surfaces an unconfirmed timeout in the health row', async () => {
+  it('surfaces an unconfirmed timeout in the expanded server card', async () => {
     installBridge()
     showSettings()
     const restartServer = vi.fn(async () => {
       throw new Error('The restart request was not confirmed within 45 seconds. Check the server service before retrying.')
     })
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1679,7 +1695,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
 
@@ -1714,7 +1730,7 @@ describe('SettingsDialog managed server restart', () => {
     }))
     const restartServer = vi.fn(async () => true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Review force restart…' }))
@@ -1738,7 +1754,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     expect(screen.getByText('tmux server isolation could not be verified')).toBeInTheDocument()
@@ -1757,7 +1773,7 @@ describe('SettingsDialog managed server restart', () => {
       .mockRejectedValueOnce(new Error('AgentsServer cannot restart while queued work remains active.'))
       .mockResolvedValueOnce(true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1775,7 +1791,7 @@ describe('SettingsDialog managed server restart', () => {
     useAppStore.setState({
       restartServer: vi.fn().mockRejectedValue(new Error('AgentsServer is busy.'))
     })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1795,7 +1811,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
 
@@ -1818,7 +1834,7 @@ describe('SettingsDialog managed server restart', () => {
     }))
     const restartServer = vi.fn().mockResolvedValue(true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
 
@@ -1851,7 +1867,7 @@ describe('SettingsDialog managed server restart', () => {
       .mockRejectedValueOnce(new Error('AgentsServer safe restart could not acquire its admission lock.'))
       .mockResolvedValueOnce(true)
     useAppStore.setState({ restartServer })
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
@@ -1881,7 +1897,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Review force restart…' }))
@@ -1901,7 +1917,7 @@ describe('SettingsDialog managed server restart', () => {
         server_updates: durableQueueCapability
       }
     }))
-    render(<SettingsDialog />)
+    renderSettings()
 
     fireEvent.click(screen.getByRole('button', { name: 'Restart server' }))
     fireEvent.click(screen.getByRole('button', { name: 'Review force restart…' }))

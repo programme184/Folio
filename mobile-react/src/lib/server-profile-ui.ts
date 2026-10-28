@@ -24,6 +24,7 @@ export interface ServerProfileDraftValues {
   profileId: string | null
   name: string
   serverUrl: string
+  serverUrls?: string[]
   accessToken: string
   clearAccessToken: boolean
   resetServerIdentity: boolean
@@ -33,6 +34,8 @@ export interface ServerProfileTestInput {
   profileId?: string
   serverUrl: string
   accessToken?: string | null
+  signal?: AbortSignal
+  timeoutMs?: number
 }
 
 export interface ServerConnectionTestResult {
@@ -45,6 +48,7 @@ export interface ServerConnectionTestResult {
 export interface CreateServerProfileInput {
   name?: string
   serverUrl: string
+  serverUrls?: string[]
   accessToken?: string | null
   serverIdentity?: string | null
   serverSetupComplete: true
@@ -53,6 +57,7 @@ export interface CreateServerProfileInput {
 export interface UpdateServerProfileInput {
   name?: string
   serverUrl?: string
+  serverUrls?: string[]
   /** Undefined preserves the stored credential; null removes it. */
   accessToken?: string | null
   /** Identity returned by the successful test for this exact connection edit. */
@@ -125,6 +130,17 @@ export function connectionStateLabel(state: ServerProfileConnectionState): strin
   return 'Cached'
 }
 
+export function displayedServerConnectionState(
+  state: ServerProfileConnectionState,
+  verified: 'online' | 'offline' | undefined,
+  active: boolean,
+  transitioning: boolean,
+): ServerProfileConnectionState {
+  if (!active) return verified ?? 'cached'
+  if (transitioning && verified === 'online' && state !== 'offline') return 'online'
+  return state
+}
+
 export function profileConnectionLabel(profile: Pick<ServerProfileListItem, 'connectionState' | 'lastConnectionError'>): string {
   if (profile.lastConnectionError && /\b(?:401|403|unauthori[sz]ed|forbidden|authentication|access token|bad token|invalid token)\b/i.test(profile.lastConnectionError)) {
     return 'Authentication required'
@@ -172,6 +188,7 @@ export function buildCreateServerProfileInput(
   return {
     ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
     serverUrl: normalizeServerURL(draft.serverUrl),
+    ...(draft.serverUrls ? { serverUrls: draft.serverUrls } : {}),
     ...(accessToken !== undefined ? { accessToken } : {}),
     serverIdentity: serverIdentity ?? null,
     serverSetupComplete: true,

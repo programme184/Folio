@@ -19,6 +19,7 @@ const aliases = new Map(Object.entries({
   'react-native-keyboard-controller': 'tests/component-mocks/native-wrappers.ts',
   'lucide-react-native': 'tests/component-mocks/icons.ts',
   'expo-file-system': 'tests/mocks/expo-file-system.ts',
+  '@expo/ui/community/menu': 'tests/component-mocks/expo-menu.ts',
 }).map(([name, path]) => [name, resolve(projectRoot, path)]))
 
 try {

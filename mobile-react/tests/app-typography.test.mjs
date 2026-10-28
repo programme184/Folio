@@ -33,7 +33,7 @@ test('typography provider scales text metrics and preserves native input refs', 
   assert.match(appText, /useAppStore\(state => state\.fontScale\)/)
   assert.match(appText, /StyleSheet\.flatten\(style\)/)
   assert.match(appText, /override\.lineHeight = scaleAppFont/)
-  assert.match(appText, /forwardRef<Text, TextProps>/)
+  assert.match(appText, /forwardRef<Text, AppTextProps>/)
   assert.match(appText, /forwardRef<TextInput, TextInputProps>/)
   assert.match(sidebar, /const searchInput = useRef<TextInput>\(null\)/)
   assert.match(dialogs, /const searchInput = useRef<TextInput>\(null\)/)
@@ -50,9 +50,11 @@ test('settings and primary selectors expose app-wide text sizing', () => {
 })
 
 test('large app text keeps narrow navigation and chat controls usable', () => {
-  assert.match(sidebar, /<\/View>\s*<View style=\{styles\.actions\}>/)
-  assert.match(sidebar, /actions: \{ minHeight: 44[\s\S]*?justifyContent: 'space-between'/)
-  assert.match(chatHeader, /<Text style=\{\[styles\.statusLabel[\s\S]*?numberOfLines=\{1\}>\{statusLabel\}<\/Text>/)
+  assert.match(sidebar, /<KeyboardAvoidingView[\s\S]*?style=\{\[styles\.root[\s\S]*?<View style=\{styles\.topRow\}>/)
+  assert.match(sidebar, /topRow: \{ minHeight: 44[^\n]*justifyContent: 'space-between'/)
+  assert.match(sidebar, /serverSelector: \{ flex: 1, maxWidth: '50%', minWidth: 0 \}/)
+  assert.match(dialogs, /settingsRowTitle: \{ \.\.\.typography\.body, flex: 1 \}/)
+  assert.match(chatHeader, /<Text style=\{\[styles\.statusLabel[\s\S]*?numberOfLines=\{1\}>\{visibleStatusLabel\}<\/Text>/)
   assert.match(chatHeader, /onlineCompact: \{ minWidth: 78/)
   assert.match(timelineRows, /styles\.time[\s\S]*?numberOfLines=\{1\}/)
   assert.match(timelineRows, /time: \{ minWidth: 0, flexShrink: 1/)

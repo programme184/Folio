@@ -68,7 +68,7 @@ export function EmergencyTimelineDock({ sessionId, focused }: { sessionId: strin
     setFailedKey(null)
     try {
       const succeeded = actionIsCurrentChat
-        ? await useAppStore.getState().acknowledgeEmergency(actionTarget.sessionId, actionTarget.alertId)
+        ? await useAppStore.getState().dismissEmergencyAlerts(actionTarget.sessionId, actionTarget.alertId)
         : await useAppStore.getState().openNotificationRoute({
           profileId: actionTarget.profileId,
           serverIdentity: actionTarget.serverIdentity,
@@ -96,7 +96,7 @@ export function EmergencyTimelineDock({ sessionId, focused }: { sessionId: strin
       <span title={target.message}>{target.message}</span>
       {remaining > 0 && <small>{t(remaining === 1 ? 'emergency.remaining.one' : 'emergency.remaining.other', { count: remaining })}</small>}
       {failedKey === target.key && <small className="emergency-timeline-dock-error" role="alert">
-        {t(currentChat ? 'emergency.acknowledgeFailed' : 'emergency.openFailed')}
+        {t(currentChat ? 'emergency.dismissAllFailed' : 'emergency.openFailed')}
       </small>}
     </div>
     <button
@@ -104,12 +104,13 @@ export function EmergencyTimelineDock({ sessionId, focused }: { sessionId: strin
       disabled={working}
       onClick={() => void act()}
       aria-label={currentChat
-        ? t('emergency.acknowledgeIn', { title: target.sessionTitle })
+        ? t('emergency.dismissAllIn', { title: target.sessionTitle })
         : t('emergency.openChatNamed', { title: target.sessionTitle })}
+      title={currentChat ? t('emergency.dismissAllIn', { title: target.sessionTitle }) : undefined}
     >
       {working && <LoaderCircle className="spin" size={13} aria-hidden="true" />}
-      {!working && <span className="emergency-timeline-dock-action-icon" aria-hidden="true">{currentChat ? '✓' : '↗'}</span>}
-      <span className="emergency-timeline-dock-action-label">{t(currentChat ? 'emergency.acknowledge' : 'emergency.openChat')}</span>
+      {!working && <span className="emergency-timeline-dock-action-icon" aria-hidden="true">{currentChat ? '×' : '↗'}</span>}
+      <span className="emergency-timeline-dock-action-label">{t(currentChat ? 'emergency.dismissAll' : 'emergency.openChat')}</span>
     </button>
   </section>
 }

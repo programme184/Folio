@@ -27,6 +27,12 @@ import './index'
 describe('preload session IPC bridge', () => {
   beforeEach(() => electronHarness.invoke.mockReset())
 
+  it('reads only a masked server token preview through the profile-scoped bridge', async () => {
+    electronHarness.invoke.mockResolvedValue('abcd••••••••')
+    expect(await electronHarness.exposed?.servers.tokenPreview('server-b')).toBe('abcd••••••••')
+    expect(electronHarness.invoke).toHaveBeenCalledExactlyOnceWith('servers:token-preview', 'server-b')
+  })
+
   it('exposes Codex account status without shared-login mutation', () => {
     expect(electronHarness.exposed?.codex.auth).toBeTypeOf('function')
     expect(electronHarness.exposed?.codex).not.toHaveProperty('loginWithApiKey')

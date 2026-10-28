@@ -17,8 +17,34 @@ import {
   runtimeDiagnosticNeedsAttention,
   runtimeModelLockReason,
   runtimeSelectionError,
+  runtimeSendAdmissionError,
   selectableChatBackends,
+  nativeProviderSignInStatus,
 } from './runtime-catalog'
+
+it('offers only Gemini API even when the server advertises cached Google login', () => {
+  const health: Health = { ok: true, capabilities: {
+    gemini_backend: { available: true, version: 1, required: false, message: 'Gemini API', action: null }, provider_connections_v1: { per_chat: true }
+  } }
+  const catalog: RuntimeCatalog = { backends: { gemini: {
+    models: [{ value: 'auto', label: 'Auto' }], efforts: [], native_credentials_present: true,
+    custom_provider: { configured: true, available: true, model: 'auto', base_url: 'https://example.test', models: [], efforts: [] }
+  } } }
+  expect(selectableChatBackendChoices(health, catalog)).toEqual(['gemini-custom'])
+  expect(runtimeSendAdmissionError(health, 'gemini', 'default')).toMatch(/API connections only/)
+  expect(runtimeSendAdmissionError(health, 'gemini', 'custom')).toBeNull()
+  // Existing native identity remains distinct; history is not silently rebound.
+  expect(chatBackendChoice({ backend: 'gemini', provider_connection: 'default' })).toBe('gemini')
+  expect(selectableChatBackendChoices({ ok: true }, catalog)).not.toContain('gemini-custom')
+  for (const custom_provider of [
+    { configured: false, available: false, model: null, base_url: null },
+    { configured: true, available: false, model: 'auto', base_url: 'https://example.test' },
+  ]) {
+    expect(selectableChatBackendChoices(health, { backends: { gemini: {
+      ...catalog.backends.gemini, custom_provider,
+    } } })).not.toContain('gemini-custom')
+  }
+})
 
 const validCatalog: RuntimeCatalog = {
   backends: {
@@ -28,6 +54,40 @@ const validCatalog: RuntimeCatalog = {
 }
 
 describe('passive Claude authentication status from the server', () => {
+  const withDiagnostic = (diagnostic?: Partial<RuntimeDiagnostic>, present = true): RuntimeCatalog => ({ backends: {
+    claude: { models: [], efforts: [], native_credentials_present: present,
+      ...(diagnostic ? { diagnostic: { backend: 'claude', available: false, status: 'unknown', message: '', ...diagnostic } } : {}) }
+  } })
+
+  it.each([
+    { status: 'unauthenticated', authenticated: false },
+    { status: 'unauthenticated', authenticated: null },
+    { status: 'error', authenticated: false },
+    { status: 'missing', installed: false },
+  ] as Partial<RuntimeDiagnostic>[])('does not turn retained credentials into verified login: %j', diagnostic => {
+    const catalog = withDiagnostic(diagnostic)
+    expect(nativeProviderSignInStatus(null, catalog, 'claude')).toBe('signed-out')
+    // Keep the existing send-time verification policy; a cached failure must
+    // not trap someone who just renewed their credentials outside the app.
+    expect(selectableChatBackendChoices({ ok: true }, catalog)).toContain('claude')
+    expect(runtimeSendAdmissionError({ ok: true }, 'claude')).toBeNull()
+  })
+
+  it('distinguishes credential detection from verified authentication, including old servers', () => {
+    expect(nativeProviderSignInStatus(null, withDiagnostic(), 'claude')).toBe('unverified')
+    expect(nativeProviderSignInStatus(null, withDiagnostic({ authenticated: null }), 'claude')).toBe('unverified')
+    expect(nativeProviderSignInStatus(null, withDiagnostic(undefined, false), 'claude')).toBe('signed-out')
+    expect(nativeProviderSignInStatus(null, withDiagnostic({ authenticated: true, status: 'ready' }), 'claude')).toBe('signed-in')
+  })
+
+  it('uses the latest diagnostic for failure and recovery, independently of credential presence', () => {
+    const failed = { backend: 'claude', available: false, status: 'unauthenticated', authenticated: false, message: '', checked_at: '2026-10-01T12:00:00Z' } as const
+    const ready = { ...failed, status: 'ready', authenticated: true, available: true, checked_at: '2026-10-01T12:01:00Z' } as const
+    expect(nativeProviderSignInStatus({ ok: true, runtimes: { claude: failed } }, withDiagnostic(ready), 'claude')).toBe('signed-in')
+    expect(nativeProviderSignInStatus({ ok: true, runtimes: { claude: ready } }, withDiagnostic(failed), 'claude')).toBe('signed-in')
+    expect(nativeProviderSignInStatus({ ok: true, runtimes: { claude: { ...failed, checked_at: '2026-10-01T12:02:00Z' } } }, withDiagnostic(ready), 'claude')).toBe('signed-out')
+  })
+
   it.each(['unknown', 'unauthenticated'] as const)('allows a native retry while reporting %s honestly', status => {
     const diagnostic: RuntimeDiagnostic = {
       backend: 'claude', status, available: false, installed: true,
@@ -477,5 +537,32 @@ describe('runtime diagnostics', () => {
     expect(runtimeDiagnosticNeedsAttention(diagnostic)).toBe(false)
     expect(runtimeDiagnosticLabel(diagnostic)).toBe('Ready')
     expect(runtimeDiagnosticCurrentError(diagnostic)).toBe('')
+  })
+})
+
+describe('auth-scoped retired model selections', () => {
+  const retired: RuntimeCatalog = { backends: { codex: {
+    models: [{ value: '', label: 'Server default' }, { value: 'gpt-5.5', label: 'GPT-5.5' }, { value: 'gpt-6-luna', label: 'GPT-6-Luna' }],
+    efforts: [{ value: 'high', label: 'High' }],
+    model_replacements: { 'gpt-5.5': 'gpt-6-luna' },
+    custom_provider: { configured: true, available: true, model: 'gpt-5.5', base_url: 'https://api.example/v1',
+      models: [{ value: 'gpt-5.5', label: 'GPT-5.5' }] }
+  } } }
+
+  it('does not reinsert a historical selection or trust a stale model option', () => {
+    const before = JSON.stringify(retired)
+    expect(runtimeCatalogOptions(retired, 'codex', 'models', 'gpt-5.5').map(o => o.value)).toEqual(['', 'gpt-6-luna'])
+    expect(JSON.stringify(retired)).toBe(before)
+    expect(runtimeCatalogOptions(retired, 'codex', 'efforts', 'high')).toContainEqual({ value: 'high', label: 'High' })
+  })
+
+  it('keeps unknown models and native API-key models unless the server explicitly retires them', () => {
+    expect(runtimeCatalogOptions(retired, 'codex', 'models', 'other-model').map(o => o.value)).toContain('other-model')
+    const api: RuntimeCatalog = { backends: { codex: { ...retired.backends.codex!, model_replacements: {} } } }
+    expect(runtimeCatalogOptions(api, 'codex', 'models', 'gpt-5.5').map(o => o.value)).toContain('gpt-5.5')
+  })
+
+  it('does not apply native ChatGPT retirement to custom endpoints', () => {
+    expect(runtimeCatalogOptions(retired, 'codex', 'models', 'gpt-5.5', 'custom').map(o => o.value)).toContain('gpt-5.5')
   })
 })

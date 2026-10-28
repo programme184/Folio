@@ -1,0 +1,20 @@
+/* File operations and buffers stay in the editor; Files supplies their visual home. */
+.inspector-files { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.inspector-files .workspace-editor-explorer { flex: 1; border: 0; color: var(--text); background: transparent; }
+.inspector-files .workspace-editor-explorer-header { min-height: 40px; padding: 0 var(--space-5); }
+.inspector-files .workspace-editor-explorer-header > strong { display: none; }
+.inspector-files .workspace-editor-explorer-actions { margin-left: auto; gap: var(--space-2); }
+.inspector-files .workspace-editor-explorer-header button { width: var(--control-height-sm); height: var(--control-height-sm); }
+.inspector-files .workspace-editor-explorer-root { height: auto; min-height: 36px; padding: var(--space-3) var(--space-5); color: var(--text); border-color: var(--border-soft); }
+.inspector-files .workspace-editor-explorer-root > strong { overflow-wrap: anywhere; }
+.inspector-files .workspace-editor-tree { overscroll-behavior: contain; }
+.inspector-files .workspace-editor-tree-row { min-height: var(--control-height-sm); }
+.inspector-files .workspace-editor-explorer-header button:hover:not(:disabled),
+.inspector-files .workspace-editor-tree-row:hover { background: var(--interaction-hover); }
+.inspector-files-message { margin: 0; padding: var(--space-5); color: var(--muted); font-size: var(--text-size-meta); line-height: var(--line-height-body); }
+
+.inspector-files > .workspace-editor-workspace-error {
+  position: static; min-width: 0; max-width: none; flex-shrink: 0; margin: var(--space-3);
+  transform: none; box-shadow: none; overflow-wrap: anywhere;
+  color: var(--danger); background: var(--surface); border-color: var(--border);
+}

@@ -42,6 +42,33 @@ assert.match(player, /override func sharedObjectWillRelease\(\)/, 'ExpoVideo is 
 assert.match(player, /!self\.hasBeenReleased/, 'ExpoVideo is missing released-player observer guards')
 assert.match(podsProject, /VideoPlayer\.swift in Sources/, 'ExpoVideo is not compiled from its installed Swift source')
 assert.doesNotMatch(podsProject, /ExpoVideo\.xcframework/, 'ExpoVideo still references the ABI-incompatible precompiled XCFramework')
+assert.ok(
+  appPackage.expo?.autolinking?.ios?.buildFromSource?.includes('expo-camera'),
+  'expo-camera must build from source to stay ABI-compatible with the installed ExpoModulesCore',
+)
+const cameraVersion = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', 'expo-camera', 'package.json'), 'utf8')).version
+const cameraPod = JSON.parse(fs.readFileSync(path.join(root, 'ios', 'Pods', 'Local Podspecs', 'ExpoCamera.podspec.json'), 'utf8'))
+assert.equal(cameraPod.version, cameraVersion, 'ExpoCamera local podspec does not match the installed JavaScript package')
+assert.match(podLock, new RegExp(`^  - ExpoCamera \\(${escapeRegExp(cameraVersion)}\\):$`, 'm'), 'Podfile.lock does not match expo-camera')
+assert.match(manifest, new RegExp(`^  - ExpoCamera \\(${escapeRegExp(cameraVersion)}\\):$`, 'm'), 'Pods/Manifest.lock does not match expo-camera')
+assert.match(podsProject, /CameraViewModule\.swift in Sources/, 'ExpoCamera is not compiled from its installed Swift source')
+assert.doesNotMatch(podsProject, /ExpoCamera\.xcframework/, 'ExpoCamera still references the ABI-incompatible precompiled XCFramework')
+const uiVersion = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', '@expo', 'ui', 'package.json'), 'utf8')).version
+const mediaVersion = JSON.parse(fs.readFileSync(path.join(root, 'node_modules', 'expo-media-library', 'package.json'), 'utf8')).version
+const mediaPod = JSON.parse(fs.readFileSync(path.join(root, 'ios', 'Pods', 'Local Podspecs', 'ExpoMediaLibrary.podspec.json'), 'utf8'))
+assert.ok(appPackage.expo?.autolinking?.ios?.buildFromSource?.includes('expo-media-library'), 'Photo saving must build against the installed ExpoModulesCore')
+assert.equal(mediaPod.version, mediaVersion, 'Photo-saving native code must match its JavaScript package')
+assert.match(podLock, new RegExp(`^  - ExpoMediaLibrary \\(${escapeRegExp(mediaVersion)}\\):$`, 'm'), 'Podfile.lock is missing the matching photo-saving module')
+assert.match(manifest, new RegExp(`^  - ExpoMediaLibrary \\(${escapeRegExp(mediaVersion)}\\):$`, 'm'), 'Pods/Manifest.lock is missing the matching photo-saving module')
+assert.match(podsProject, /MediaLibraryNextModule\.swift in Sources/, 'Photo saving must compile from its installed Swift source')
+assert.doesNotMatch(podsProject, /ExpoMediaLibrary\.xcframework/, 'Photo saving must not use an ABI-incompatible precompiled framework')
+const uiPod = JSON.parse(fs.readFileSync(path.join(root, 'ios', 'Pods', 'Local Podspecs', 'ExpoUI.podspec.json'), 'utf8'))
+assert.ok(appPackage.expo?.autolinking?.ios?.buildFromSource?.includes('@expo/ui'), 'ExpoUI must build against the installed ExpoModulesCore')
+assert.equal(uiPod.version, uiVersion, 'ExpoUI native code must match the installed touch-lifecycle fix; reload alone is insufficient')
+assert.match(podLock, new RegExp(`^  - ExpoUI \\(${escapeRegExp(uiVersion)}\\):$`, 'm'), 'Podfile.lock does not match @expo/ui')
+assert.match(manifest, new RegExp(`^  - ExpoUI \\(${escapeRegExp(uiVersion)}\\):$`, 'm'), 'Pods/Manifest.lock does not match @expo/ui')
+assert.match(podsProject, /RNHostView\.swift in Sources/, 'ExpoUI must compile the hosted-view touch lifecycle fix')
+assert.doesNotMatch(podsProject, /ExpoUI\.xcframework/, 'ExpoUI must not use a precompiled framework from another Expo runtime')
 assert.equal(
   (workspace.match(/location = "group:Pods\/Pods\.xcodeproj"/g) ?? []).length,
   1,
@@ -70,7 +97,7 @@ assert.match(nativeVideoView, /accessibilityIdentifier = "agentsdock-video-play-
 assert.match(nativeVideoView, /VoiceOver adjusts UISlider/, 'The iOS video timeline must seek for accessible adjustments')
 assert.match(nativeVideoView, /guard let url = URL\(string: value\), url\.isFileURL/, 'The Apple-native view must reject non-local video sources')
 
-console.log(`iOS native dependency parity verified: source-built ExpoVideo ${packageVersion} and app-owned AVPlayer video`)
+console.log(`iOS native dependency parity verified: source-built ExpoVideo ${packageVersion}, ExpoCamera ${cameraVersion}, ExpoUI ${uiVersion}, ExpoMediaLibrary ${mediaVersion}, and app-owned AVPlayer video`)
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

@@ -183,7 +183,7 @@ class MockAgentsServer {
       const status = this.nextSessionsStatus
       this.nextSessionsStatus = null
       if (status !== null && status !== 200) {
-        writeJSON(response, status, { detail: `${this.label} authentication expired` })
+        writeJSON(response, status, { detail: status >= 500 ? `${this.label} temporarily unavailable` : `${this.label} authentication expired` })
         return
       }
       writeJSON(response, 200, { sessions: [serverSession(this.label, responseTitle)] })
@@ -329,6 +329,23 @@ try {
   assert(serverA.requests.every(request => request.token === 'token-a'))
   assert.equal((Notifications as typeof Notifications & { __notificationPermissionRequests(): number }).__notificationPermissionRequests(), 1)
   const generationA = state.profileGeneration
+
+  const sessionsBeforeTransientFailure = state.sessions
+  serverA.rejectNextSessions(503)
+  await useAppStore.getState().refreshSessions()
+  assert.equal(useAppStore.getState().error, null, 'automatic refresh failures must not occupy the global banner')
+  assert.equal(useAppStore.getState().sessions, sessionsBeforeTransientFailure, 'a failed refresh must preserve visible chats')
+  assert.equal(useAppStore.getState().profiles[0]?.connectionState, 'degraded')
+  assert.ok(useAppStore.getState().profiles[0]?.lastConnectionError, 'transient failures must remain observable')
+  useAppStore.setState({ error: 'A separate send failed' })
+  serverA.rejectNextSessions(503)
+  await useAppStore.getState().refreshSessions()
+  assert.equal(useAppStore.getState().error, 'A separate send failed', 'background failures must not overwrite user-action errors')
+  await useAppStore.getState().refreshSessions()
+  assert.equal(useAppStore.getState().profiles[0]?.connectionState, 'online')
+  assert.equal(useAppStore.getState().profiles[0]?.lastConnectionError, null)
+  assert.equal(useAppStore.getState().error, 'A separate send failed', 'background success must not clear unrelated action errors')
+  useAppStore.getState().clearError()
 
   state.setSessionDraft('shared-session', 'draft-a-live')
   await nextTurn()
@@ -532,9 +549,15 @@ try {
   assert.equal(storeModule.client.isValidated, false, 'Authenticated sessions rejection should leave the store client unvalidated')
   assert.match(state.error ?? '', /authentication|token|validat/i)
 
+  const bRuntimeBeforeReconnect = serverB.requests.filter(request => request.path === '/api/runtime/catalog').length
   await useAppStore.getState().reconnect()
   assert.equal(useAppStore.getState().connected, true)
   assert.equal(storeModule.client.isValidated, true)
+  // Reconnect returns before its optional runtime discovery finishes.
+  await waitFor(
+    () => serverB.requests.filter(request => request.path === '/api/runtime/catalog').length > bRuntimeBeforeReconnect,
+    'Reconnect runtime discovery must arrive before checking identity rejection',
+  )
 
   const bRuntimeBeforeMismatch = serverB.requests.filter(request => request.path === '/api/runtime/catalog').length
   serverB.identity = 'foreign-server'

@@ -4,13 +4,14 @@ import type { AgentsDockAPI } from '@shared/ipc'
 import type { Event, Session, SessionSnapshot, TimelinePage, TimelineSearchResult } from '@shared/types'
 import { closeTopTransient, resetTransientCloseStackForTests } from '../lib/transient-close'
 import { clearTimelineProjectionCache } from '../lib/timeline-projection-cache'
-import { useAppStore } from '../store/app-store'
+import { mergeSnapshots, replaceSnapshot, useAppStore } from '../store/app-store'
 import { clearTimelineViewStates, Timeline } from './Timeline'
 
 const virtuosoHarness = vi.hoisted(() => ({
   scrollToIndex: vi.fn(),
   atBottomStateChange: null as ((value: boolean) => void) | null,
   totalListHeightChanged: null as ((height: number) => void) | null,
+  itemsRendered: null as ((items: unknown[]) => void) | null,
   isScrolling: null as ((value: boolean) => void) | null,
   startReached: null as (() => void) | null,
   initialLocation: undefined as unknown,
@@ -26,6 +27,7 @@ vi.mock('react-virtuoso', async () => {
       itemContent: (index: number, item: unknown) => React.ReactNode
       atBottomStateChange?: (value: boolean) => void
       totalListHeightChanged?: (height: number) => void
+      itemsRendered?: (items: unknown[]) => void
       isScrolling?: (value: boolean) => void
       scrollerRef?: (node: HTMLElement | Window | null) => void
       startReached?: () => void
@@ -37,6 +39,7 @@ vi.mock('react-virtuoso', async () => {
       }))
       virtuosoHarness.atBottomStateChange = props.atBottomStateChange ?? null
       virtuosoHarness.totalListHeightChanged = props.totalListHeightChanged ?? null
+      virtuosoHarness.itemsRendered = props.itemsRendered ?? null
       virtuosoHarness.isScrolling = props.isScrolling ?? null
       virtuosoHarness.startReached = props.startReached ?? null
       virtuosoHarness.initialLocation = props.initialTopMostItemIndex
@@ -104,6 +107,7 @@ describe('Timeline search navigation', () => {
     virtuosoHarness.scrollToIndex.mockReset()
     virtuosoHarness.atBottomStateChange = null
     virtuosoHarness.totalListHeightChanged = null
+    virtuosoHarness.itemsRendered = null
     virtuosoHarness.isScrolling = null
     virtuosoHarness.startReached = null
     virtuosoHarness.renderCount = 0
@@ -441,6 +445,111 @@ describe('Timeline search navigation', () => {
       act(() => virtuosoHarness.totalListHeightChanged?.(2500))
       await act(async () => vi.advanceTimersByTimeAsync(50))
       expect(virtuosoHarness.scrollToIndex).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('recovers a persistent empty virtual range without dropping loaded messages', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<Timeline />)
+      const original = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(original, 'clientHeight', { value: 600 })
+      act(() => virtuosoHarness.itemsRendered?.([{}]))
+      act(() => virtuosoHarness.itemsRendered?.([]))
+      await act(async () => vi.advanceTimersByTimeAsync(80))
+      expect(screen.getByTestId('timeline-virtuoso')).not.toBe(original)
+      expect(virtuosoHarness.initialLocation).toEqual({ index: 'LAST', align: 'end' })
+      expect(useAppStore.getState().snapshots[SESSION_ID].events).toHaveLength(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it.each(['initial', 'transient', 'hidden'])('does not reset a %s empty virtual range', async state => {
+    vi.useFakeTimers()
+    try {
+      render(<Timeline />)
+      const original = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(original, 'clientHeight', { value: state === 'hidden' ? 0 : 600 })
+      if (state !== 'initial') act(() => virtuosoHarness.itemsRendered?.([{}]))
+      act(() => virtuosoHarness.itemsRendered?.([]))
+      if (state === 'transient') act(() => virtuosoHarness.itemsRendered?.([{}]))
+      await act(async () => vi.advanceTimersByTimeAsync(80))
+      expect(screen.getByTestId('timeline-virtuoso')).toBe(original)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the reading anchor when recovering an empty range above the latest message', async () => {
+    useAppStore.setState({ snapshots: { [SESSION_ID]: {
+      ...snapshot([timelineEvent(100), timelineEvent(101)]),
+      viewState: { sessionId: SESSION_ID, topItemId: 'turn:seq-100:assistant', topOffset: -4000, atBottom: false, updatedAt: 1 }
+    } } })
+    vi.useFakeTimers()
+    try {
+      render(<Timeline />)
+      const original = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(original, 'clientHeight', { value: 600 })
+      act(() => virtuosoHarness.itemsRendered?.([{}]))
+      act(() => virtuosoHarness.itemsRendered?.([]))
+      await act(async () => vi.advanceTimersByTimeAsync(80))
+      expect(screen.getByTestId('timeline-virtuoso')).not.toBe(original)
+      expect(virtuosoHarness.initialLocation).toMatchObject({ index: 0, align: 'start' })
+      expect(Math.abs((virtuosoHarness.initialLocation as { offset: number }).offset)).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the virtual scroller during sync backfill and an overlapping authoritative correction', () => {
+    render(<Timeline />)
+    const original = screen.getByTestId('timeline-virtuoso')
+    act(() => useAppStore.setState(state => ({
+      syncStatus: 'syncing',
+      snapshots: { [SESSION_ID]: mergeSnapshots(state.snapshots[SESSION_ID], snapshot([
+        timelineEvent(90), timelineEvent(100), timelineEvent(101)
+      ])) }
+    })))
+    expect(screen.getByTestId('timeline-virtuoso')).toBe(original)
+    act(() => useAppStore.setState(state => ({
+      syncStatus: 'live',
+      snapshots: { [SESSION_ID]: replaceSnapshot(state.snapshots[SESSION_ID], snapshot([
+        timelineEvent(100, { text: 'Corrected remote response' }), timelineEvent(101), timelineEvent(102)
+      ])) }
+    })))
+    expect(screen.getByTestId('timeline-virtuoso')).toBe(original)
+    expect(useAppStore.getState().snapshots[SESSION_ID].events.map(event => event.seq)).toEqual([90, 100, 101, 102])
+  })
+
+  it('does not apply a pending empty-range recovery to a new authoritative sync window', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<Timeline />)
+      const original = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(original, 'clientHeight', { value: 600 })
+      act(() => virtuosoHarness.itemsRendered?.([{}]))
+      act(() => virtuosoHarness.itemsRendered?.([]))
+      act(() => useAppStore.setState(state => ({
+        snapshots: { [SESSION_ID]: replaceSnapshot(state.snapshots[SESSION_ID], snapshot([timelineEvent(800)]), true) }
+      })))
+      const synced = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(synced, 'clientHeight', { value: 600 })
+      expect(synced).not.toBe(original)
+      await act(async () => vi.advanceTimersByTimeAsync(80))
+      expect(screen.getByTestId('timeline-virtuoso')).toBe(synced)
+      expect(useAppStore.getState().snapshots[SESSION_ID].events.map(event => event.seq)).toEqual([800])
+    } finally { vi.useRealTimers() }
+  })
+
+  it('does not rebuild an empty range when synchronization has authoritatively emptied the history', async () => {
+    vi.useFakeTimers()
+    try {
+      render(<Timeline />)
+      const original = screen.getByTestId('timeline-virtuoso')
+      Object.defineProperty(original, 'clientHeight', { value: 600 })
+      act(() => virtuosoHarness.itemsRendered?.([{}]))
+      act(() => virtuosoHarness.itemsRendered?.([]))
+      act(() => useAppStore.setState(state => ({
+        snapshots: { [SESSION_ID]: replaceSnapshot(state.snapshots[SESSION_ID], { ...snapshot([]), eventsTotal: 0 }, true) }
+      })))
+      await act(async () => vi.advanceTimersByTimeAsync(80))
+      expect(useAppStore.getState().snapshots[SESSION_ID].events).toEqual([])
+      expect(screen.getByTestId('timeline-virtuoso')).toBe(original)
     } finally { vi.useRealTimers() }
   })
 

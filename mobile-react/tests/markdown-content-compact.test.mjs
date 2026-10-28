@@ -9,14 +9,15 @@ import { build } from 'esbuild'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 const mocks = {
-  'react-native': `export const View = 'View', Text = 'Text', ScrollView = 'ScrollView'; export const Linking = { openURL: async () => {} }; export const StyleSheet = { create: value => value, flatten: value => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean)) : value };`,
+  'react-native': `export const View = 'View', Text = 'Text', ScrollView = 'ScrollView'; export const Platform = { OS: 'ios' }; export const UIManager = { hasViewManagerConfig: () => true }; export const Linking = { openURL: async () => {} }; export const StyleSheet = { create: value => value, flatten: value => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean)) : value };`,
   '@bsky.app/react-native-uitextview': `export const UITextView = 'SelectableText';`,
   'react-native-svg': `export const SvgXml = 'SvgXml';`,
   'react-native-markdown-display': `export default 'Markdown'; export class MarkdownIt {}`,
   '../lib/math-markdown': `export const installMathMarkdown = value => value;`,
+  '../lib/markdown-ast': `export const stableMarkdownAst = value => value;`,
   '../lib/tex-svg': `export const texToSvg = () => null;`,
   '../lib/timeline-inline-references': `export const prepareInlineRouteMarkdown = text => ({ text, markers: [] }); export const restoreInlineRouteMarkerText = text => text; export const splitInlineRouteMarkerText = text => [{ text }]; export const timelineChatReferenceIsRemote = () => false; export const inlineRouteReferenceIsInteractive = () => false;`,
-  '../theme': `const colors = { text: '#eeeeee', blue: '#2f8cff', muted: '#999999', raised: '#202225', border: '#2b2d31', surface: '#18191b' }; export const usePalette = () => colors;`,
+  '../theme': `const colors = { text: '#eeeeee', blue: '#2f8cff', muted: '#999999', raised: '#202225', border: '#2b2d31', surface: '#18191b' }; export const usePalette = () => colors; export const radius = { sm: 6 };`,
 }
 const outfile = path.resolve('build/tmp', `markdown-content-compact-${process.pid}.mjs`)
 await mkdir(path.dirname(outfile), { recursive: true })

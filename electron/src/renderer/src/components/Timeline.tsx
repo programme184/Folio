@@ -176,6 +176,10 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
   const searchLease = useRef(0)
   const searchNavigated = useRef(false)
   const itemsLength = useRef(0)
+  const renderedRowsPresent = useRef(false)
+  const renderedRowsSeen = useRef(false)
+  const emptyRangeFrame = useRef<number | null>(null)
+  const [rangeRecovery, setRangeRecovery] = useState<{ source: string; revision: number; location: TimelineInitialLocation } | null>(null)
   const [atBottom, setAtBottom] = useState(initialViewState?.atBottom ?? true)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [newBelow, setNewBelow] = useState(false)
@@ -274,6 +278,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
     if (workspaceLayoutFrame.current != null) window.cancelAnimationFrame(workspaceLayoutFrame.current)
     if (workspaceLayoutFinishTimer.current != null) window.clearTimeout(workspaceLayoutFinishTimer.current)
     if (workspaceResizeObserverFrame.current != null) window.cancelAnimationFrame(workspaceResizeObserverFrame.current)
+    if (emptyRangeFrame.current != null) window.cancelAnimationFrame(emptyRangeFrame.current)
     workspaceResizeObserver.current?.disconnect()
   }, [])
 
@@ -427,7 +432,35 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
       openSettleLease.current = historySeekLease.current
     }
   }
-  const activeInitialLocation = historicalLocation ?? sourceLocationRef.current.location
+  const activeInitialLocation = rangeRecovery?.source === listSourceKey
+    ? rangeRecovery.location
+    : historicalLocation ?? sourceLocationRef.current.location
+
+  const onItemsRendered = useCallback((rendered: readonly unknown[]) => {
+    renderedRowsPresent.current = rendered.length > 0
+    if (rendered.length) renderedRowsSeen.current = true
+    if (emptyRangeFrame.current != null) window.cancelAnimationFrame(emptyRangeFrame.current)
+    emptyRangeFrame.current = null
+    if (rendered.length || !renderedRowsSeen.current || !itemsLength.current) return
+    // A changing live row can leave the virtual window outside its measured
+    // content. With no mounted rows, ResizeObserver cannot correct that stale
+    // size map: the whole list becomes padding. Allow normal layout two frames
+    // to settle, then rebuild only this impossible empty range, not every delta.
+    emptyRangeFrame.current = window.requestAnimationFrame(() => {
+      emptyRangeFrame.current = window.requestAnimationFrame(() => {
+        emptyRangeFrame.current = null
+        if (projectionSource.current !== listSourceKey || renderedRowsPresent.current || !itemsLength.current || !scroller.current?.clientHeight) return
+        renderedRowsSeen.current = false
+        const location = remountTimelineLocation({
+          atBottom: atBottomRef.current,
+          topItemId: topItemIdRef.current,
+          // The old pixel offset may refer to a now-collapsed activity block.
+          topOffset: 0
+        }, projected.current.map(item => item.key))
+        setRangeRecovery(previous => ({ source: listSourceKey, revision: (previous?.revision ?? 0) + 1, location }))
+      })
+    })
+  }, [listSourceKey])
 
   const cancelSavedViewRestore = useCallback(() => {
     if (!restoringSavedViewRef.current) return
@@ -1075,7 +1108,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
   return (
     <div className="timeline" onWheelCapture={requestOlderFromUserScroll}>
       {restoringSavedView ? <div className="timeline-pending" /> : <Virtuoso
-        key={listSourceKey}
+        key={`${listSourceKey}:range:${rangeRecovery?.source === listSourceKey ? rangeRecovery.revision : 0}`}
         ref={ref}
         data={items}
         firstItemIndex={firstItemIndex.current}
@@ -1087,6 +1120,7 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
         skipAnimationFrameInResizeObserver
         followOutput={false}
         totalListHeightChanged={settleLatestLayout}
+        itemsRendered={onItemsRendered}
         atBottomThreshold={80}
         atBottomStateChange={value => {
           atBottomRef.current = value

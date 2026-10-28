@@ -14,7 +14,7 @@ const wake = (patch: Partial<Event> = {}): Event => event(1, 'turn_started', {
 })
 
 describe('native quiet mailbox wake', () => {
-  it.each(['codex', 'claude'] as const)('keeps %s live work and results without a fake You input, cold and appended', backend => {
+  it.each(['codex', 'claude', 'gemini'] as const)('keeps %s live work and results without a fake You input, cold and appended', backend => {
     const records = [wake({ backend }),
       event(2, 'reasoning_summary', { backend, text: 'Checking the mailbox', phase: 'commentary' })]
     clearTimelineProjectionCache()
@@ -35,9 +35,11 @@ describe('native quiet mailbox wake', () => {
     { provider_user_authored: true }, { imported: true, run_id: 'import_wake' },
     { prompt: 'Check the unread mailbox using the chat inbox tool.' }
   ] satisfies Partial<Event>[])('preserves inputs without the exact native marker: %j', patch => {
-    const input = wake(patch)
-    const rows = renderTimelineItems(projectTimeline([input], []))
-    expect(rows.filter(row => row.kind === 'message' && row.role === 'user')).toHaveLength(1)
-    expect(messageItemText(rows.find(row => row.kind === 'message')!)).toBe(input.prompt)
+    for (const backend of ['codex', 'claude', 'gemini'] as const) {
+      const input = wake({ backend, ...patch })
+      const rows = renderTimelineItems(projectTimeline([input], []))
+      expect(rows.filter(row => row.kind === 'message' && row.role === 'user')).toHaveLength(1)
+      expect(messageItemText(rows.find(row => row.kind === 'message')!)).toBe(input.prompt)
+    }
   })
 })

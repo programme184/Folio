@@ -8,6 +8,7 @@ import { RUNNING_FORK_DESCRIPTION, RUNNING_FORK_UNAVAILABLE } from '@shared/sess
 import { useAppStore } from '../store/app-store'
 import { ChatHeader } from './ChatHeader'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
+import { RenameChatDialog } from './Dialogs'
 
 const originalAcknowledgeEmergency = useAppStore.getState().acknowledgeEmergency
 const originalUpdateSession = useAppStore.getState().updateSession
@@ -204,6 +205,40 @@ describe('ChatHeader', () => {
     expect(screen.queryByText('/work/not-the-folder')).not.toBeInTheDocument()
   })
 
+  it('keeps the folder and chat controls without repeating a title already shown in the pane tab', () => {
+    const session = { id: 'chat', title: 'Deployment notes', folder: 'Research', backend: 'codex' as const }
+    useAppStore.setState({ sessions: [session], selectedSessionId: session.id })
+    render(<ChatHeader titleInTab onTerminalToggle={() => undefined} />)
+
+    expect(screen.queryByRole('textbox', { name: 'Rename Deployment notes' })).not.toBeInTheDocument()
+    expect(screen.queryByText(session.title)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Folder: Research' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Chat actions' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Open terminal panel' })).toBeVisible()
+  })
+
+  it('renames the displayed pane chat through its actions menu while another chat is selected', async () => {
+    const selected = { id: 'selected', title: 'Selected chat', backend: 'codex' as const }
+    const displayed = { id: 'displayed', title: 'Pane chat', backend: 'claude' as const }
+    const updateSession = vi.fn().mockImplementation(async (id: string, patch: { title: string }) => {
+      useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === id ? { ...session, ...patch } : session) }))
+    })
+    useAppStore.setState({ sessions: [selected, displayed], selectedSessionId: selected.id, updateSession })
+    const user = userEvent.setup()
+    render(<><ChatHeader session={displayed} titleInTab focused={false} /><RenameChatDialog /></>)
+
+    await user.click(screen.getByRole('button', { name: 'Chat actions' }))
+    await user.click(screen.getByRole('menuitem', { name: 'Rename Chat' }))
+    const input = await screen.findByRole('textbox', { name: 'Chat name' })
+    expect(input).toHaveValue(displayed.title)
+    await user.clear(input)
+    await user.type(input, 'New pane title')
+    await user.click(screen.getByRole('button', { name: 'Rename' }))
+
+    expect(updateSession).toHaveBeenCalledExactlyOnceWith(displayed.id, { title: 'New pane title' })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rename chat' })).not.toBeInTheDocument())
+  })
+
   it('labels an unfiled chat as General', () => {
     const session = { id: 'chat', title: 'Chat', folder: '  ', backend: 'codex' as const }
     useAppStore.setState({ sessions: [session], selectedSessionId: session.id })
@@ -378,11 +413,14 @@ describe('ChatHeader', () => {
     expect(openSplit).toHaveBeenCalledWith(candidate.id)
   })
 
-  it('copies the full session id from the header', async () => {
+  it.each([
+    { backend: 'codex' as const, session_id: '01a04c9e-7ac-full-value' },
+    { backend: 'gemini' as const, gemini_session_id: '01a04c9e-7ac-full-value' }
+  ])('copies the full $backend session id from the header', async identity => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
     ;(window.agentsDock as unknown as { native: { writeClipboard: typeof writeClipboard } }).native = { writeClipboard }
     useAppStore.setState({
-      sessions: [{ id: 'chat', title: 'Chat', backend: 'codex', session_id: '01a04c9e-7ac-full-value' }],
+      sessions: [{ id: 'chat', title: 'Chat', ...identity }],
       selectedSessionId: 'chat'
     })
     render(<ChatHeader />)
@@ -391,6 +429,13 @@ describe('ChatHeader', () => {
 
     expect(writeClipboard).toHaveBeenCalledWith('01a04c9e-7ac-full-value')
     expect(await screen.findByRole('button', { name: 'Session copied' })).toBeInTheDocument()
+  })
+
+  it('explains an unavailable Gemini native identity without copying a fabricated id', () => {
+    useAppStore.setState({ sessions: [{ id: 'chat', title: 'Chat', backend: 'gemini' }], selectedSessionId: 'chat' })
+    render(<ChatHeader />)
+    expect(screen.getByText('session Not created yet')).toHaveAttribute('title', 'Gemini has not saved a resumable session yet. Check any sign-in, model or tool error below.')
+    expect(screen.queryByRole('button', { name: 'Copy session' })).not.toBeInTheDocument()
   })
 
   it('sizes the rename field to its title instead of filling the header', () => {

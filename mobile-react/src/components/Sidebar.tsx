@@ -1,26 +1,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActionSheetIOS, Alert, FlatList, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { ActionSheetIOS, ActivityIndicator, Alert, FlatList, Image, Platform, Pressable, StyleSheet, View } from 'react-native'
+import { KeyboardAvoidingView, useKeyboardState } from 'react-native-keyboard-controller'
 import { MenuView, type MenuAction, type MenuComponentRef } from '@expo/ui/community/menu'
-import { ChevronDown, ChevronRight, FolderPlus, MoreHorizontal, Network, Plus, RefreshCw, Search, Server, Settings } from 'lucide-react-native'
+import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg'
+import { ChevronDown, ChevronRight, FolderPlus, MoreHorizontal, Plus, Search, Server, Settings, X } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { fontWeight, radius, spacing, typography, usePalette } from '../theme'
 import type { Session, TimelineSearchResult } from '../types'
-import { formatChatDateTime, isUnread, runtimeSummary } from '../lib/format'
-import { compareSessions, orderedSessionSections, sessionSection } from '../lib/session-order'
+import { formatChatDate, isUnread, runtimeSummary } from '../lib/format'
+import { compareSessions, sessionSection } from '../lib/session-order'
+import { sidebarSessionSections, sidebarSessionStatus, type SidebarStatus } from '../lib/sidebar-sections'
 import { sessionNeedsProviderInteraction, sessionPendingInteractionCount } from '../lib/claude-controls'
+import { sessionAttentionLevel, type NotificationLevel } from '../lib/notification-levels'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { isServerSetupRequired } from '../lib/first-launch'
 import { serverSearchQuery } from '../lib/server-search'
 import { sidebarContentResult } from '../lib/sidebar-search'
 import { isWelcomeSession } from '../lib/welcome-session'
+import { t } from '../i18n'
+import { useLanguageStore } from '../store/useLanguageStore'
 import { Text, TextInput } from './AppText'
 import { BackendMark } from './BackendMark'
 import { useTextPrompt, type TextPromptOptions } from './TextPromptDialog'
 import { IconButton } from './ui'
 import { ServerProfileSelector, type ServerProfileListItem } from './ServerProfiles'
 
-type Row = { kind: 'header'; key: string; title: string; folder: string; count: number } | { kind: 'session'; key: string; session: Session; searchResult?: TimelineSearchResult }
+type Row = { kind: 'header'; key: string; title: string; folder: string; count: number; status?: SidebarStatus; attentionLevel?: NotificationLevel } | { kind: 'session'; key: string; session: Session; status?: SidebarStatus; searchResult?: TimelineSearchResult }
+
+const HOME_ACTION_SIZE = 52
 
 type ProfileScope = {
   activeProfileId: string | null
@@ -51,23 +59,22 @@ function sessionScopeIsCurrent(scope: ProfileScope, sessionId: string): boolean 
     && state.sessions.some(session => session.id === sessionId)
 }
 
-export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitchServer, onAddServer, onManageServers, onSettings, onTeamNetwork, onNewChat, onOpenChat }: {
+export function Sidebar({ compact, profiles, activeProfileId, switchingProfileId, onAddServer, onManageServers, onSettings, onNewChat, onOpenChat }: {
+  compact: boolean
   profiles: readonly ServerProfileListItem[]
   activeProfileId: string | null
   switchingProfileId?: string | null
-  onSwitchServer: (profileId: string) => Promise<boolean>
   onAddServer: () => void
   onManageServers: () => void
   onSettings: () => void
-  onTeamNetwork: () => void
   onNewChat: () => void
   onOpenChat?: () => void
 }) {
   const colors = usePalette()
   const insets = useSafeAreaInsets()
+  const keyboardVisible = useKeyboardState(state => state.isVisible)
   const needsServerSetup = useAppStore(state => isServerSetupRequired({ serverConfigured: state.serverConfigured, serverURL: state.serverURL }))
   const sessions = useAppStore(state => state.sessions)
-  const selected = useAppStore(state => state.selectedSessionId)
   const active = useAppStore(state => state.activeSessionIds)
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsedFolders = useAppStore(state => state.collapsedFolders)
@@ -85,12 +92,14 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   const setFolderOrder = useAppStore(state => state.setFolderOrder)
   const setCollapsedFolders = useAppStore(state => state.setCollapsedFolders)
   const [query, setQuery] = useState('')
+  const [searchVisible, setSearchVisible] = useState(false)
+  const [collapsedStatuses, setCollapsedStatuses] = useState<Set<SidebarStatus>>(() => new Set())
+  const [refreshingScope, setRefreshingScope] = useState<ProfileScope | null>(null)
   const [openingSearchResultId, setOpeningSearchResultId] = useState<string | null>(null)
   const { promptText, textPromptDialog } = useTextPrompt()
-  const waitingSessionCount = useMemo(() => sessions.filter(sessionNeedsProviderInteraction).length, [sessions])
   const profileScope = useMemo<ProfileScope>(() => ({ activeProfileId, profileGeneration }), [activeProfileId, profileGeneration])
   const collapsed = useMemo(() => new Set(collapsedFolders), [collapsedFolders])
-  const listState = useMemo(() => ({ active, selected, openingSearchResultId }), [active, openingSearchResultId, selected])
+  const listState = useMemo(() => ({ active, openingSearchResultId }), [active, openingSearchResultId])
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const searchInput = useRef<TextInput>(null)
   const openingSearchResult = useRef(false)
@@ -104,6 +113,17 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     clearSearch()
     setQuery(value)
   }, [clearSearch])
+  const closeSearch = useCallback(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    searchTimer.current = null
+    handleSearchChange('')
+    setSearchVisible(false)
+    dismissSearchKeyboard()
+  }, [dismissSearchKeyboard, handleSearchChange])
+  const closeEmptySearch = useCallback(() => {
+    if (!searchVisible || query.trim()) return
+    closeSearch()
+  }, [closeSearch, query, searchVisible])
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current)
@@ -128,6 +148,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
   useEffect(() => {
     openingSearchResult.current = false
     setOpeningSearchResultId(null)
+    setCollapsedStatuses(new Set())
   }, [profileScope])
 
   const retrySearch = useCallback(() => {
@@ -137,7 +158,22 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     void search(clean, undefined, profileScope.profileGeneration)
   }, [clearSearch, needsServerSetup, profileScope, query, search])
 
+  const refreshChats = useCallback(async () => {
+    if (needsServerSetup || refreshingScope === profileScope || !profileScopeIsCurrent(profileScope)) return
+    dismissSearchKeyboard()
+    setRefreshingScope(profileScope)
+    try {
+      await refreshSessions(profileScope.profileGeneration)
+    } catch (error) {
+      if (profileScopeIsCurrent(profileScope)) Alert.alert('Could not refresh chats', error instanceof Error ? error.message : 'Please try again.')
+    } finally {
+      // An old server's completion must not clear a newer server's spinner.
+      setRefreshingScope(current => current === profileScope ? null : current)
+    }
+  }, [dismissSearchKeyboard, needsServerSetup, profileScope, refreshSessions, refreshingScope])
+
   const rows = useMemo(() => {
+    if (needsServerSetup) return []
     const contentResults = new Map<string, TimelineSearchResult>()
     if (serverSearchQuery(query)) {
       for (const result of searchResults) {
@@ -147,18 +183,20 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     const matchedByContent = new Set(contentResults.keys())
     const clean = query.trim().toLowerCase()
     const filtered = clean
-      ? sessions.filter(session => session.title.toLowerCase().includes(clean) || matchedByContent.has(session.id))
+      ? sessions.filter(session => !isWelcomeSession(session.id) && (session.title.toLowerCase().includes(clean) || matchedByContent.has(session.id)))
           .sort((a, b) => Number(b.title.toLowerCase().includes(clean)) - Number(a.title.toLowerCase().includes(clean)))
-      : sessions
-    return orderedSessionSections(filtered, folderOrder, true, !clean).flatMap<Row>(section => {
+      : sessions.filter(session => !isWelcomeSession(session.id))
+    return sidebarSessionSections(filtered, active, folderOrder, !clean).flatMap<Row>(section => {
       const folder = section.id
       const values = section.sessions
+      const isCollapsed = section.status ? collapsedStatuses.has(section.status) : collapsed.has(folder)
       return [
-        { kind: 'header', key: `header:${folder}`, title: folder, folder, count: values.length },
-        ...((collapsed.has(folder) && !clean ? [] : values.map(session => ({
+        { kind: 'header', key: section.status ? `header:status:${section.status}` : `header:folder:${folder}`, title: section.title, folder, status: section.status, attentionLevel: section.attentionLevel, count: values.length },
+        ...((isCollapsed && !clean ? [] : values.map(session => ({
           kind: 'session' as const,
           key: session.id,
           session,
+          status: section.status,
           // A visible title match is a request to open that chat at its live
           // position. Do not silently reinterpret the same row as an older
           // content hit merely because the server also found the query in its
@@ -167,7 +205,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         })))),
       ]
     })
-  }, [collapsed, folderOrder, query, searchResults, sessions])
+  }, [active, collapsed, collapsedStatuses, folderOrder, needsServerSetup, query, searchResults, sessions])
   const openSessionRow = useCallback((session: Session, result?: TimelineSearchResult) => {
     if (!sessionScopeIsCurrent(profileScope, session.id) || openingSearchResult.current) return
     dismissSearchKeyboard()
@@ -200,7 +238,10 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         if (
           sessionScopeIsCurrent(profileScope, session.id)
           && useAppStore.getState().selectedSessionId === session.id
-        ) onOpenChat?.()
+        ) {
+          closeSearch()
+          onOpenChat?.()
+        }
         return
       }
       // selectSession publishes the target synchronously, then hydrates and
@@ -210,22 +251,29 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       if (
         sessionScopeIsCurrent(profileScope, session.id)
         && useAppStore.getState().selectedSessionId === session.id
-      ) onOpenChat?.()
+      ) {
+        closeSearch()
+        onOpenChat?.()
+      }
       void selection
       return
     }
     openingSearchResult.current = true
     setOpeningSearchResultId(result.event_id)
     void seekTimelineResult(result, profileScope.profileGeneration).then(opened => {
-      if (opened && sessionScopeIsCurrent(profileScope, session.id)) onOpenChat?.()
+      if (opened && sessionScopeIsCurrent(profileScope, session.id)) {
+        closeSearch()
+        onOpenChat?.()
+      }
     }).finally(() => {
       openingSearchResult.current = false
       if (profileScopeIsCurrent(profileScope)) setOpeningSearchResultId(null)
     })
-  }, [dismissSearchKeyboard, onOpenChat, profileScope, seekTimelineResult, select])
+  }, [closeSearch, dismissSearchKeyboard, onOpenChat, profileScope, seekTimelineResult, select])
   const reorderNeighbors = useMemo(() => {
     const groups = new Map<string, Session[]>()
     for (const session of sessions) {
+      if (sidebarSessionStatus(session, active)) continue
       const section = sessionSection(session)
       groups.set(section, [...(groups.get(section) ?? []), session])
     }
@@ -237,7 +285,7 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
       }))
     }
     return result
-  }, [sessions])
+  }, [active, sessions])
   const folders = useMemo(() => {
     const values = new Set(['General', ...folderOrder])
     for (const session of sessions) {
@@ -272,77 +320,96 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
     setFolderOrder(order, profileScope.profileGeneration)
   }
 
+  const searchField = searchVisible ? <View
+    testID="sidebar-search-dock"
+    onTouchEnd={event => event.stopPropagation()}
+    style={[styles.searchDock, compact && { paddingBottom: spacing.sm + (keyboardVisible ? 0 : insets.bottom) }]}
+  >
+    <View style={[styles.search, { backgroundColor: colors.raised }]}>
+      <Search size={18} color={colors.muted} />
+      <TextInput
+        ref={searchInput}
+        autoFocus
+        value={query}
+        onChangeText={handleSearchChange}
+        onBlur={closeEmptySearch}
+        editable={!workspaceAdopting && !switchingProfileId}
+        placeholder={workspaceAdopting ? 'Preparing server workspace…' : 'Search chats and history'}
+        placeholderTextColor={colors.muted}
+        autoCorrect={false}
+        autoCapitalize="none"
+        accessibilityLabel="Search chats and history"
+        testID="sidebar-search-input"
+        returnKeyType="search"
+        submitBehavior="blurAndSubmit"
+        onSubmitEditing={() => {
+          if (searchTimer.current) clearTimeout(searchTimer.current)
+          searchTimer.current = null
+          retrySearch()
+          dismissSearchKeyboard()
+        }}
+        clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
+        style={[styles.searchInput, { color: colors.text }]}
+      />
+      {!needsServerSetup && searchBusy ? <ActivityIndicator size="small" color={colors.muted} /> : null}
+      <IconButton icon={X} label="Close search" testID="sidebar-search-close" onPress={closeSearch} />
+    </View>
+  </View> : null
+
   return (
-    <View style={[styles.root, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-      <View style={styles.titleRow}>
-        <Text style={[styles.title, { color: colors.text }]}>AgentsDock</Text>
-      </View>
-      <View style={styles.actions}>
-        <IconButton icon={RefreshCw} disabled={workspaceAdopting || needsServerSetup} onPress={() => { dismissSearchKeyboard(); if (profileScopeIsCurrent(profileScope)) void refreshSessions(profileScope.profileGeneration) }} label="Refresh chats" />
-        <IconButton icon={FolderPlus} disabled={workspaceAdopting || needsServerSetup} onPress={createFolder} label="New folder" />
-        <IconButton icon={Plus} disabled={workspaceAdopting || needsServerSetup} onPress={onNewChat} label="New chat" testID="sidebar-new-chat" />
-        <IconButton icon={Settings} disabled={workspaceAdopting} onPress={() => { if (profileScopeIsCurrent(profileScope)) onSettings() }} label="Settings" testID="sidebar-settings" />
-      </View>
-      <View style={styles.serverSelector}><ServerProfileSelector
+    <KeyboardAvoidingView
+      testID="sidebar"
+      onTouchEnd={closeEmptySearch}
+      style={[styles.root, { backgroundColor: colors.background, borderColor: colors.border }, !compact && styles.sidebarDivider]}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      enabled={compact && searchVisible}
+      automaticOffset={Platform.OS === 'android'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top : 0}
+    >
+      <View style={styles.topRow}>
+        <View style={styles.serverSelector}><ServerProfileSelector
           profiles={profiles}
           activeProfileId={activeProfileId}
           switchingProfileId={switchingProfileId}
-          onSelectProfile={profileId => { dismissSearchKeyboard(); return profileScopeCanNavigate(profileScope) ? onSwitchServer(profileId) : Promise.resolve(false) }}
-          onAddServer={() => { if (profileScopeCanNavigate(profileScope)) onAddServer() }}
-          onManageServers={() => { if (profileScopeCanNavigate(profileScope)) onManageServers() }}
+          refreshing={refreshingScope === profileScope}
+          disabled={workspaceAdopting}
+          onPress={() => { if (profileScopeCanNavigate(profileScope)) onManageServers() }}
         /></View>
-      {!needsServerSetup ? <Pressable
-        testID="sidebar-team-network"
-        accessibilityRole="button"
-        accessibilityLabel="Open Team Network"
-        accessibilityState={{ disabled: workspaceAdopting || Boolean(switchingProfileId) }}
-        disabled={workspaceAdopting || Boolean(switchingProfileId)}
-        onPress={() => { dismissSearchKeyboard(); if (profileScopeCanNavigate(profileScope)) onTeamNetwork() }}
-        style={({ pressed }) => [styles.teamNetworkButton, { backgroundColor: colors.raised, borderColor: colors.border, opacity: workspaceAdopting || switchingProfileId ? 0.4 : pressed ? 0.68 : 1 }]}
-      ><Network size={16} color={colors.blue} /><Text style={[styles.teamNetworkButtonText, { color: colors.text }]}>Team Network</Text><ChevronRight size={15} color={colors.muted} /></Pressable> : null}
-      {needsServerSetup ? <Pressable
-        testID="sidebar-setup-server"
-        accessibilityRole="button"
-        accessibilityLabel="Set up your server"
-        onPress={() => { if (profileScopeCanNavigate(profileScope)) onAddServer() }}
-        style={({ pressed }) => [styles.setupBanner, { backgroundColor: colors.blue, opacity: pressed ? 0.85 : 1 }]}
-      >
-        <Server size={16} color="white" />
-        <Text style={styles.setupBannerText}>Set up your server</Text>
-      </Pressable> : null}
-      <View
-        style={[styles.search, { backgroundColor: colors.raised, borderColor: colors.border }]}
-      >
-        <Search size={16} color={colors.muted} />
-        <TextInput
-          ref={searchInput}
-          value={query}
-          onChangeText={handleSearchChange}
-          editable={!workspaceAdopting && !switchingProfileId}
-          placeholder={workspaceAdopting ? 'Preparing server workspace…' : 'Search chats and history'}
-          placeholderTextColor={colors.muted}
-          autoCorrect={false}
-          accessibilityLabel="Search chats and history"
-          testID="sidebar-search-input"
-          returnKeyType="search"
-          submitBehavior="blurAndSubmit"
-          onSubmitEditing={dismissSearchKeyboard}
-          clearButtonMode={Platform.OS === 'ios' ? 'while-editing' : 'never'}
-          style={[styles.searchInput, { color: colors.text }]}
-        />
-        {!needsServerSetup && searchBusy ? <Text style={{ color: colors.muted }}>…</Text> : null}
+        <View style={styles.topActions}>
+          <IconButton icon={FolderPlus} testID="sidebar-new-folder" disabled={workspaceAdopting || needsServerSetup || Boolean(switchingProfileId)} onPress={createFolder} label="New folder" />
+          <Pressable
+            testID="sidebar-search-open"
+            onTouchEnd={event => event.stopPropagation()}
+            accessibilityRole="button"
+            accessibilityLabel={t('Search chat')}
+            accessibilityState={{ expanded: searchVisible, disabled: workspaceAdopting || Boolean(switchingProfileId) }}
+            disabled={workspaceAdopting || Boolean(switchingProfileId)}
+            onPress={() => {
+              if (!profileScopeIsCurrent(profileScope)) return
+              setSearchVisible(true)
+              searchInput.current?.focus()
+            }}
+            style={({ pressed }) => [styles.searchButton, { opacity: workspaceAdopting || switchingProfileId ? 0.4 : pressed ? 0.6 : 1 }]}
+          >
+            <Search size={18} color={colors.muted} strokeWidth={1.8} />
+          </Pressable>
+        </View>
       </View>
+      {!compact ? searchField : null}
       {!needsServerSetup && searchError && serverSearchQuery(query) ? <View accessibilityRole="alert" style={styles.searchError}>
-        <Text style={[styles.searchErrorText, { color: colors.red }]}>History search failed.</Text>
+        <Text style={[styles.searchErrorText, { color: colors.red }]} localize>History search failed.</Text>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Retry history search"
+          accessibilityLabel={t('Retry history search')}
           testID="sidebar-search-retry"
           onPress={retrySearch}
           style={({ pressed }) => [styles.searchRetry, { borderColor: colors.red, opacity: pressed ? 0.6 : 1 }]}
-        ><Text style={[styles.searchRetryText, { color: colors.red }]}>Retry</Text></Pressable>
+        ><Text style={[styles.searchRetryText, { color: colors.red }]} localize>Retry</Text></Pressable>
       </View> : null}
+      {/* Extend the viewport behind the fade; padding lets the final row scroll clear of it. */}
       <FlatList
+        testID="sidebar-chat-list"
+        style={styles.chatList}
         pointerEvents={workspaceAdopting ? 'none' : 'auto'}
         data={rows}
         extraData={listState}
@@ -350,17 +417,37 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
         alwaysBounceVertical={Platform.OS === 'ios'}
+        refreshing={refreshingScope === profileScope}
+        onRefresh={workspaceAdopting || needsServerSetup || switchingProfileId ? undefined : refreshChats}
         onScrollBeginDrag={dismissSearchKeyboard}
-        contentContainerStyle={styles.list}
+        contentContainerStyle={[styles.list, needsServerSetup && styles.welcomeList, { paddingBottom: compact && searchVisible ? spacing.xl : HOME_ACTION_SIZE + spacing.lg + spacing.sm + spacing.xl + insets.bottom }]}
+        ListEmptyComponent={needsServerSetup ? <View testID="sidebar-welcome" style={styles.welcome}>
+          <Image source={require('../../assets/icon.png')} style={styles.welcomeIcon} />
+          <Text style={[styles.welcomeTitle, { color: colors.text }]} localize>Welcome to AgentsDock</Text>
+          <Pressable testID="sidebar-setup-server" accessibilityRole="button" accessibilityLabel={t('Set up your server')} onPress={() => { if (profileScopeCanNavigate(profileScope)) onAddServer() }} style={({ pressed }) => [styles.setupBanner, { backgroundColor: colors.blue, opacity: pressed ? 0.85 : 1 }]}>
+            <Server size={16} color={colors.onAccent} />
+            <Text style={[styles.setupBannerText, { color: colors.onAccent }]} localize>Set up your server</Text>
+          </Pressable>
+        </View> : query.trim() ? <Text style={[styles.emptySearch, { color: colors.muted }]}>{t(searchBusy ? 'Searching history…' : 'No matching chats')}</Text> : null}
         renderItem={({ item }) => item.kind === 'header' ? <FolderHeader
           item={item}
           profileScope={profileScope}
-          collapsed={collapsed.has(item.folder)}
+          collapsed={!query.trim() && (item.status ? collapsedStatuses.has(item.status) : collapsed.has(item.folder))}
           canMoveUp={movableFolders.indexOf(item.folder) > 0}
           canMoveDown={movableFolders.indexOf(item.folder) >= 0 && movableFolders.indexOf(item.folder) < movableFolders.length - 1}
           onDismissKeyboard={dismissSearchKeyboard}
           onToggle={() => {
             if (!profileScopeIsCurrent(profileScope)) return
+            const status = item.status
+            if (status) {
+              setCollapsedStatuses(current => {
+                const next = new Set(current)
+                if (next.has(status)) next.delete(status)
+                else next.add(status)
+                return next
+              })
+              return
+            }
             const next = new Set(collapsed)
             if (next.has(item.folder)) next.delete(item.folder)
             else next.add(item.folder)
@@ -372,13 +459,12 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           return <SessionRow
             session={item.session}
             profileScope={profileScope}
-            selected={selected === item.session.id}
             running={active.has(item.session.id)}
             searchSnippet={item.searchResult?.snippet}
             opening={openingSearchResultId === item.searchResult?.event_id}
             folders={folders}
-            canMoveUp={Boolean(previousId)}
-            canMoveDown={Boolean(nextId)}
+            canMoveUp={!item.status && Boolean(previousId)}
+            canMoveDown={!item.status && Boolean(nextId)}
             onMoveUp={() => { if (previousId && sessionScopeIsCurrent(profileScope, item.session.id)) void reorder(item.session.id, previousId, 'before', profileScope.profileGeneration) }}
             onMoveDown={() => { if (nextId && sessionScopeIsCurrent(profileScope, item.session.id)) void reorder(item.session.id, nextId, 'after', profileScope.profileGeneration) }}
             onDismissKeyboard={dismissSearchKeyboard}
@@ -389,18 +475,45 @@ export function Sidebar({ profiles, activeProfileId, switchingProfileId, onSwitc
           />
         })()}
       />
-      <View style={[styles.footer, { borderColor: colors.border, minHeight: 34 + insets.bottom, paddingBottom: insets.bottom }]}>
-        <Text style={{ color: colors.muted, fontSize: 10 }}>{sessions.length} chats</Text>
-        <View style={{ flex: 1 }} />
-        {waitingSessionCount ? <>
-          <View style={[styles.footerDot, { backgroundColor: colors.orange }]} />
-          <Text style={{ color: colors.orange, fontSize: 10, fontWeight: '700' }}>{waitingSessionCount} waiting</Text>
-        </> : null}
-        <View style={[styles.footerDot, { backgroundColor: active.size ? colors.green : colors.muted }]} />
-        <Text style={{ color: colors.muted, fontSize: 10 }}>{active.size} active</Text>
-      </View>
+      {!(compact && searchVisible) ? <View
+        testID="sidebar-footer-fade"
+        pointerEvents="none"
+        accessible={false}
+        style={[styles.footerFade, { height: HOME_ACTION_SIZE + spacing.lg + spacing.sm + spacing.xl + insets.bottom }]}
+      >
+        <Svg width="100%" height="100%" accessible={false}>
+          <Defs>
+            <LinearGradient id="home-footer-fade" x1="0%" y1="0%" x2="0%" y2="100%">
+              <Stop offset="0%" stopColor={colors.homeFooter} stopOpacity={0} />
+              <Stop offset="60%" stopColor={colors.homeFooter} stopOpacity={0.65} />
+              <Stop offset="100%" stopColor={colors.homeFooter} stopOpacity={1} />
+            </LinearGradient>
+          </Defs>
+          <Rect width="100%" height="100%" fill="url(#home-footer-fade)" />
+        </Svg>
+      </View> : null}
+      {compact && searchVisible ? searchField : <View testID="sidebar-footer" pointerEvents="box-none" style={[styles.footer, { bottom: insets.bottom + spacing.sm }]}>
+        <Pressable
+          testID="sidebar-settings"
+          accessibilityRole="button"
+          accessibilityLabel={t('Settings')}
+          accessibilityState={{ disabled: workspaceAdopting || Boolean(switchingProfileId) }}
+          disabled={workspaceAdopting || Boolean(switchingProfileId)}
+          onPress={() => { if (profileScopeIsCurrent(profileScope)) onSettings() }}
+          style={({ pressed }) => [styles.homeAction, { backgroundColor: pressed ? colors.raised : colors.controlSurface, borderColor: colors.controlBorder, opacity: workspaceAdopting || switchingProfileId ? 0.35 : pressed ? 0.65 : 1 }]}
+        ><Settings size={22} color={colors.text} strokeWidth={1.8} /></Pressable>
+        <Pressable
+          testID="sidebar-new-chat"
+          accessibilityRole="button"
+          accessibilityLabel={t('New chat')}
+          accessibilityState={{ disabled: workspaceAdopting || needsServerSetup || Boolean(switchingProfileId) }}
+          disabled={workspaceAdopting || needsServerSetup || Boolean(switchingProfileId)}
+          onPress={() => { if (profileScopeIsCurrent(profileScope)) onNewChat() }}
+          style={({ pressed }) => [styles.homeAction, { backgroundColor: pressed ? colors.raised : colors.controlSurface, borderColor: colors.controlBorder, opacity: workspaceAdopting || needsServerSetup || switchingProfileId ? 0.35 : pressed ? 0.65 : 1 }]}
+        ><Plus size={24} color={colors.text} strokeWidth={2} /></Pressable>
+      </View>}
       {textPromptDialog}
-    </View>
+    </KeyboardAvoidingView>
   )
 }
 
@@ -415,7 +528,8 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
   onMove: (direction: 'up' | 'down') => void
 }) {
   const colors = usePalette()
-  const movable = !['Pinned', 'General', 'Archived'].includes(item.folder)
+  const movable = !item.status && !['Pinned', 'General', 'Archived'].includes(item.folder)
+  const displayTitle = item.status || !movable ? t(item.title) : item.title
   const openMoveSheet = () => {
     if (!profileScopeIsCurrent(profileScope)) return
     onDismissKeyboard()
@@ -426,7 +540,7 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
     const cancelButtonIndex = available.length
     ActionSheetIOS.showActionSheetWithOptions({
       title: item.title,
-      options: [...available.map(action => action.title), 'Cancel'],
+      options: [...available.map(action => t(action.title)), t('Cancel')],
       cancelButtonIndex,
     }, index => {
       const action = available[index]
@@ -434,22 +548,27 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
     })
   }
   const header = <Pressable
+    testID={item.status ? `sidebar-status-${item.status}` : `sidebar-folder-${item.folder}`}
     accessibilityRole="button"
-    accessibilityLabel={`${collapsed ? 'Expand' : 'Collapse'} ${item.title}`}
+    accessibilityLabel={`${t(collapsed ? 'Expand' : 'Collapse')} ${displayTitle}`}
+    accessibilityState={{ expanded: !collapsed }}
     accessibilityHint={movable && Platform.OS === 'ios' ? 'Long press to reorder this folder.' : undefined}
     onPress={() => { onDismissKeyboard(); onToggle() }}
     onLongPress={movable && Platform.OS === 'ios' ? openMoveSheet : undefined}
     delayLongPress={350}
     style={[styles.header, movable && Platform.OS !== 'ios' && styles.headerInShell]}
   >
-    {collapsed ? <ChevronRight size={13} color={colors.muted} /> : <ChevronDown size={13} color={colors.muted} />}
-    <Text style={[styles.headerText, { color: colors.muted }]}>{item.title}</Text>
-    <Text style={[styles.count, { color: colors.muted }]}>{item.count}</Text>
+    {item.status ? <View style={[styles.statusGroupDot, { backgroundColor: item.status === 'running' ? colors.green : item.attentionLevel === 'emergency' ? colors.red : item.attentionLevel === 'important' ? colors.pink : colors.blue }]} /> : null}
+    <Text style={[styles.headerText, { color: colors.muted }]}>{displayTitle}</Text>
+    <View style={styles.headerTrailing}>
+      <Text style={[styles.count, { color: colors.muted }]}>{item.count}</Text>
+      {collapsed ? <ChevronRight size={13} color={colors.muted} /> : <ChevronDown size={13} color={colors.muted} />}
+    </View>
   </Pressable>
   if (!movable || Platform.OS === 'ios') return header
   return <View style={styles.folderHeaderShell}>{header}<AndroidMoreMenu testID={`folder-actions-${item.folder}`} label={`${item.title} folder actions`} title={item.title} color={colors.muted} actions={[
-    { id: 'move-up', title: 'Move Folder Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
-    { id: 'move-down', title: 'Move Folder Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },
+    { id: 'move-up', title: t('Move Folder Up'), image: 'arrow.up', attributes: { disabled: !canMoveUp } },
+    { id: 'move-down', title: t('Move Folder Down'), image: 'arrow.down', attributes: { disabled: !canMoveDown } },
   ]} onAction={action => {
     if (!profileScopeIsCurrent(profileScope)) return
     if (action === 'move-up') onMove('up')
@@ -457,10 +576,9 @@ function FolderHeader({ item, profileScope, collapsed, canMoveUp, canMoveDown, o
   }} /></View>
 }
 
-function SessionRow({ session, profileScope, selected, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onPress, promptText }: {
+function SessionRow({ session, profileScope, running, searchSnippet, opening, folders, canMoveUp, canMoveDown, onMoveUp, onMoveDown, onDismissKeyboard, onPress, promptText }: {
   session: Session
   profileScope: ProfileScope
-  selected: boolean
   running: boolean
   searchSnippet?: string
   opening: boolean
@@ -474,12 +592,15 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   promptText: (options: TextPromptOptions) => Promise<string | null>
 }) {
   const colors = usePalette()
+  const locale = useLanguageStore(state => state.locale)
   const welcome = isWelcomeSession(session.id)
   const unread = isUnread(session)
+  const attentionLevel = sessionAttentionLevel(session)
+  const attentionColor = attentionLevel === 'emergency' ? colors.red : attentionLevel === 'important' ? colors.pink : colors.blue
   const waiting = sessionNeedsProviderInteraction(session)
   const pendingInteractionCount = sessionPendingInteractionCount(session)
-  const waitingProviderName = session.backend === 'claude' ? 'Claude' : 'Codex'
-  const activityDate = formatChatDateTime(session.latest_event_at ?? session.updated_at ?? session.created_at)
+  const waitingProviderName = session.backend === 'gemini' ? 'Gemini' : session.backend === 'claude' ? 'Claude' : 'Codex'
+  const activityDate = formatChatDate(session.latest_event_at ?? session.updated_at ?? session.created_at, new Date(), locale)
   const markRead = useAppStore(state => state.markRead)
   const markUnread = useAppStore(state => state.markUnread)
   const update = useAppStore(state => state.updateSession)
@@ -509,9 +630,9 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
   const confirmDelete = () => {
     const scope = profileScope
     if (!sessionScopeIsCurrent(scope, session.id)) return
-    Alert.alert('Delete chat?', `“${session.title}” and its AgentsDock history will be removed. Provider history is not deleted.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete chat', style: 'destructive', onPress: () => {
+    Alert.alert(t('Delete chat?'), t('“{title}” and its AgentsDock history will be removed. Provider history is not deleted.', { title: session.title }), [
+      { text: t('Cancel'), style: 'cancel' },
+      { text: t('Delete chat'), style: 'destructive', onPress: () => {
         if (!sessionScopeIsCurrent(scope, session.id)) return
         void remove(session.id, scope.profileGeneration)
       } },
@@ -535,19 +656,19 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     state: !session.pinned && (session.folder?.trim() || 'General') === folder ? 'on' : 'off',
   }))
   const actions: MenuAction[] = [
-    { id: 'read-state', title: unread ? 'Mark as Read' : 'Mark as Unread', image: unread ? 'envelope.open' : 'envelope.badge' },
-    { id: 'rename', title: 'Rename Chat', image: 'pencil' },
+    { id: 'read-state', title: t(unread ? 'Mark as Read' : 'Mark as Unread'), image: unread ? 'envelope.open' : 'envelope.badge' },
+    { id: 'rename', title: t('Rename Chat'), image: 'pencil' },
     { id: 'primary-actions', title: '', displayInline: true, subactions: [
-      { id: 'fork', title: 'Fork Chat', image: 'arrow.triangle.branch' },
-      { id: 'move-up', title: 'Move Up', image: 'arrow.up', attributes: { disabled: !canMoveUp } },
-      { id: 'move-down', title: 'Move Down', image: 'arrow.down', attributes: { disabled: !canMoveDown } },
+      { id: 'fork', title: t('Fork Chat'), image: 'arrow.triangle.branch' },
+      { id: 'move-up', title: t('Move Up'), image: 'arrow.up', attributes: { disabled: !canMoveUp } },
+      { id: 'move-down', title: t('Move Down'), image: 'arrow.down', attributes: { disabled: !canMoveDown } },
     ] },
     ...(session.archived ? [] : [
-      { id: 'pin', title: session.pinned ? 'Unpin Chat' : 'Pin Chat', image: session.pinned ? 'pin.slash' : 'pin' } satisfies MenuAction,
-      { id: 'move-folder', title: 'Move to Folder', image: 'folder', subactions: folderActions } satisfies MenuAction,
+      { id: 'pin', title: t(session.pinned ? 'Unpin Chat' : 'Pin Chat'), image: session.pinned ? 'pin.slash' : 'pin' } satisfies MenuAction,
+      { id: 'move-folder', title: t('Move to Folder'), image: 'folder', subactions: folderActions } satisfies MenuAction,
     ]),
-    { id: 'archive', title: session.archived ? 'Unarchive Chat' : 'Archive Chat', image: 'archivebox' },
-    { id: 'delete', title: 'Delete Chat', image: 'trash', attributes: { destructive: true } },
+    { id: 'archive', title: t(session.archived ? 'Unarchive Chat' : 'Archive Chat'), image: 'archivebox' },
+    { id: 'delete', title: t('Delete Chat'), image: 'trash', attributes: { destructive: true } },
   ]
   const openFolderSheet = () => {
     const scope = profileScope
@@ -556,9 +677,9 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     const cancelButtonIndex = folders.length
     const currentFolder = session.folder?.trim() || 'General'
     ActionSheetIOS.showActionSheetWithOptions({
-      title: 'Move to Folder',
+      title: t('Move to Folder'),
       message: session.title,
-      options: [...folders.map(folder => folder === currentFolder && !session.pinned ? `✓ ${folder}` : folder), 'Cancel'],
+      options: [...folders.map(folder => folder === currentFolder && !session.pinned ? `✓ ${folder}` : folder), t('Cancel')],
       cancelButtonIndex,
     }, index => {
       if (!sessionScopeIsCurrent(scope, session.id)) return
@@ -587,7 +708,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
     const destructiveButtonIndex = sheetActions.findIndex(action => action.destructive)
     ActionSheetIOS.showActionSheetWithOptions({
       title: session.title,
-      options: [...sheetActions.map(action => action.title), 'Cancel'],
+      options: [...sheetActions.map(action => t(action.title)), t('Cancel')],
       cancelButtonIndex,
       destructiveButtonIndex: destructiveButtonIndex >= 0 ? destructiveButtonIndex : undefined,
     }, index => {
@@ -612,7 +733,7 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
       accessibilityRole="button"
       accessibilityLabel={session.title}
       accessibilityHint={welcome ? 'Tap to open the local setup guide.' : Platform.OS === 'ios' ? 'Tap to open. Long press for chat actions.' : 'Tap to open. Use the adjacent More button for chat actions.'}
-      accessibilityState={{ selected, disabled: opening }}
+      accessibilityState={{ disabled: opening }}
       disabled={opening}
       delayLongPress={350}
       onLongPress={!welcome && Platform.OS === 'ios' ? openActionSheet : undefined}
@@ -621,27 +742,30 @@ function SessionRow({ session, profileScope, selected, running, searchSnippet, o
         onPress()
       }}
       style={({ pressed }) => [styles.session, Platform.OS !== 'ios' && styles.sessionInShell, {
-        backgroundColor: selected ? `${colors.blue}22` : pressed ? colors.raised : colors.surface,
-        borderColor: selected ? `${colors.blue}88` : 'transparent',
+        backgroundColor: pressed ? colors.raised : colors.background,
       }]}
     >
-      {selected ? <View pointerEvents="none" style={[styles.selectedIndicator, { backgroundColor: colors.blue }]} /> : null}
-      <View style={styles.backendStatus}>{welcome ? <Image source={require('../../assets/icon.png')} resizeMode="contain" style={{ width: 22, height: 22, borderRadius: 5 }} /> : <BackendMark backend={session.backend} size={22} />}</View>
+      <View style={styles.backendStatus}>{welcome ? <Image source={require('../../assets/icon.png')} resizeMode="contain" style={{ width: 22, height: 22, borderRadius: radius.md }} /> : <BackendMark backend={session.backend} size={22} />}</View>
       <View style={styles.sessionText}>
         <Text style={[styles.sessionTitle, { color: colors.text }]} numberOfLines={1}>{session.title}</Text>
         <View style={styles.sessionMetaRow}>
-          <Text style={[styles.sessionMeta, { color: unread ? colors.blue : colors.muted }]} numberOfLines={1}>
-            {welcome ? 'Local setup guide' : (searchSnippet || (waiting ? `${runtimeSummary(session)} · waiting for you` : running ? `${runtimeSummary(session)} · running` : unread ? `${runtimeSummary(session)} · new` : runtimeSummary(session)))}
+          <Text style={[styles.sessionMeta, { color: attentionLevel ? attentionColor : colors.muted }]} numberOfLines={1}>
+            {welcome ? t('Local setup guide') : (searchSnippet || (waiting ? `${runtimeSummary(session, t)} · ${t('waiting for you')}` : running ? `${runtimeSummary(session, t)} · ${t('running')}` : unread ? `${runtimeSummary(session, t)} · ${t('new')}` : runtimeSummary(session, t)))}
           </Text>
-          {activityDate ? <Text style={[styles.sessionDate, { color: colors.muted }]} numberOfLines={1}>{activityDate}</Text> : null}
+          {(attentionLevel === 'important' || attentionLevel === 'emergency') ? <Text style={[styles.sessionLevel, { color: attentionColor }]} numberOfLines={1}>
+            {t(attentionLevel === 'emergency' ? 'Emergency' : 'Important')}
+          </Text> : activityDate ? <Text style={[styles.sessionDate, { color: colors.subtle }]} numberOfLines={1}>{activityDate}</Text> : null}
         </View>
       </View>
-      {waiting ? <View
+      {attentionLevel === 'emergency' ? <View
+        accessibilityLabel="Emergency alert needs acknowledgment"
+        style={[styles.trailingStatusDot, { backgroundColor: colors.red }]}
+      /> : waiting ? <View
         accessibilityLabel={`${pendingInteractionCount} ${waitingProviderName} ${pendingInteractionCount === 1 ? 'request' : 'requests'} waiting for you`}
-        style={[styles.waitingBadge, { backgroundColor: colors.orange }]}
-      ><Text style={styles.waitingBadgeText}>{pendingInteractionCount > 9 ? '9+' : pendingInteractionCount}</Text></View> : (running || unread) ? <View
-        accessibilityLabel={running ? 'Agent running' : 'Unread messages'}
-        style={[styles.trailingStatusDot, { backgroundColor: running ? colors.green : colors.blue }]}
+        style={[styles.waitingBadge, { backgroundColor: colors.pink }]}
+      ><Text style={[styles.waitingBadgeText, { color: colors.background }]}>{pendingInteractionCount > 9 ? '9+' : pendingInteractionCount}</Text></View> : (running || attentionLevel) ? <View
+        accessibilityLabel={running && attentionLevel !== 'important' ? 'Agent running' : attentionLevel === 'important' ? 'Important unread message' : 'Unread messages'}
+        style={[styles.trailingStatusDot, { backgroundColor: attentionLevel === 'important' ? colors.pink : running ? colors.green : colors.blue }]}
       /> : null}
     </Pressable>
   )
@@ -662,40 +786,51 @@ function AndroidMoreMenu({ testID, label, title, color, actions, onAction }: { t
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, minWidth: 250, borderRightWidth: StyleSheet.hairlineWidth },
-  titleRow: { minHeight: 48, paddingHorizontal: 12, paddingTop: 4, flexDirection: 'row', alignItems: 'center' },
-  title: { fontSize: 15, fontWeight: '800' },
-  actions: { minHeight: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 2 },
-  serverSelector: { marginHorizontal: 10, marginBottom: 8 },
-  teamNetworkButton: { minHeight: 44, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, marginHorizontal: 10, marginBottom: 8, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8 }, teamNetworkButtonText: { flex: 1, fontSize: 12.5, fontWeight: '800' },
-  setupBanner: { minHeight: 40, borderRadius: 7, marginHorizontal: 10, marginBottom: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  setupBannerText: { color: 'white', fontSize: 13, fontWeight: '700' },
-  search: { minHeight: 38, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, marginHorizontal: 10, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  searchInput: { flex: 1, fontSize: 14, paddingVertical: 0 },
-  searchError: { minHeight: 36, marginHorizontal: 10, marginTop: -3, marginBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 8 },
-  searchErrorText: { flex: 1, fontSize: 11.5, fontWeight: '600' },
-  searchRetry: { minWidth: 64, minHeight: 44, paddingHorizontal: 10, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
-  searchRetryText: { fontSize: 11.5, fontWeight: '800' },
-  list: { paddingHorizontal: 6, paddingBottom: 24 },
+  statusGroupDot: { width: 8, height: 8, borderRadius: radius.round, flexShrink: 0 },
+  root: { flex: 1, minWidth: 250 },
+  sidebarDivider: { borderRightWidth: StyleSheet.hairlineWidth },
+  topActions: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.lg },
+  topRow: { minHeight: 44, marginHorizontal: spacing.lg, marginTop: spacing.xs, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
+  serverSelector: { flex: 1, maxWidth: '50%', minWidth: 0 },
+  searchButton: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
+  welcomeList: { flexGrow: 1 },
+  welcome: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg, gap: spacing.lg },
+  welcomeIcon: { width: 56, height: 56, borderRadius: radius.md },
+  welcomeTitle: { ...typography.heading, fontWeight: fontWeight.semibold, textAlign: 'center' },
+  setupBanner: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
+  setupBannerText: { ...typography.label, fontWeight: fontWeight.semibold },
+  searchDock: { paddingHorizontal: spacing.lg, paddingVertical: spacing.sm },
+  search: { minHeight: 48, borderRadius: radius.md, paddingLeft: spacing.md, paddingRight: spacing.xs, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  searchInput: { ...typography.body, flex: 1, minWidth: 0, paddingVertical: 0 },
+  searchError: { minHeight: 44, marginHorizontal: spacing.md, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  searchErrorText: { ...typography.caption, flex: 1 },
+  searchRetry: { minWidth: 64, minHeight: 44, paddingHorizontal: spacing.md, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
+  searchRetryText: { ...typography.label, fontWeight: fontWeight.semibold },
+  chatList: { flex: 1 },
+  list: { flexGrow: 1, paddingHorizontal: spacing.sm, paddingBottom: spacing.xl },
+  emptySearch: { ...typography.body, textAlign: 'center', padding: spacing.xl },
   folderHeaderShell: { minHeight: 44, flexDirection: 'row', alignItems: 'stretch' },
-  header: { minHeight: 44, paddingHorizontal: 5, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  header: { minHeight: 44, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   headerInShell: { flex: 1 },
-  headerText: { flex: 1, fontSize: 11, fontWeight: '700' },
-  count: { fontSize: 10 },
-  sessionShell: { minHeight: 51, flexDirection: 'row', alignItems: 'stretch', gap: 2 },
-  session: { minHeight: 51, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 9, overflow: 'hidden' },
+  headerText: { ...typography.caption, flex: 1, fontWeight: fontWeight.semibold },
+  headerTrailing: { flexShrink: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  count: { ...typography.caption },
+  sessionShell: { minHeight: 64, flexDirection: 'row', alignItems: 'stretch', gap: spacing.xs },
+  session: { minHeight: 64, borderRadius: radius.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.md, overflow: 'hidden' },
   sessionInShell: { flex: 1 },
-  selectedIndicator: { position: 'absolute', top: 7, bottom: 7, left: 0, width: 3, borderRadius: 2 },
   moreMenuTrigger: { width: 44, minHeight: 44 },
   moreButton: { width: 44, minHeight: 44, flex: 1, alignItems: 'center', justifyContent: 'center' },
   sessionText: { flex: 1, minWidth: 0 },
-  sessionTitle: { fontSize: 13, fontWeight: '700' },
-  sessionMetaRow: { marginTop: 2, flexDirection: 'row', alignItems: 'center', gap: 6 },
-  sessionMeta: { flex: 1, minWidth: 0, fontSize: 10.5, fontWeight: '600' },
-  sessionDate: { flexShrink: 0, fontSize: 9.5, fontWeight: '500' },
+  sessionTitle: { ...typography.body, fontWeight: fontWeight.semibold },
+  sessionMetaRow: { marginTop: spacing.xs, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  sessionMeta: { ...typography.caption, flex: 1, minWidth: 0 },
+  sessionDate: { ...typography.caption, fontWeight: fontWeight.regular, flexShrink: 1, maxWidth: '48%' },
+  sessionLevel: { ...typography.caption, fontWeight: fontWeight.semibold, flexShrink: 0 },
   backendStatus: { width: 22, height: 22 },
-  trailingStatusDot: { width: 8, height: 8, flexShrink: 0, marginHorizontal: 4, borderRadius: 4 },
-  waitingBadge: { minWidth: 20, height: 20, flexShrink: 0, marginHorizontal: 1, paddingHorizontal: 5, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
-  waitingBadgeText: { color: 'white', fontSize: 10, fontWeight: '800' },
-  footer: { minHeight: 34, borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 5 }, footerDot: { width: 6, height: 6, borderRadius: 3 },
+  trailingStatusDot: { width: 8, height: 8, flexShrink: 0, marginHorizontal: 4, borderRadius: radius.round },
+  waitingBadge: { minWidth: 24, minHeight: 24, flexShrink: 0, paddingHorizontal: spacing.xs, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
+  waitingBadgeText: { ...typography.caption, fontWeight: fontWeight.semibold },
+  footer: { position: 'absolute', left: spacing.lg, right: spacing.lg, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  footerFade: { position: 'absolute', bottom: 0, left: 0, right: 0 },
+  homeAction: { width: HOME_ACTION_SIZE, height: HOME_ACTION_SIZE, borderRadius: radius.round, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
 })

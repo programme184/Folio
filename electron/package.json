@@ -25,7 +25,7 @@
   "build": {
     "appId": "com.zhengyiluo.AgentsDock",
     "productName": "AgentsDock",
-    "buildVersion": "85",
+    "buildVersion": "86",
     "asar": true,
     "directories": {
       "output": "dist"
@@ -47,14 +47,10 @@
       "!**/{test,tests,__tests__,docs,examples}/**"
     ],
     "extraResources": [
-      {
-        "from": "../LICENSE",
-        "to": "licenses/AgentsDock-LICENSE"
-      },
-      {
-        "from": "../NOTICE",
-        "to": "licenses/AgentsDock-NOTICE"
-      }
+      { "from": "../LICENSE", "to": "licenses/AgentsDock-LICENSE" },
+      { "from": "../NOTICE", "to": "licenses/AgentsDock-NOTICE" },
+      { "from": "packaging/connection-qr-NOTICES.txt", "to": "licenses/connection-qr-NOTICES.txt" },
+      { "from": "packaging/tiff-preview-NOTICES.txt", "to": "licenses/tiff-preview-NOTICES.txt" }
     ],
     "electronFuses": {
       "runAsNode": false,
@@ -140,7 +136,9 @@
   },
   "dependencies": {
     "@noble/hashes": "2.2.0",
-    "electron-updater": "^6.8.9"
+    "electron-updater": "^6.8.9",
+    "pngjs": "7.0.0",
+    "utif": "3.1.0"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -193,6 +191,7 @@
     "katex": "^0.16.47",
     "lucide-react": "^1.23.0",
     "pdfjs-dist": "^6.4.299",
+    "qrcode": "1.5.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-markdown": "^10.1.0",
@@ -204,6 +203,7 @@
     "rehype-sanitize": "^6.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "@types/qrcode": "1.5.6",
     "typescript": "^6.0.3",
     "vite": "^7.3.6",
     "vitest": "^4.1.10",

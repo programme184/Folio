@@ -1633,7 +1633,7 @@ describe('SecurePeerPanel', () => {
     expect(screen.getByRole('button', { name: 'Copy invite link' })).toBeDisabled()
   })
 
-  it('accurately warns and confirms before turning off hosting and taking peers offline', async () => {
+  it('does not offer the old listener-only disable action that leaves the server in the Host role', async () => {
     const enabled = control({
       profileId: hostStatus.profileId,
       serverIdentity: hostStatus.serverIdentity!,
@@ -1646,30 +1646,14 @@ describe('SecurePeerPanel', () => {
         caFingerprint: fingerprint
       }
     })
-    const disabled = control({
-      ...enabled,
-      host: { ...enabled.host, enabled: false, pairingLink: null }
-    })
     const { teamHub } = installAPI({
-      securePeerStatus: vi.fn().mockResolvedValue(enabled),
-      configureSecurePeerHost: vi.fn().mockResolvedValue(disabled)
+      securePeerStatus: vi.fn().mockResolvedValue(enabled)
     })
     render(<SecurePeerPanel status={hostStatus} workspace={workspace} details={details} />)
 
     fireEvent.click(await screen.findByText('Advanced / Manage'))
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off secure peer hosting…' }))
-
+    expect(screen.queryByRole('button', { name: /Turn off secure peer hosting/ })).not.toBeInTheDocument()
     expect(teamHub.configureSecurePeerHost).not.toHaveBeenCalled()
-    expect(screen.getByRole('group', { name: 'Turn off secure peer hosting' })).toHaveTextContent(
-      'stops accepting invites and takes connected peer servers offline'
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: 'Turn off & take peers offline' }))
-    await waitFor(() => expect(teamHub.configureSecurePeerHost).toHaveBeenCalledWith(
-      { profileId: 'profile-host', profileGeneration: 4, serverIdentity: 'server-host' },
-      { enabled: false }
-    ))
-    expect(screen.queryByRole('group', { name: 'Turn off secure peer hosting' })).not.toBeInTheDocument()
   })
 
   it('requires an exact six-word comparison before a host approval', async () => {

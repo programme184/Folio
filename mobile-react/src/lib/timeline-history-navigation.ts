@@ -74,6 +74,22 @@ export function shouldShowTimelineLatest(
   return rowCount > 0 && (detachedHistory || !nearBottom)
 }
 
+export function shouldShowInitialTimelineLoading({
+  rowCount,
+  loading,
+  hasKnownHistory,
+  syncStatus,
+}: {
+  rowCount: number
+  loading: boolean
+  hasKnownHistory: boolean
+  syncStatus: 'idle' | 'cached' | 'syncing' | 'live' | 'reconnecting' | 'offline' | 'error'
+}): boolean {
+  if (rowCount > 0) return false
+  if (loading || syncStatus === 'syncing' || syncStatus === 'reconnecting') return true
+  return hasKnownHistory && syncStatus === 'cached'
+}
+
 /** Older-page publication must not masquerade as new live output. */
 export function liveTimelineAdvanced(previousSeq: number, nextSeq: number): boolean {
   return Number.isFinite(nextSeq) && nextSeq > previousSeq

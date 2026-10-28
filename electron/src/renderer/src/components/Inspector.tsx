@@ -8,7 +8,7 @@ import { effectiveFileContentType, isEditorTextFile, isPreviewableFile } from '@
 import type { AgentFile, Event as AgentEvent, PinnedItem, Session, WorkspaceProfileScope } from '@shared/types'
 import { agentFileBelongsToSession, eventFileForSession, isolateSessionEvent } from '@shared/session-files'
 import { trackEvent } from '../lib/analytics'
-import { saveAgentFile } from '../lib/file-actions'
+import { saveAgentFile, requestNativeFileOpen } from '../lib/file-actions'
 import { formatBytes } from '../lib/format'
 import { filePinHasExplicitOwner, pinnedItemsForSession } from '../lib/pinned-items'
 import { isSubagentActive, subagentDetailText, subagentDisplayName, subagentLogText, subagentStatusLabel, subagentsFromEvents, type SubagentActivity } from '../lib/subagents'
@@ -176,7 +176,7 @@ function SubagentsSection({ sessionId }: { sessionId: string }) {
 
   if (!agents.length) return null
   return <section className="inspector-section collapsible-section subagents-section">
-    <button className="section-toggle" aria-label={t("ui.Inspector.SubagentsSection.subagents_active_987ab1c", { "count": String(activeCount) })} aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<Bot size={15} /><strong>Subagents</strong><small className="subagent-active-count">{activeCount}{" "}{t("ui.Inspector.SubagentsSection.active_9687961")}</small></button>
+    <button className="section-toggle" aria-label={t("ui.Inspector.SubagentsSection.subagents_active_987ab1c", { "count": String(activeCount) })} aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}<Bot size={15} /><strong>{t('subagents.title')}</strong><small className="subagent-active-count">{activeCount}{" "}{t("ui.Inspector.SubagentsSection.active_9687961")}</small></button>
     {open && <div className="subagent-groups">
       {activeAgents.length
         ? <div className="subagent-group subagent-active-group">
@@ -268,7 +268,7 @@ function PinnedSection({ profileScope, sessionId, pins, setPins, files }: { prof
     const open = () => {
       if (file) {
         if (canOpenInEditor) requestOpenAgentFile(sessionId, file)
-        else runAction(window.agentsDock.files.open(sessionId, file))
+        else runAction(requestNativeFileOpen(sessionId, file))
       } else if (pin.eventId) {
         window.dispatchEvent(new CustomEvent('agentsdock:find-event', {
           detail: {
@@ -339,12 +339,12 @@ function MediaInspector({ profileScope, sessionId, workspaceRoot, files, total, 
     const source = window.agentsDock.files.mediaURL(profileScope.profileId, profileScope.profileGeneration, sessionId, file.id)
     const type = effectiveFileContentType(file)
     const workspacePath = workspacePathForAgentFile(file, workspaceRoot)
-    return <NativeFileDragSurface key={file.id} sessionId={sessionId} file={file}><button type="button" className="inspector-thumb" onClick={() => { trackEvent('file_view_opened'); onPreview(file) }}>{type.startsWith('image/') ? <img src={source} loading="lazy" draggable={false} /> : source ? <LazyVideoThumbnail source={source} /> : null}{type.startsWith('video/') && <Play className="thumb-play" size={14} fill="currentColor" />}</button><strong title={file.title || file.filename}>{file.title || file.filename}</strong><small>{formatBytes(file.size)}</small><div data-native-drag-ignore>{workspacePath && <button type="button" title={t("ui.Inspector.open_in_editor_f395ae5")} onClick={() => requestOpenWorkspacePath(sessionId, workspacePath)}><FileCode2 size={11} /></button>}<button type="button" title={t("ui.Inspector.pin_ff1cee7")} onClick={() => runAction(pin(file))}><Pin size={11} /></button><button type="button" title={t("ui.Inspector.download_d6eafe8")} onClick={() => runAction(saveAgentFile(sessionId, file))}><Download size={11} /></button><button type="button" title={t("ui.Inspector.show_in_folder_3c4d9b8")} onClick={() => runAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={11} /></button><button type="button" title={t("ui.Inspector.open_ed077f3")} onClick={() => runAction(window.agentsDock.files.open(sessionId, file))}><ExternalLink size={11} /></button></div></NativeFileDragSurface>
+    return <NativeFileDragSurface key={file.id} sessionId={sessionId} file={file}><button type="button" className="inspector-thumb" onClick={() => { trackEvent('file_view_opened'); onPreview(file) }}>{type.startsWith('image/') ? <img src={source} loading="lazy" draggable={false} /> : source ? <LazyVideoThumbnail source={source} /> : null}{type.startsWith('video/') && <Play className="thumb-play" size={14} fill="currentColor" />}</button><strong title={file.title || file.filename}>{file.title || file.filename}</strong><small>{formatBytes(file.size)}</small><div data-native-drag-ignore>{workspacePath && <button type="button" title={t("ui.Inspector.open_in_editor_f395ae5")} onClick={() => requestOpenWorkspacePath(sessionId, workspacePath)}><FileCode2 size={11} /></button>}<button type="button" title={t("ui.Inspector.pin_ff1cee7")} onClick={() => runAction(pin(file))}><Pin size={11} /></button><button type="button" title={t("ui.Inspector.download_d6eafe8")} onClick={() => runAction(saveAgentFile(sessionId, file))}><Download size={11} /></button><button type="button" title={t("ui.Inspector.show_in_folder_3c4d9b8")} onClick={() => runAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={11} /></button><button type="button" title={t("ui.Inspector.open_ed077f3")} onClick={() => runAction(requestNativeFileOpen(sessionId, file))}><ExternalLink size={11} /></button></div></NativeFileDragSurface>
   })}</div>{documents.length > 0 && <div className="document-list">{documents.map(file => {
     const workspacePath = workspacePathForAgentFile(file, workspaceRoot)
     const canOpenInEditor = Boolean(workspacePath) || isEditorTextFile(file)
     const openInEditor = () => requestOpenAgentFile(sessionId, file)
-    return <NativeFileDragSurface key={file.id} sessionId={sessionId} file={file}><File size={14} /><button type="button" className="inspector-document-title" data-native-drag-ignore onClick={() => canOpenInEditor ? openInEditor() : runAction(window.agentsDock.files.open(sessionId, file))}><strong title={file.filename}>{file.filename}</strong><small>{formatBytes(file.size)}</small></button>{canOpenInEditor && <button type="button" data-native-drag-ignore title={t("ui.Inspector.open_in_editor_f395ae5")} onClick={openInEditor}><FileCode2 size={12} /></button>}<button type="button" data-native-drag-ignore title={t("ui.Inspector.download_d6eafe8")} onClick={() => runAction(saveAgentFile(sessionId, file))}><Download size={12} /></button><button type="button" data-native-drag-ignore title={t("ui.Inspector.show_in_folder_3c4d9b8")} onClick={() => runAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={12} /></button></NativeFileDragSurface>
+    return <NativeFileDragSurface key={file.id} sessionId={sessionId} file={file}><File size={14} /><button type="button" className="inspector-document-title" data-native-drag-ignore onClick={() => canOpenInEditor ? openInEditor() : runAction(requestNativeFileOpen(sessionId, file))}><strong title={file.filename}>{file.filename}</strong><small>{formatBytes(file.size)}</small></button>{canOpenInEditor && <button type="button" data-native-drag-ignore title={t("ui.Inspector.open_in_editor_f395ae5")} onClick={openInEditor}><FileCode2 size={12} /></button>}<button type="button" data-native-drag-ignore title={t("ui.Inspector.download_d6eafe8")} onClick={() => runAction(saveAgentFile(sessionId, file))}><Download size={12} /></button><button type="button" data-native-drag-ignore title={t("ui.Inspector.show_in_folder_3c4d9b8")} onClick={() => runAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={12} /></button></NativeFileDragSurface>
   })}</div>}{files.length < total && <button type="button" className="load-more" disabled={loading} onClick={loadMore}>{loading && <LoaderCircle className="spin" size={13} />}{" "}{t("ui.Inspector.MediaInspector.load_60_more_b3ee0b4")}</button>}</div>
 }
 

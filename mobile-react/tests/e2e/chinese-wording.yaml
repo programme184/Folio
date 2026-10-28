@@ -1,0 +1,25 @@
+# Opens a saved chat and the quick-message menu without sending anything.
+appId: com.zhengyiluo.ZenithDock.dev
+---
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Console Error"
+    commands:
+      - tapOn: "Dismiss"
+- tapOn:
+    id: chat-row-.*
+    index: 0
+    retryTapIfNoChange: false
+- assertVisible:
+    id: chat-composer-input
+- takeScreenshot: build/chinese-wording-chat
+- tapOn:
+    id: chat-quick-messages
+    retryTapIfNoChange: false
+- assertVisible: "快捷消息"
+- assertVisible: "告诉我当前的状态"
+- assertVisible: "接着做"
+- assertVisible: "请再仔细的验证你的结论"
+- takeScreenshot: build/chinese-wording-quick-messages

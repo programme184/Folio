@@ -48,11 +48,13 @@ FILES = (
     "agentsdock_chats.py",
     "chat_mailbox.py",
     "agentsdock_emergency.py",
+    "agentsdock_notify.py",
     "agentsdock_publish.py",
     "agentsdock_mail.py",
     "agentsdock_team.py",
     "provider_commands.py",
     "provider_usage.py",
+    "session_unread.py",
     "claude_sdk_client.py",
     "claude_model_catalog.py",
     "claude_goals.py",
@@ -69,7 +71,16 @@ FILES = (
     "cursor_agent_client.py",
     "cursor_provider_mcp.py",
     "opencode_agent_client.py",
+    "gemini_acp_client.py",
+    "gemini_history.py",
+    "gemini_content.py",
+    "gemini_import.py",
+    "gemini_runtime.py",
+    "gemini_runner.py",
+    "gemini_permissions.py",
+    "gemini_api.py",
     "cursor_process_guard.py",
+    "transcript_reader.py",
     "claude_history_repair.py",
     "claude_history_provenance.py",
     "codex_history_repair.py",
@@ -83,12 +94,16 @@ FILES = (
     "interactive_chat_runtime.py",
     "interactive_chat_native.py",
     "shared_chat_videos.py",
+    "shared_chat_analytics_web.py",
     "shared_chat_video_stream.py",
     "interactive_chat_controls.py",
     "install.sh",
     "uninstall.sh",
     "instances.sh",
     "server_instances.py",
+    "npm/agentsdock/pair.cjs",
+    "npm/agentsdock/qr-renderer.cjs",
+    "npm/agentsdock/QR-NOTICES.txt",
     "update_runner.py",
     "pyproject.toml",
     "uv.lock",
@@ -142,9 +157,12 @@ DIRECTORIES = tuple(DIRECTORY_FILES)
 
 
 def validate_release_files(root: Path) -> None:
-    """Require every top-level release member to be a real regular file."""
+    """Require real release files without linked parent directories."""
 
-    linked = [name for name in FILES if (root / name).is_symlink()]
+    linked = [
+        name for name in FILES
+        if any((root / part).is_symlink() for part in (Path(name), *Path(name).parents) if part != Path("."))
+    ]
     if linked:
         raise SystemExit(f"linked release files are not allowed: {', '.join(linked)}")
     missing = [name for name in FILES if not (root / name).is_file()]
@@ -243,6 +261,7 @@ def main() -> int:
         (package_root / "agentsdock_jobs.py").chmod(0o755)
         (package_root / "agentsdock_chats.py").chmod(0o755)
         (package_root / "agentsdock_emergency.py").chmod(0o755)
+        (package_root / "agentsdock_notify.py").chmod(0o755)
         (package_root / "agentsdock_publish.py").chmod(0o755)
         (package_root / "agentsdock_mail.py").chmod(0o755)
         (package_root / "agentsdock_team.py").chmod(0o755)

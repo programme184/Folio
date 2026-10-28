@@ -10,12 +10,13 @@ const LOGIN = {
   claude: ['claude auth login', 'https://code.claude.com/docs'],
   cursor: ['agent login', 'https://cursor.com/docs'],
   opencode: ['opencode auth login', 'https://opencode.ai/docs'],
+  gemini: ['gemini', 'https://geminicli.com/docs/get-started/authentication/'],
 } as const
 
 export function NativeProviderSignIn({ backend, disabled = false }: { backend: Backend; disabled?: boolean }) {
   useLocale()
   const [command, docs] = LOGIN[backend]
-  if (disabled) return null
+  if (disabled || backend === 'gemini') return null
   return <small className="native-provider-signin">{t('connections.cliSignIn')} <code>{command}</code>.{' '}
     <a href={docs} onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal(docs) }}>{t('connections.readMore')}</a>
   </small>

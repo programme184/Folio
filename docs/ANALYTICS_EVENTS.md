@@ -1,17 +1,18 @@
-# Electron usage analytics
+# Desktop and shared-chat usage analytics
 
-This catalog documents every product-usage event emitted by the Electron app. Events measure whether a feature was used; they must not describe the user's content or identity.
+This catalog documents product-usage events emitted by the Electron app and the limited shared-chat browser tracker. Events measure whether a feature was used; they must not describe the user's content or identity.
 
 ## Privacy contract
 
-Every event has the same small app-owned envelope:
+Every desktop event has the same small app-owned envelope:
 
 - a random per-install identifier used for aggregate unique-install and retention counts;
 - a coarse platform value: `mac`, `windows`, `linux`, or `desktop`;
+- selected provider-related events may include a fixed `backend` value: `codex`, `claude`, `cursor`, `opencode`, or `gemini` (never model names, connection names, endpoints or accounts);
 - the event time; and
 - the Mixpanel project token used to route the event.
 
-Only `connection_tested`, `server_added`, `server_switched`, and the legacy `chats_bulk_imported` event include an event-specific `success` boolean. The runtime sanitizer discards every other property.
+Some operations include an event-specific `success` boolean and selected events allow the fixed `backend` enum, as listed below. The runtime sanitizer discards every other property and rejects unknown event names. A successful request is not proof that an agent completed its work or that an update finished installing. Network failures mean the client could not confirm the result, not necessarily that the server made no change.
 
 Never add message or prompt text, chat/job/agent/folder names, skill or command names, file names or contents, paths or working directories, URLs or access tokens, session/chat/job/route IDs, schedule expressions, exact run times, or destination metadata. The client posts directly with IP collection disabled, omits credentials and referrer data, and does not use SDK autocapture or session replay.
 
@@ -22,19 +23,24 @@ Never add message or prompt text, chat/job/agent/folder names, skill or command 
 | Event | Emitted when | Event-specific properties |
 | --- | --- | --- |
 | `app_launched` | The Electron renderer mounts. | None |
-| `chat_created` | A quick-create or new-chat request succeeds. | None |
+| `chat_created` | A quick-create or new-chat request succeeds. | `backend` |
 | `chat_opened` | A session becomes newly visible in a chat pane. This can result from navigation or restoration, not only a mouse click. | None |
 | `split_view_opened` | The chat layout transitions from one visible chat to two distinct visible chats. Replacing a chat in an already-open split does not count. | None |
 | `chat_forked` | Creating a fork of an existing chat succeeds. | None |
 | `chat_share_opened` | The sharing dialog opens for a valid chat in the active server workspace. | None |
+| `chat_share_snapshot_selected` | The user chooses View only, before creation/address validation. A failed creation still counts as a selection. Disabled/re-entrant clicks do not count. | None |
+| `chat_share_interactive_selected` | The user chooses Interactive, before creation/address validation. A failed creation still counts as a selection. Disabled/re-entrant clicks do not count. | None |
 | `chat_share_snapshot_created` | Creating a view-only chat snapshot succeeds. Clipboard or browser-opening failures after creation do not change this outcome. | None |
 | `chat_share_interactive_created` | Creating an interactive shared-chat session succeeds. Clipboard or browser-opening failures after creation do not change this outcome. | None |
 | `chat_share_revoked` | Revoking an existing snapshot or interactive share succeeds. | None |
-| `chat_resumed` | A single external provider session is successfully resumed, including resume by session ID. Selecting an already-imported AgentsDock chat does not count. | None |
+| `chat_resumed` | A single external provider session is successfully resumed, including resume by session ID. Selecting an already-imported AgentsDock chat does not count. | `backend` |
 | `chats_bulk_imported` | At least one chat succeeds through the multi-select import workflow. A single-session Resume action no longer emits this event. | `success: true` |
-| `message_sent` | A composer message is accepted or queued successfully. | None |
+| `message_sent` | A composer message is accepted or queued successfully. | `backend` |
+| `message_queued` | The server accepts a submitted message into its queue, including a message subsequently steered. Companion to, not a replacement for, `message_sent`. | `backend` |
+| `message_steered` | A direct steering submission is accepted or a newly queued submission is successfully promoted by the send-now path. A refused/cancelled promotion does not count. | `backend` |
 | `slash_skill_used` | An accepted message uses a provider inventory item classified as a skill. | None |
 | `slash_command_used` | An accepted message uses a provider inventory item classified as a non-skill command. | None |
+| `builtin_slash_command_used` | A built-in slash-menu action is selected. Measures selection, not successful completion. No command name is sent. | None |
 | `chat_reference_sent` | An accepted message contains one or more structured `@Chat` route references. This measures use of the reference, not whether the agent later performs a handoff. | None |
 | `team_reference_sent` | An accepted message contains one or more structured Team Network (`@@`) references. | None |
 | `team_network_opened` | The Team Network surface transitions from closed to open. Navigating within an already-open Team Network does not count. | None |
@@ -71,7 +77,54 @@ Never add message or prompt text, chat/job/agent/folder names, skill or command 
 | `file_view_opened` | A supported file or media preview is opened from a tracked surface. | None |
 | `digest_opened` | The digest dialog opens. | None |
 | `search_opened` | The chat-search dialog opens. | None |
-| `open_file_clicked` | The workspace editor's Open File button is clicked. Keyboard-only opens are not currently included. | None |
+| `open_file_clicked` | The workspace file picker transitions to open, including its button, keyboard shortcut and other picker entry points. Historical name retained; previously this counted the button only. | None |
+
+### Side chat, providers, and goals
+
+| Event | Emitted when | Event-specific properties |
+| --- | --- | --- |
+| `side_chat_opened` | A side-chat popup opens for a different target or after being closed; refocusing an open popup does not count. | None |
+| `side_chat_message_submitted` | One explicit side-chat submission settles. Current servers acknowledge submission before the answer; legacy servers return the answer in this request. No replay/history synchronization is counted. | `success` |
+| `side_chat_stop_requested` | An explicit Stop request settles. Closing/clearing the UI and automatic cleanup do not count. | `success` |
+| `provider_settings_opened` | The My Agents settings page opens. | None |
+| `provider_connection_tested` | An explicit custom API connection check settles. Passive discovery is excluded. | `success`, `backend` |
+| `provider_connection_saved` | Saving custom API credentials/configuration settles. Only the success flag and built-in provider family are sent, never the provider URL, key, account or model. | `success`, `backend` |
+| `provider_connection_forgotten` | A confirmed Forget endpoint operation settles. | `success`, `backend` |
+| `provider_default_model_saved` | Saving a custom API default model settles. The selected model is not sent. | `success`, `backend` |
+| `goal_saved` | A user-requested Codex or Claude goal create/update request settles. This is not goal completion. | `success` |
+| `goal_cleared` | A user-requested goal-clear request settles. | `success` |
+| `goal_paused` | A user-requested native Codex goal-pause request settles. | `success` |
+| `goal_resumed` | A user-requested native Codex goal-resume request settles. | `success` |
+
+### Workspace and attachments
+
+| Event | Emitted when | Event-specific properties |
+| --- | --- | --- |
+| `workspace_file_saved` | An editor write settles, including a new document, ordinary save, or confirmed overwrite. No filename, contents or path is sent. | `success` |
+| `workspace_changes_opened` | The Git Changes panel becomes active. Refreshes and file selection do not count. | None |
+| `workspace_git_staged` | A user-requested stage operation settles, once per action rather than per file. | `success` |
+| `workspace_git_unstaged` | A user-requested unstage operation settles. | `success` |
+| `workspace_git_committed` | A reviewed commit request settles. The commit message and repository metadata are not sent. | `success` |
+| `workspace_git_conflict_resolved` | A conflict-resolution write settles. | `success` |
+| `workspace_git_continued` | Continuing an existing merge/rebase settles. | `success` |
+| `workspace_git_aborted` | Aborting an existing merge/rebase after confirmation settles. | `success` |
+| `attachment_uploaded` | One explicit upload batch settles. Success requires all selected files to be returned; partial/unconfirmed batches are false. No file metadata is sent. | `success` |
+
+### Updates
+
+| Event | Emitted when | Event-specific properties |
+| --- | --- | --- |
+| `app_update_checked` | A user-requested desktop update check settles. Passive startup/status checks are excluded. | `success` |
+| `app_update_channel_changed` | A user's Stable/Beta selection request settles, including its automatic check. No channel/version is sent. | `success` |
+| `app_update_install_requested` | The user requests Restart to update. Counted before the renderer quits; not installation success. | None |
+| `app_update_cancelled` | A user-requested download cancellation or discard settles. | `success` |
+| `server_update_checked` | An explicit server check or channel-selection check settles. Passive reconciliation is excluded. | `success` |
+| `server_update_requested` | The user requests a supported managed server update, including deferred admission. Not installation success. | None |
+| `server_update_now_requested` | The user confirms Update now and the identity/reservation checks allow the restart request. | None |
+| `server_update_cancelled` | A user's explicit queued-update cancellation request settles. | `success` |
+| `server_update_retry_requested` | The user requests retry for a coordinated server update. | None |
+
+iOS/iPadOS analytics remain disabled. Team Network instrumentation is unchanged. Chat-reference submission is not proof of agent-to-agent delivery/read/reply. No background history, streamed tokens, or typing are counted.
 
 ### Server connections
 
@@ -80,6 +133,51 @@ Never add message or prompt text, chat/job/agent/folder names, skill or command 
 | `connection_tested` | A server connection test finishes. | `success` |
 | `server_added` | Adding a server profile finishes. | `success` |
 | `server_switched` | Explicitly switching to a server from Settings or the sidebar finishes. Automatic and superseded switches do not count. | `success` |
+
+## Desktop additions (October 2026)
+
+| Event | Emitted when | Event-specific properties |
+| --- | --- | --- |
+| `chat_agent_changed` | Explicit new-chat Agent choice changes after server confirmation. Not inherited defaults. | `backend` |
+| `chat_model_changed` | An explicit model patch is confirmed different. Not Agent resets, startup, model retirement migration or history refresh. | `backend` |
+| `chat_permission_mode_changed` | An explicit permission patch changes a confirmed value; multi-field Codex changes count once. Not a tool approval or permission-profile name. | `backend` |
+| `imported_chat_api_connected` | An explicit Gemini native-history API binding/import returns a confirmed result. Already-imported and unconfirmed bulk results do not count. | `backend`, `success` |
+| `chat_archived` | An explicit archive patch changes the confirmed state. | None |
+| `chat_unarchived` | An explicit unarchive/folder-move patch restores a previously archived chat. | None |
+| `workspace_files_opened` | A user opens the Files panel via its tab or file-open action. Not startup restoration, repeated selection or history refresh. | None |
+| `file_open_requested` | The native open-file/open-link request settles. Success means the native request resolved, not that the person read the file. | `success` |
+| `language_changed` | User selects a different language in Settings. Not Follow-system OS changes or preference replay. Does not assert persistence. | None |
+| `chat_font_changed` | User changes chat size/typeface in Settings or the native menu. No value is recorded. Not restoration or a no-op. Does not assert persistence. | None |
+| `error_details_copied` | User's explicit Copy error request settles. Never includes copied text. | `success` |
+| `issue_report_opened` | The prefilled report URL is handed off to the browser, or that request fails. Does not mean an issue was submitted. Never includes the URL/prefilled fields. | `success` |
+| `server_restart_requested` | Explicit validated restart reaches the native restart call, including a separately confirmed force retry. | None |
+| `server_restart_reconnected` | That restart's bootstrap and hydration finish or fail while it still owns the connection. Superseded responses do not count. Not automatic reconnect or upgrade completion. | `success` |
+
+The existing `chat_created`, `chat_resumed`, `message_sent`, `message_queued`,
+`message_steered`, `provider_connection_tested`, `provider_connection_saved`,
+`provider_connection_forgotten`, and `provider_default_model_saved` events now
+also allow the fixed `backend` enum. Existing event names and counting boundaries
+remain unchanged. `message_sent` includes accepted queue submissions; queue/steer
+events are subsets, not additional messages to sum. Older builds lack `backend`;
+missing values must not be interpreted as an unknown provider or zero adoption.
+No actual model, permission mode, language, font, file, server, error or content
+value is uploaded. Team Network and the hidden QR entry are unchanged.
+
+## Shared-browser events
+
+The shared page keeps generic desktop analytics disabled. A separate fixed allowlist emits only these three events; no caller-supplied properties are accepted.
+
+| Event | Emitted when | Event-specific properties |
+| --- | --- | --- |
+| `shared_chat_snapshot_activated` | A valid read-only transcript is rendered after access is authenticated. Not the token form, HEAD requests, redirects, errors or link previews without authentication. | None |
+| `shared_chat_interactive_activated` | An authenticated interactive state is accepted and applied to the page. Not the empty app shell or token redemption alone. | None |
+| `shared_chat_message_sent` | The interactive prompt endpoint returns a validated acceptance receipt, including accepted queued messages. Refused or unconfirmed submissions do not count; agent completion is not implied. | None |
+
+The browser payload contains only the event name, project token, timestamp, `platform: shared_web`, and an empty `distinct_id`. It creates no persistent visitor identifier and does not send share/session/request IDs, their hashes, URLs, access tokens, titles, message text, files or identities. Requests omit credentials and referrers and use `ip=0` to disable IP geolocation. Normal network metadata such as IP and Origin is still visible to the receiving service; this is not a promise of network anonymity. There is no SDK, autocapture or session replay.
+
+One-way deduplication markers stay in tab-scoped sessionStorage. Reloading, pagination, reconnecting and accepted-receipt replay in the same tab do not count again. A new tab/browser can count again: activation does not prove a different person, and these unlinked events cannot form a per-user cross-device funnel. Read-only legacy token links and separate-token links have separate local markers. Browser privacy controls (DNT/GPC), an existing same-origin opt-out, or unavailable storage suppress tracking. Best-effort delivery has no retry and can undercount; after 4,096 tab markers, further events are skipped instead of evicting and recounting earlier ones.
+
+The snapshot page allows only its exact compiled analytics script via a CSP hash and the Mixpanel connection destination. Other scripts remain blocked; unlock forms and error pages remain scriptless. Interactive pages retain their restricted bridge. Deploying source alone is not enough: the served shared-web bundle and snapshot script must be regenerated and included in the server release.
 
 ## Cleanup notes
 

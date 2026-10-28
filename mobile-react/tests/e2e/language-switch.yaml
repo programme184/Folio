@@ -1,0 +1,88 @@
+# Run with the rebuilt AgentsDock Dev app on an isolated simulator.
+# Keeps saved server connections and chats unchanged.
+appId: com.zhengyiluo.ZenithDock.dev
+---
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Console Error"
+    commands:
+      - tapOn: "Dismiss"
+- tapOn:
+    id: sidebar-settings
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-open-language
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-language-zh-CN
+    retryTapIfNoChange: false
+- assertVisible: "语言"
+- takeScreenshot: build/language-preview-zh
+- tapOn:
+    id: settings-back
+    retryTapIfNoChange: false
+- assertVisible: "外观"
+- tapOn:
+    id: settings-open-language
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-language-en
+    retryTapIfNoChange: false
+- assertVisible: "Language"
+- tapOn:
+    id: settings-language-zh-CN
+    retryTapIfNoChange: false
+- assertVisible: "语言"
+- tapOn:
+    id: settings-back
+    retryTapIfNoChange: false
+- tapOn:
+    id: sheet-close-settings
+    retryTapIfNoChange: false
+- assertVisible:
+    id: sidebar-folder-Pinned
+- takeScreenshot: build/language-preview-home-zh
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Console Error"
+    commands:
+      - tapOn: "Dismiss"
+- assertVisible:
+    id: sidebar-folder-Pinned
+- tapOn:
+    id: sidebar-settings
+    retryTapIfNoChange: false
+- assertVisible: "简体中文"
+- tapOn:
+    id: settings-open-appearance
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-theme-dark
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-back
+    retryTapIfNoChange: false
+- tapOn:
+    id: sheet-close-settings
+    retryTapIfNoChange: false
+- takeScreenshot: build/language-preview-home-zh-dark
+- tapOn:
+    id: sidebar-settings
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-open-appearance
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-theme-system
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-back
+    retryTapIfNoChange: false
+- tapOn:
+    id: sheet-close-settings
+    retryTapIfNoChange: false

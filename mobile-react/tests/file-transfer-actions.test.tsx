@@ -6,7 +6,7 @@ import { WorkspaceFileViewerModal } from '../src/components/file-viewer/Workspac
 import { FileViewerContext } from '../src/components/file-viewer/FileViewerContext'
 import { useFileTransfer } from '../src/components/file-viewer/useFileTransfer'
 import { FileTransferNotice } from '../src/components/file-viewer/FileTransferNotice'
-import { Directory, File, nativeTransfer, setTestWidth } from './file-transfer-mocks'
+import { Directory, File, nativeTransfer, Platform, setTestWidth } from './file-transfer-mocks'
 import { resetComponentStore, setTestClient, useAppStore } from './component-mocks/app-store'
 import type { AgentFile, WorkspaceInfo } from '../src/types'
 
@@ -41,8 +41,21 @@ const id = (value: string) => host(node => node.props.testID === value)
 const rendered = () => JSON.stringify(renderer.toJSON())
 const flush = () => act(async () => { for (let i = 0; i < 10; i += 1) await Promise.resolve() })
 const click = async (node: ReactTestInstance) => { assert(node, 'Expected a rendered tappable'); await act(async () => { node.props.onPress() }) }
+async function chooseDownloadOption(option: string, twice = false) {
+  const button = label(option)
+  assert(button, `Expected ${option} in the download menu`)
+  await act(async () => { button.props.onPress(); if (twice) button.props.onPress() })
+}
+async function clickDownload(button: ReactTestInstance) {
+  await click(button)
+  if (label('Save to Files')) await chooseDownloadOption('Save to Files')
+}
+async function savePhotos() {
+  await click(label('Download file'))
+  await chooseDownloadOption('Save to Photos')
+}
 const close = async () => { await act(async () => { renderer.unmount() }); await flush() }
-type Variant = { name: string; family: 'media' | 'artifact' | 'workspace'; compact?: boolean; filename?: string; width?: number; fallback?: boolean; video?: boolean }
+type Variant = { name: string; family: 'media' | 'artifact' | 'workspace'; compact?: boolean; filename?: string; width?: number; fallback?: boolean; video?: boolean; platform?: 'ios' | 'android' }
 const variants: Variant[] = [
   { name: 'timeline image tile', family: 'media', filename: 'image.png' },
   { name: 'timeline file row', family: 'media' },
@@ -58,6 +71,8 @@ const variants: Variant[] = [
   { name: 'workspace preview fallback', family: 'workspace', fallback: true },
 ]
 async function mount(variant: Variant) {
+  // Artifact folder/photo saves are Android choices; iOS uses its native share sheet.
+  Platform.OS = variant.platform ?? (variant.family === 'artifact' ? 'android' : 'ios')
   setTestWidth(variant.width ?? 390)
   const file = { ...baseFile, filename: variant.filename ?? baseFile.filename }
   await act(async () => {
@@ -68,11 +83,154 @@ async function mount(variant: Variant) {
         : <WorkspaceFileViewerModal request={{ kind: 'workspace', sessionId: 'session-a' }} modalInsets={insets} onClose={() => {}} />)
   })
   if (variant.family === 'workspace') await click(label('Open file report.txt'))
-  if (variant.family === 'artifact' && !variant.fallback && !variant.width) await click(label('More file actions'))
+  if (variant.family === 'artifact' && !variant.fallback && (variant.width ?? 390) < 700) await click(label('More file actions'))
   return variant.fallback
     ? variant.family === 'media' ? label(`Download ${file.filename}`) : id(variant.video ? 'video-fallback-download' : 'preview-fallback-download')
     : label(variant.family === 'media' ? 'Download' : 'Download file')
 }
+
+for (const filename of ['image.png', 'clip.mp4']) for (const width of [390, 1024]) {
+  reset()
+  await mount({ name: 'Photos', family: 'artifact', filename, ...(width === 1024 ? { width } : {}) })
+  assert.equal(label('Save to Photos'), undefined, 'Photos must not occupy a separate toolbar button')
+  const download = label('Download file')
+  await act(async () => { download.props.onPress(); download.props.onPress() })
+  assert.equal(renderer.root.findAll(node => node.type === 'Pressable' && node.props.accessibilityLabel === 'Save to Photos').length, 1)
+  assert.equal(nativeTransfer.downloads.length, 0)
+  await chooseDownloadOption('Save to Photos', true)
+  await flush()
+  assert.equal(nativeTransfer.photoSaves.length, 1, 'Repeated save taps must not duplicate the photo')
+  assert.deepEqual(nativeTransfer.photoPermissionCalls, [[true, []]], 'Only add-only permission is queried')
+  assert.equal(nativeTransfer.pickerCalls, 0)
+  assert.equal(nativeTransfer.shares.length, 0)
+  assert.equal(nativeTransfer.downloads[0].options.headers?.Authorization, 'Bearer synthetic-test-token')
+  assert.match(rendered(), /Saved to Photos/)
+  assert.equal(nativeTransfer.deleted.length, 1)
+  await close()
+  console.log(`PASS ${filename} ${width}: Photos action, add-only permission, authenticated bytes, native save and cleanup`)
+}
+
+reset()
+await mount({ name: 'Photos denied', family: 'artifact', filename: 'image.png' })
+nativeTransfer.photoPermission = { granted: false, canAskAgain: false }
+await savePhotos()
+await flush()
+assert.equal(nativeTransfer.downloads.length, 0)
+assert.match(rendered(), /Allow adding photos in Settings/)
+await click(label('Open photo settings'))
+assert.equal(nativeTransfer.settingsOpened, 1)
+await close()
+
+reset()
+await mount({ name: 'Photos stale', family: 'artifact', filename: 'clip.mp4' })
+const permission = deferred<{ granted: boolean; canAskAgain: boolean }>()
+nativeTransfer.photoPermission = { granted: false, canAskAgain: true }
+nativeTransfer.requestPhotoPermission = () => permission.promise
+await savePhotos()
+await act(async () => useAppStore.setState({ selectedSessionId: 'session-b' }))
+await act(async () => permission.resolve({ granted: true, canAskAgain: true }))
+await flush()
+assert.equal(nativeTransfer.downloads.length, 0)
+assert.equal(nativeTransfer.photoSaves.length, 0)
+await close()
+
+reset()
+await mount({ name: 'Photos native failure', family: 'artifact', filename: 'clip.mp4' })
+nativeTransfer.savePhoto = async () => { throw new Error('Storage is full') }
+await savePhotos()
+await flush()
+assert.match(rendered(), /Storage is full/)
+assert.doesNotMatch(rendered(), /Saved to Photos/)
+assert.equal(nativeTransfer.deleted.length, 1)
+await close()
+
+for (const version of [28, 29, 33]) {
+  reset()
+  Platform.OS = 'android'; Platform.Version = version
+  await mount({ name: 'Android Photos', family: 'artifact', filename: 'clip.mp4' })
+  await savePhotos()
+  await flush()
+  assert.equal(nativeTransfer.photoSaves.length, 1)
+  assert.deepEqual(nativeTransfer.photoPermissionCalls, version < 29 ? [[true, []]] : [])
+  await close()
+}
+
+reset()
+await mount({ name: 'Document', family: 'artifact', filename: 'report.pdf' })
+assert.equal(label('Save to Photos'), undefined)
+await click(label('Download file'))
+assert.equal(label('Save to Photos'), undefined)
+assert(label('Save to Files'))
+assert(label('Share / Open in...'))
+await chooseDownloadOption('Cancel download options')
+assert.equal(nativeTransfer.downloads.length, 0)
+assert.equal(nativeTransfer.pickerCalls, 0)
+await close()
+
+for (const platform of ['ios', 'android']) {
+  reset()
+  Platform.OS = platform
+  await mount({ name: 'Download menu sharing', family: 'artifact', filename: 'image.png', platform: platform as 'ios' | 'android' })
+  await click(label('Download file'))
+  if (platform === 'android') {
+    assert.equal(nativeTransfer.downloads.length, 0)
+    await chooseDownloadOption('Share / Open in...')
+  } else {
+    assert.equal(label('Save to Photos'), undefined)
+    assert.equal(label('Share / Open in...'), undefined, 'iOS must open the system sheet directly')
+  }
+  await flush()
+  assert.equal(nativeTransfer.shares.length, 1)
+  assert.equal(nativeTransfer.pickerCalls, 0)
+  assert.equal(nativeTransfer.photoPermissionCalls.length, 0)
+  assert.equal(nativeTransfer.deleted.length, 0, 'Shared file stays readable by the receiving app')
+  await close()
+}
+
+reset()
+await mount({ name: 'Stale download menu', family: 'artifact', filename: 'image.png' })
+await click(label('Download file'))
+const staleMenuPress = label('Save to Files').props.onPress
+await act(async () => useAppStore.setState({ selectedSessionId: 'session-b' }))
+assert.equal(label('Save to Files'), undefined)
+await act(async () => staleMenuPress())
+assert.equal(nativeTransfer.pickerCalls, 0)
+assert.equal(nativeTransfer.downloads.length, 0)
+await close()
+
+reset()
+Platform.OS = 'android'
+await mount({ name: 'Android download menu cancel', family: 'artifact', filename: 'image.png' })
+await click(label('Download file'))
+await click(label('Cancel download options'))
+assert.equal(label('Save to Photos'), undefined)
+assert.equal(nativeTransfer.downloads.length, 0)
+assert.equal(nativeTransfer.photoPermissionCalls.length, 0)
+await close()
+console.log('PASS native/Android download menu, cancel, share routing and stale menu dismissal')
+
+for (const filename of ['image.png', 'clip.mp4', 'report.pdf']) for (const width of [390, 1024]) {
+  reset()
+  const pending = deferred<File>()
+  nativeTransfer.download = () => pending.promise
+  const download = await mount({ name: 'iOS system download sheet', family: 'artifact', platform: 'ios', filename, width })
+  const button = download
+  await act(async () => { button.props.onPress(); button.props.onPress() })
+  assert.equal(nativeTransfer.downloads.length, 1)
+  assert.equal(nativeTransfer.shares.length, 0, 'Do not present the OS sheet until bytes are ready')
+  assert.equal(nativeTransfer.pickerCalls, 0)
+  assert.equal(label('Save to Photos'), undefined)
+  const current = nativeTransfer.downloads[0]
+  assert.equal(current.options.headers?.Authorization, 'Bearer synthetic-test-token')
+  await act(async () => { nativeTransfer.put(current.file.uri, 100); pending.resolve(current.file) })
+  await flush()
+  assert.equal(nativeTransfer.shares.length, 1)
+  assert.equal(nativeTransfer.photoPermissionCalls.length, 0, 'iOS manages photo saving inside its system sheet')
+  assert.equal(nativeTransfer.deleted.length, 0)
+  assert.doesNotMatch(rendered(), /Saved to Photos/, 'Closing the system sheet cannot claim a save')
+  await close()
+}
+console.log('PASS iOS Download directly opens the native sheet for image, video and PDF on phone/tablet')
 
 // Real controls, hooks, notices and adapter are exercised for every entry point.
 // Each delayed picker must appear before the first authenticated request.
@@ -88,6 +246,10 @@ for (const variant of variants) {
   }
   const button = await mount(variant)
   await act(async () => { button.props.onPress(); button.props.onPress() })
+  if (variant.family === 'artifact') {
+    assert.equal(nativeTransfer.pickerCalls, 0, 'Menu selection precedes the folder picker')
+    await chooseDownloadOption('Save to Files')
+  }
   assert.equal(nativeTransfer.pickerCalls, 1, `${variant.name}: rapid repeated taps cannot present two pickers`)
   assert.equal(nativeTransfer.downloads.length, 0, `${variant.name}: location must be chosen before network`)
   assert.match(rendered(), /Choose a folder/, `${variant.name}: immediate visible response`)
@@ -114,14 +276,14 @@ for (const variant of [variants[0], variants[6], variants[9]]) {
   reset()
   const button = await mount(variant)
   nativeTransfer.download = () => Promise.reject(new Error('HTTP 403: access expired'))
-  await click(button)
+  await clickDownload(button)
   await flush()
   assert.match(rendered(), /Could not download .*HTTP 403/, `${variant.family}: failure visible in current view`)
   assert.equal(nativeTransfer.copies.length, 0)
   assert.equal(nativeTransfer.shares.length, 0)
   assert.equal(nativeTransfer.deleted.length, 1)
   nativeTransfer.download = async file => { nativeTransfer.put(file.uri, 100); return file }
-  await click(label(variant.family === 'media' ? 'Download' : 'Download file'))
+  await clickDownload(label(variant.family === 'media' ? 'Download' : 'Download file'))
   await flush()
   assert.match(rendered(), /Saved /, `${variant.family}: failure releases the action for retry`)
   await close()
@@ -132,7 +294,7 @@ for (const variant of [variants[0], variants[6], variants[9]]) {
     nativeTransfer.put(file.uri, 10)
     nativeTransfer.downloads.at(-1)!.options.signal!.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' })), { once: true })
   })
-  await click(cancelButton)
+  await clickDownload(cancelButton)
   await click(id('file-transfer-cancel'))
   await flush()
   assert(nativeTransfer.downloads[0].options.signal!.aborted)
@@ -144,7 +306,7 @@ for (const variant of [variants[0], variants[6], variants[9]]) {
   reset()
   const picker = deferred<Directory>()
   nativeTransfer.picker = () => picker.promise
-  await click(await mount(variant))
+  await clickDownload(await mount(variant))
   await act(async () => useAppStore.setState({ selectedSessionId: 'session-b' }))
   await act(async () => picker.resolve(new Directory('file:///user-selected-folder')))
   await flush()
@@ -157,7 +319,7 @@ for (const variant of [variants[0], variants[6], variants[9]]) {
     nativeTransfer.put(file.uri, 12)
     nativeTransfer.downloads.at(-1)!.options.signal!.addEventListener('abort', () => reject(Object.assign(new Error('Cancelled'), { name: 'AbortError' })), { once: true })
   })
-  await click(await mount(variant))
+  await clickDownload(await mount(variant))
   const previous = nativeTransfer.downloads[0]
   await act(async () => { connection(); useAppStore.setState({ profileGeneration: 2 }) })
   await flush()

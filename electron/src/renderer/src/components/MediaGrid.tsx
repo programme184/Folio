@@ -8,7 +8,7 @@ import { effectiveFileContentType, isInternalViewerFile, isPreviewableFile } fro
 import { agentFileBelongsToSession } from '@shared/session-files'
 import type { AgentFile, PinnedItem, WorkspaceProfileScope } from '@shared/types'
 import { trackEvent } from '../lib/analytics'
-import { saveAgentFile } from '../lib/file-actions'
+import { saveAgentFile, requestNativeFileOpen } from '../lib/file-actions'
 import { formatBytes } from '../lib/format'
 import { requirePinnedItemsScope } from '../lib/pinned-items'
 import { useTransientClose } from '../lib/transient-close'
@@ -86,13 +86,13 @@ const MediaTile = memo(function MediaTile({ file, sessionId, profileScope, works
     {canOpenInEditor && <button type="button" title={t("ui.MediaGrid.MediaTile.open_in_editor_f395ae5")} onClick={openInEditor}><FileCode2 size={12} /></button>}
     <button type="button" title={t("ui.MediaGrid.MediaTile.download_d6eafe8")} onClick={() => void saveAgentFile(sessionId, file)}><Download size={12} /></button>
     {!shared && <><button type="button" title={t("ui.MediaGrid.MediaTile.show_in_folder_3c4d9b8")} onClick={() => runMediaAction(window.agentsDock.files.reveal(sessionId, file))}><FolderOpen size={12} /></button>
-    <button type="button" title={t("ui.MediaGrid.MediaTile.open_ed077f3")} onClick={() => runMediaAction(window.agentsDock.files.open(sessionId, file))}><ExternalLink size={12} /></button>
+    <button type="button" title={t("ui.MediaGrid.MediaTile.open_ed077f3")} onClick={() => runMediaAction(requestNativeFileOpen(sessionId, file))}><ExternalLink size={12} /></button>
     <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t("ui.MediaGrid.MediaTile.unpin_file_1cf0044") : t("ui.MediaGrid.MediaTile.pin_file_59902fc")} onClick={() => runMediaAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button></>}
   </div>
   if (!media) return (
     <NativeFileDragSurface sessionId={sessionId} file={file} className="media-file-row">
       <span className="compact-file-glyph"><File size={17} /></span>
-      <button type="button" className="media-file-copy" data-native-drag-ignore onClick={() => shared ? void saveAgentFile(sessionId, file) : canOpenInEditor ? openInEditor() : runMediaAction(window.agentsDock.files.open(sessionId, file))}>
+      <button type="button" className="media-file-copy" data-native-drag-ignore onClick={() => shared ? void saveAgentFile(sessionId, file) : canOpenInEditor ? openInEditor() : runMediaAction(requestNativeFileOpen(sessionId, file))}>
         <strong title={file.title || file.filename}>{file.title || file.filename}</strong>
         <small>{formatBytes(file.size)}</small>
       </button>
@@ -105,8 +105,8 @@ const MediaTile = memo(function MediaTile({ file, sessionId, profileScope, works
       file={file}
       className={`media-tile ${media ? 'has-preview' : 'file-only'}`}
     >
-      <button type="button" className="media-preview" onClick={media ? onPreview : () => runMediaAction(window.agentsDock.files.open(sessionId, file))}>
-        {type.startsWith('image/') ? <img src={source} alt={file.title || file.filename} loading="lazy" draggable={false} />
+      <button type="button" className="media-preview" onClick={media ? onPreview : () => runMediaAction(requestNativeFileOpen(sessionId, file))}>
+        {type.startsWith('image/') ? <PreviewImage key={source} source={source} label={file.title || file.filename} lazy />
           : type.startsWith('video/') && source ? <><LazyVideoThumbnail source={source} /><span className="play-badge"><Play size={16} fill="currentColor" /></span></>
           : <span className="file-glyph"><File size={22} /></span>}
       </button>
@@ -115,6 +115,13 @@ const MediaTile = memo(function MediaTile({ file, sessionId, profileScope, works
     </NativeFileDragSurface>
   )
 })
+
+function PreviewImage({ source, label, lazy = false }: { source?: string; label: string; lazy?: boolean }) {
+  const [failed, setFailed] = useState(false)
+  return failed
+    ? <span role="status">{t('editor.agentsdockCouldNotDecodeThisImage')}</span>
+    : <img src={source} alt={label} loading={lazy ? 'lazy' : undefined} draggable={false} onError={() => setFailed(true)} />
+}
 
 export function LazyVideoThumbnail({ source }: { source: string }) {
   useLocale()
@@ -191,10 +198,10 @@ export function MediaPreviewDialog({ sessionId, file, files = EMPTY_MEDIA_FILES,
           <div className="media-dialog-head"><Dialog.Title>{file.title || file.filename}</Dialog.Title><Dialog.Close asChild><button type="button" className="icon-button" aria-label={t("ui.MediaGrid.MediaPreviewDialog.close_media_preview_cf8d4bc")}><X size={16} /></button></Dialog.Close></div>
           <div className="media-dialog-body">
             {showNavigation && <button className="media-dialog-nav previous" type="button" aria-label={t("ui.MediaGrid.MediaPreviewDialog.previous_media_26b519b")} title={t("ui.MediaGrid.MediaPreviewDialog.previous_media_left_arrow_c5a64a9")} disabled={!canGoPrevious} onClick={() => void navigate(-1)}><ChevronLeft size={22} /></button>}
-            {video ? <video key={`${activeProfileId ?? 'none'}:${profileGeneration}:${file.id}`} src={source} controls autoPlay playsInline /> : <img key={`${activeProfileId ?? 'none'}:${profileGeneration}:${file.id}`} src={source} alt={file.title || file.filename} />}
+            {video ? <video key={`${activeProfileId ?? 'none'}:${profileGeneration}:${file.id}`} src={source} controls autoPlay playsInline /> : <PreviewImage key={source} source={source} label={file.title || file.filename} />}
             {showNavigation && <button className="media-dialog-nav next" type="button" aria-label={t("ui.MediaGrid.MediaPreviewDialog.next_media_e752122")} title={t("ui.MediaGrid.MediaPreviewDialog.next_media_right_arrow_fbf2490")} disabled={!canGoNext} onClick={() => void navigate(1)}><ChevronRight size={22} /></button>}
           </div>
-          <div className="media-dialog-foot"><span>{formatBytes(file.size)}{showNavigation ? t("ui.MediaGrid.MediaPreviewDialog.of_951f776", { "current": String(index + 1), "total": String(gallery.length) }) : ''}</span><button type="button" className="quiet-button" onClick={() => void saveAgentFile(sessionId, file)}><Download size={14} />{" "}{t("ui.MediaGrid.MediaPreviewDialog.download_d6eafe8")}</button>{!shared && <button type="button" className="quiet-button" onClick={() => runMediaAction(window.agentsDock.files.open(sessionId, file))}><ExternalLink size={14} />{" "}{t("ui.MediaGrid.MediaPreviewDialog.open_ed077f3")}</button>}</div>
+          <div className="media-dialog-foot"><span>{formatBytes(file.size)}{showNavigation ? t("ui.MediaGrid.MediaPreviewDialog.of_951f776", { "current": String(index + 1), "total": String(gallery.length) }) : ''}</span><button type="button" className="quiet-button" onClick={() => void saveAgentFile(sessionId, file)}><Download size={14} />{" "}{t("ui.MediaGrid.MediaPreviewDialog.download_d6eafe8")}</button>{!shared && <button type="button" className="quiet-button" onClick={() => runMediaAction(requestNativeFileOpen(sessionId, file))}><ExternalLink size={14} />{" "}{t("ui.MediaGrid.MediaPreviewDialog.open_ed077f3")}</button>}</div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

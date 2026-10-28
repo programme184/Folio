@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AccessibilityInfo, ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { AccessibilityInfo, ActionSheetIOS, ActivityIndicator, Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 import { useShallow } from 'zustand/react/shallow'
 import { Archive, Check, ChevronDown, Copy, FileText, GitFork, Pause, Pencil, Pin, Play, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from 'lucide-react-native'
@@ -7,10 +7,11 @@ import { describeJobSchedule, effectiveScheduleKind } from '../lib/job-schedule'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { filesNewestFirst } from '../lib/format'
 import { mobileFileViewerKind } from '../lib/file-viewer'
-import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError } from '../lib/runtime-catalog'
+import { runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions } from '../lib/runtime-catalog'
+import { chatBackendChoice, chatBackendLabel, isCustomProvider, providerRuntimeCatalog, providerSelectionError } from '../lib/provider-selection'
 import { PROVIDER_JOBS_ACCESS_MODES, providerJobsAccessDescription, providerJobsAccessLabel, providerJobsAccessState } from '../lib/provider-jobs-access'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, typography, usePalette } from '../theme'
 import type { ProviderJobsAccess, RuntimeOption } from '../types'
 import { Text, TextInput } from './AppText'
 import { MediaGrid } from './MediaGrid'
@@ -41,6 +42,11 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       folder: value.folder,
       cwd: value.cwd,
       backend: value.backend,
+      backend_locked: value.backend_locked,
+      codex_provider: value.codex_provider,
+      provider_connection: value.provider_connection,
+      codex_provider_catalog: value.codex_provider_catalog,
+      provider_connection_catalog: value.provider_connection_catalog,
       model: value.model,
       effort: value.effort,
       system_prompt: value.system_prompt,
@@ -51,6 +57,8 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       codex_thread_id: value.codex_thread_id,
       claude_session_id: value.claude_session_id,
       cursor_session_id: value.cursor_session_id,
+      opencode_session_id: value.opencode_session_id,
+      gemini_session_id: value.gemini_session_id,
     } : undefined
   }))
   const snapshotFiles = useAppStore(state => state.snapshots[sessionId]?.files)
@@ -92,8 +100,9 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
       && state.selectedSessionId === sessionId
       && !state.workspaceAdopting
   }
-  const providerSessionId = session?.session_id?.trim() || session?.codex_thread_id?.trim() || session?.claude_session_id?.trim() || session?.cursor_session_id?.trim() || ''
-  const forkDisabled = !connected || running || stopping || admitting
+  const providerSessionId = session?.session_id?.trim() || session?.codex_thread_id?.trim() || session?.claude_session_id?.trim() || session?.cursor_session_id?.trim() || session?.opencode_session_id?.trim() || session?.gemini_session_id?.trim() || ''
+  const forkSupported = session?.backend !== 'gemini' || health?.capabilities?.gemini_backend?.features?.fork === true
+  const forkDisabled = !forkSupported || !connected || running || stopping || admitting
   const copySessionId = async () => {
     if (!providerSessionId || !scopeIsCurrent()) return
     try {
@@ -185,19 +194,22 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
   }, [])
   useEffect(() => { void refreshJobs(profileGeneration) }, [profileGeneration, refreshJobs, sessionId])
   if (!session) return null
-  const modelOptions = runtimeCatalogOptions(runtime, session.backend, 'models', session.model)
-  const effortOptions = runtimeEffortOptions(runtime, session.backend, session.model, session.effort)
-  const selectionError = runtimeSelectionError(health, runtime, session.backend, session.model)
+  const catalog = providerRuntimeCatalog(runtime, session)
+  const modelOptions = runtimeCatalogOptions(catalog, session.backend, 'models', session.model)
+  const effortOptions = runtimeEffortOptions(catalog, session.backend, session.model, session.effort)
+  const selectionError = providerSelectionError(health, runtime, session)
   const jobsAccess = providerJobsAccessState(session, health)
   const jobsAccessOptions = PROVIDER_JOBS_ACCESS_MODES.map(value => ({ value, label: providerJobsAccessLabel(value) }))
   return <ScrollView pointerEvents={workspaceAdopting ? 'none' : 'auto'} style={[styles.root, { backgroundColor: colors.surface, borderColor: colors.border, opacity: workspaceAdopting ? 0.55 : 1 }]} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
     <View style={[styles.card, { backgroundColor: colors.raised }]}>
       <SectionHeader title="Session" />
+      <Text style={[typography.label, { color: colors.muted }]}>{chatBackendLabel(chatBackendChoice(session))}</Text>
       <Field label="Name"><TextInput value={title} onChangeText={setTitle} onBlur={() => { const clean = title.trim(); if (scopeIsCurrent() && clean && clean !== session.title) void update(sessionId, { title: clean }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
-      <Field label="Model"><ChoiceField value={session.model ?? ''} options={modelOptions} onChange={model => { if (scopeIsCurrent()) void update(sessionId, { model, effort: runtimeEffortAfterModelChange(runtime, session.backend, model, session.effort) }, profileGeneration) }} /></Field>
-      {session.backend !== 'cursor' ? <Field label="Effort"><ChoiceField value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
+      <Field label="Model"><ChoiceField title="Model" value={session.model ?? ''} options={modelOptions} onChange={model => { if (scopeIsCurrent()) void update(sessionId, { model, effort: runtimeEffortAfterModelChange(catalog, session.backend, model, session.effort) }, profileGeneration) }} /></Field>
+      {isCustomProvider(session) ? <Field label="Model ID"><TextInput key={`${session.id}:${session.model}`} testID="chat-api-model-id" defaultValue={session.model ?? ''} autoCapitalize="none" autoCorrect={false} placeholder="default" placeholderTextColor={colors.muted} onEndEditing={event => { const model = event.nativeEvent.text.trim(); if (scopeIsCurrent() && model !== (session.model ?? '')) void update(sessionId, { model: model || null, effort: null }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field> : null}
+      {session.backend !== 'cursor' && (session.backend !== 'gemini' && session.backend !== 'opencode' || effortOptions.some(option => option.value)) ? <Field label="Effort"><ChoiceField title="Effort" value={session.effort ?? ''} options={effortOptions} onChange={effort => { if (scopeIsCurrent()) void update(sessionId, { effort }, profileGeneration) }} /></Field> : null}
       {selectionError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.orange }]}>{selectionError}</Text> : null}
-      <Field label="Agent jobs"><ChoiceField disabled={!jobsAccess.available} value={jobsAccess.effective} options={jobsAccessOptions} onChange={value => { if (scopeIsCurrent() && jobsAccess.available) void update(sessionId, { provider_jobs_access: value as ProviderJobsAccess }, profileGeneration) }} /></Field>
+      <Field label="Agent jobs"><ChoiceField title="Agent jobs" disabled={!jobsAccess.available} value={jobsAccess.effective} options={jobsAccessOptions} onChange={value => { if (scopeIsCurrent() && jobsAccess.available) void update(sessionId, { provider_jobs_access: value as ProviderJobsAccess }, profileGeneration) }} /></Field>
       <Text style={[styles.hint, { color: colors.muted }]}>{jobsAccess.available ? `${providerJobsAccessLabel(jobsAccess.effective)}${jobsAccess.inheritedDefault ? ' (server default)' : ''}. ${providerJobsAccessDescription(jobsAccess.effective)}` : 'Update AgentsServer to set Read-only or Blocked. Human job controls remain available.'}</Text>
       <Field label="System prompt"><TextInput value={systemPrompt} onChangeText={setSystemPrompt} onBlur={() => { const clean = systemPrompt.trim(); if (scopeIsCurrent() && clean !== (session.system_prompt ?? '')) void update(sessionId, { system_prompt: clean || null }, profileGeneration) }} multiline maxLength={12_000} placeholder="Optional per-chat instructions" placeholderTextColor={colors.muted} style={[styles.multilineInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
       <Field label="Folder"><TextInput value={folder} onChangeText={setFolder} onBlur={() => { if (scopeIsCurrent()) void update(sessionId, { folder: folder.trim() || 'General' }, profileGeneration) }} style={[styles.input, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surface }]} /></Field>
@@ -218,24 +230,24 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
 
     <View style={[styles.card, { backgroundColor: colors.raised }]}>
       <SectionHeader title={`Pinned ${pins.length}`} />
-      {pins.length ? pins.map(pin => <View key={pin.id} style={styles.pinRow}><Pressable accessibilityRole="button" accessibilityLabel={`Open pinned item ${pin.title}`} onPress={() => openPinnedItem(pin.id)} style={styles.pinIdentity}><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>{pin.title}</Text>{pin.body ? <Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={2}>{pin.body}</Text> : <Text style={{ color: colors.muted, fontSize: 10 }}>Pinned file</Text>}</Pressable><IconButton icon={X} size={13} onPress={() => { if (scopeIsCurrent()) void removePin(pin.id, profileGeneration) }} label="Unpin" /></View>) : <Text style={[styles.hint, { color: colors.muted }]}>Pin important messages or files from the timeline.</Text>}
+      {pins.length ? pins.map(pin => <View key={pin.id} style={styles.pinRow}><Pressable accessibilityRole="button" accessibilityLabel={`Open pinned item ${pin.title}`} onPress={() => openPinnedItem(pin.id)} style={styles.pinIdentity}><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>{pin.title}</Text>{pin.body ? <Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={2}>{pin.body}</Text> : <Text style={{ color: colors.muted, fontSize: 10 }} localize>Pinned file</Text>}</Pressable><IconButton icon={X} size={13} onPress={() => { if (scopeIsCurrent()) void removePin(pin.id, profileGeneration) }} label="Unpin" /></View>) : <Text style={[styles.hint, { color: colors.muted }]} localize>Pin important messages or files from the timeline.</Text>}
     </View>
 
     <View style={[styles.card, { backgroundColor: colors.raised }]}>
       <Pressable accessibilityRole="button" accessibilityLabel="Media and files" accessibilityState={{ expanded: mediaOpen }} onPress={() => setMediaOpen(value => !value)} style={styles.disclosure}><SectionHeader title={`Media & files ${snapshotFiles?.length ?? 0}/${filesTotal}`} /><ChevronDown size={15} color={colors.muted} /></Pressable>
       {mediaOpen ? <>
         {newestFiles.length ? <MediaGrid files={newestFiles} sessionId={sessionId} compact onViewerRequested={onFileViewerRequested} /> : null}
-        {filePaging?.loading ? <View testID="file-page-loading" accessibilityLiveRegion="polite" style={styles.filePageStatus}><ActivityIndicator size="small" color={colors.blue} /><Text style={{ color: colors.muted, fontSize: 11 }}>Loading files…</Text></View> : null}
-        {filePaging?.error ? <View testID="file-page-error" accessibilityLiveRegion="polite" style={[styles.filePageError, { borderColor: colors.red }]}><Text style={{ flex: 1, color: colors.red, fontSize: 11 }}>{filePaging.error}</Text><Pressable testID="file-page-retry" accessibilityRole="button" accessibilityLabel="Retry loading media and files" onPress={() => { if (scopeIsCurrent()) void refreshFiles(sessionId, filePaging.retryAppend, profileGeneration) }} style={[styles.filePageRetry, { backgroundColor: colors.surface }]}><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '800' }}>Retry</Text></Pressable></View> : null}
-        {!filePaging?.loading && !filePaging?.error && filesHasMore ? <Pressable testID="file-page-load-more" accessibilityRole="button" accessibilityLabel="Load more media and files" onPress={() => { if (scopeIsCurrent()) void refreshFiles(sessionId, true, profileGeneration) }} style={[styles.loadMore, { backgroundColor: colors.surface }]}><Text style={{ color: colors.muted, fontSize: 11 }}>Load more</Text></Pressable> : null}
-        {!filePaging?.loading && !filePaging?.error && !filesHasMore && newestFiles.length ? <Text testID="file-page-exhausted" style={[styles.filePageHint, { color: colors.muted }]}>All files loaded.</Text> : null}
-        {!filePaging?.loading && !filePaging?.error && !newestFiles.length ? <Text style={[styles.filePageHint, { color: colors.muted }]}>No media or files.</Text> : null}
+        {filePaging?.loading ? <View testID="file-page-loading" accessibilityLiveRegion="polite" style={styles.filePageStatus}><ActivityIndicator size="small" color={colors.blue} /><Text style={{ color: colors.muted, fontSize: 11 }} localize>Loading files…</Text></View> : null}
+        {filePaging?.error ? <View testID="file-page-error" accessibilityLiveRegion="polite" style={[styles.filePageError, { borderColor: colors.red }]}><Text style={{ flex: 1, color: colors.red, fontSize: 11 }}>{filePaging.error}</Text><Pressable testID="file-page-retry" accessibilityRole="button" accessibilityLabel="Retry loading media and files" onPress={() => { if (scopeIsCurrent()) void refreshFiles(sessionId, filePaging.retryAppend, profileGeneration) }} style={[styles.filePageRetry, { backgroundColor: colors.surface }]}><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '800' }} localize>Retry</Text></Pressable></View> : null}
+        {!filePaging?.loading && !filePaging?.error && filesHasMore ? <Pressable testID="file-page-load-more" accessibilityRole="button" accessibilityLabel="Load more media and files" onPress={() => { if (scopeIsCurrent()) void refreshFiles(sessionId, true, profileGeneration) }} style={[styles.loadMore, { backgroundColor: colors.surface }]}><Text style={{ color: colors.muted, fontSize: 11 }} localize>Load more</Text></Pressable> : null}
+        {!filePaging?.loading && !filePaging?.error && !filesHasMore && newestFiles.length ? <Text testID="file-page-exhausted" style={[styles.filePageHint, { color: colors.muted }]} localize>All files loaded.</Text> : null}
+        {!filePaging?.loading && !filePaging?.error && !newestFiles.length ? <Text style={[styles.filePageHint, { color: colors.muted }]} localize>No media or files.</Text> : null}
       </> : null}
     </View>
 
     <View style={[styles.card, { backgroundColor: colors.raised }]}>
-      <SectionHeader title={`Jobs ${jobs.length}`} trailing={<View style={styles.headerActions}><IconButton icon={RefreshCw} size={15} onPress={() => { if (scopeIsCurrent()) void refreshJobs(profileGeneration) }} label="Refresh jobs" /><Pressable accessibilityRole="button" accessibilityLabel="Schedule job" testID="schedule-job" onPress={() => { if (scopeIsCurrent()) onJob() }} style={[styles.scheduleJob, { backgroundColor: colors.surface }]}><Plus size={14} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }}>Schedule</Text></Pressable></View>} />
-      {!jobs.length ? <Text style={[styles.hint, { color: colors.muted }]}>No scheduled jobs for this chat.</Text> : null}
+      <SectionHeader title={`Jobs ${jobs.length}`} trailing={<View style={styles.headerActions}><IconButton icon={RefreshCw} size={15} onPress={() => { if (scopeIsCurrent()) void refreshJobs(profileGeneration) }} label="Refresh jobs" /><Pressable accessibilityRole="button" accessibilityLabel="Schedule job" testID="schedule-job" onPress={() => { if (scopeIsCurrent()) onJob() }} style={[styles.scheduleJob, { backgroundColor: colors.surface }]}><Plus size={14} color={colors.blue} /><Text style={{ color: colors.blue, fontSize: 10, fontWeight: '800' }} localize>Schedule</Text></Pressable></View>} />
+      {!jobs.length ? <Text style={[styles.hint, { color: colors.muted }]} localize>No scheduled jobs for this chat.</Text> : null}
       {jobs.map(job => {
         const feedback = jobRunFeedback[job.id]
         const requestingRun = feedback?.phase === 'requesting' || pendingJobRunIds.has(job.id)
@@ -247,7 +259,7 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
         } : feedback ?? null
         return <View key={job.id} style={[styles.jobBlock, { opacity: job.enabled === false && !pendingOnServer ? 0.62 : 1 }]}>
           <View style={styles.jobRow}>
-            <Pressable testID={`scheduled-job-card-${job.id}`} accessibilityRole="button" accessibilityLabel={`Edit scheduled job ${job.title}`} accessibilityState={{ disabled: actionLocked }} disabled={actionLocked} onPress={() => { if (scopeIsCurrent()) onJob(job.id) }} style={styles.jobContent}><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>{job.title}</Text><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={2}>{describeJobSchedule(job)} · {job.max_runs == null ? (effectiveScheduleKind(job) === 'interval' ? 'loops' : 'no extra run limit') : `${job.max_runs} total run${job.max_runs === 1 ? '' : 's'}`} · {job.run_count ?? 0} completed{job.enabled === false ? ' · inactive' : nextRunLabel(job.next_run_at_iso)}</Text></Pressable>
+            <Pressable testID={`scheduled-job-card-${job.id}`} accessibilityRole="button" accessibilityLabel={`Edit scheduled job ${job.title}`} accessibilityState={{ disabled: actionLocked }} disabled={actionLocked} onPress={() => { if (scopeIsCurrent()) onJob(job.id) }} style={styles.jobContent}><Text style={{ color: colors.text, fontSize: 12, fontWeight: '700' }} numberOfLines={1}>{job.title}</Text><Text style={{ color: colors.muted, fontSize: 10 }} numberOfLines={2} localize>{describeJobSchedule(job)} · {job.max_runs == null ? (effectiveScheduleKind(job) === 'interval' ? 'loops' : 'no extra run limit') : `${job.max_runs} total run${job.max_runs === 1 ? '' : 's'}`} · {job.run_count ?? 0} completed{job.enabled === false ? ' · inactive' : nextRunLabel(job.next_run_at_iso)}</Text></Pressable>
             <IconButton icon={Pencil} size={14} disabled={actionLocked} onPress={() => { if (scopeIsCurrent()) onJob(job.id) }} label="Edit job" />
             <IconButton icon={job.enabled === false ? Play : Pause} size={14} disabled={actionLocked} onPress={() => { if (scopeIsCurrent()) void updateJob(job.id, { enabled: job.enabled === false }, profileGeneration) }} label={job.enabled === false ? 'Enable job' : 'Pause job'} />
             <Pressable testID={`run-scheduled-job-${job.id}`} accessibilityRole="button" accessibilityLabel={pendingOnServer ? `Scheduled job ${job.title} is waiting to run` : `Run scheduled job ${job.title} now`} accessibilityState={{ busy: requestingRun || pendingOnServer, disabled: actionLocked }} disabled={actionLocked} onPress={() => void runScheduledJob(job.id)} style={({ pressed }) => [styles.runJobButton, { opacity: actionLocked ? 0.5 : pressed ? 0.65 : 1 }]}>{requestingRun || pendingOnServer ? <ActivityIndicator size="small" color={colors.blue} /> : <Play size={14} color={colors.muted} />}</Pressable>
@@ -257,32 +269,74 @@ export function Inspector({ sessionId, onDigest, onJob, onTerminal, onProcesses,
         </View>
       })}
     </View>
-    <Modal visible={pinPreviewId != null} transparent animationType="fade" onRequestClose={() => setPinPreviewId(null)}><View style={styles.modalBackdrop}><Pressable accessibilityRole="button" accessibilityLabel="Dismiss pinned item" style={StyleSheet.absoluteFill} onPress={() => setPinPreviewId(null)} /><View style={[styles.pinPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>{(() => { const pin = pins.find(value => value.id === pinPreviewId); const file = pin?.fileId ? snapshotFiles?.find(value => value.id === pin.fileId) : null; return <><View style={styles.pinPreviewHeader}><Text style={[styles.pinPreviewTitle, { color: colors.text }]} numberOfLines={2}>{pin?.title ?? 'Pinned item'}</Text>{pin?.body ? <IconButton icon={Copy} size={15} onPress={() => void Clipboard.setStringAsync(pin.body ?? '')} label="Copy full text" /> : null}<IconButton icon={X} size={15} onPress={() => setPinPreviewId(null)} label="Close" /></View>{pin?.body ? <ScrollView style={{ maxHeight: 480 }}><Text selectable style={{ color: colors.text, fontSize: 14, lineHeight: 20 }}>{pin.body}</Text></ScrollView> : file ? <MediaGrid files={[file]} sessionId={sessionId} onViewerRequested={() => { setPinPreviewId(null); onFileViewerRequested?.() }} /> : <Text style={{ color: colors.muted }}>This file is not in the loaded media page yet.</Text>}</> })()}</View></View></Modal>
+    <Modal visible={pinPreviewId != null} transparent animationType="fade" onRequestClose={() => setPinPreviewId(null)}><View style={styles.modalBackdrop}><Pressable accessibilityRole="button" accessibilityLabel="Dismiss pinned item" style={StyleSheet.absoluteFill} onPress={() => setPinPreviewId(null)} /><View style={[styles.pinPreview, { backgroundColor: colors.surface, borderColor: colors.border }]}>{(() => { const pin = pins.find(value => value.id === pinPreviewId); const file = pin?.fileId ? snapshotFiles?.find(value => value.id === pin.fileId) : null; return <><View style={styles.pinPreviewHeader}><Text style={[styles.pinPreviewTitle, { color: colors.text }]} numberOfLines={2}>{pin?.title ?? 'Pinned item'}</Text>{pin?.body ? <IconButton icon={Copy} size={15} onPress={() => void Clipboard.setStringAsync(pin.body ?? '')} label="Copy full text" /> : null}<IconButton icon={X} size={15} onPress={() => setPinPreviewId(null)} label="Close" /></View>{pin?.body ? <ScrollView style={{ maxHeight: 480 }}><Text selectable style={{ color: colors.text, fontSize: 14, lineHeight: 20 }}>{pin.body}</Text></ScrollView> : file ? <MediaGrid files={[file]} sessionId={sessionId} onViewerRequested={() => { setPinPreviewId(null); onFileViewerRequested?.() }} /> : <Text style={{ color: colors.muted }} localize>This file is not in the loaded media page yet.</Text>}</> })()}</View></View></Modal>
   </ScrollView>
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) { const colors = usePalette(); return <View style={styles.field}><Text style={[styles.label, { color: colors.muted }]}>{label}</Text><View style={{ flex: 1 }}>{children}</View></View> }
 function Command({ icon: Icon, label, onPress, destructive, disabled = false, hint, testID }: { icon: typeof Pin; label: string; onPress: () => void; destructive?: boolean; disabled?: boolean; hint?: string; testID?: string }) { const colors = usePalette(); return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={label} accessibilityHint={hint} accessibilityState={{ disabled }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.command, { backgroundColor: colors.raised, opacity: disabled ? 0.4 : pressed ? 0.65 : 1 }]}><Icon size={15} color={destructive ? colors.red : colors.muted} /><Text style={{ color: destructive ? colors.red : colors.text, fontSize: 11, fontWeight: '700' }}>{label}</Text></Pressable> }
 
-function ChoiceField({ value, options, onChange, disabled = false }: { value: string; options: RuntimeOption[]; onChange: (value: string) => void; disabled?: boolean }) {
-  const colors = usePalette(); const [open, setOpen] = useState(false); const selected = options.find(option => option.value === value) ?? options[0]
-  return <><Pressable accessibilityRole="button" accessibilityLabel={selected?.label ?? (value || 'Default')} accessibilityState={{ expanded: open, disabled }} disabled={disabled} onPress={() => { setOpen(true); requestAnimationFrame(dismissAppKeyboard) }} style={[styles.choice, { borderColor: colors.border, backgroundColor: colors.surface, opacity: disabled ? 0.45 : 1 }]}><Text style={{ flex: 1, color: colors.text, fontSize: 12 }} numberOfLines={1}>{selected?.label ?? (value || 'Default')}</Text><ChevronDown size={14} color={colors.muted} /></Pressable><Modal visible={open && !disabled} transparent animationType="fade" onRequestClose={() => setOpen(false)}><View style={styles.modalBackdrop}><Pressable accessibilityRole="button" accessibilityLabel="Dismiss choices" style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} /><View style={[styles.choiceMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}><ScrollView keyboardShouldPersistTaps="always">{options.map(option => <Pressable key={option.value || '__default'} accessibilityRole="button" accessibilityLabel={option.locked ? `${option.label}, upgrade required` : option.label} accessibilityHint={option.locked ? option.locked_reason ?? undefined : undefined} accessibilityState={{ disabled: option.locked, selected: option.value === value }} disabled={option.locked} onPress={() => { onChange(option.value); setOpen(false) }} style={[styles.choiceOption, { backgroundColor: option.value === value ? colors.raised : 'transparent', opacity: option.locked ? 0.45 : 1 }]}><Text style={{ color: colors.text }}>{option.label}{option.locked ? ' (upgrade required)' : ''}</Text></Pressable>)}</ScrollView></View></View></Modal></>
+function ChoiceField({ title = 'Choose option', value, options, onChange, disabled = false }: { title?: string; value: string; options: RuntimeOption[]; onChange: (value: string) => void; disabled?: boolean }) {
+  const colors = usePalette()
+  const [open, setOpen] = useState(false)
+  const iosChoicesPresented = useRef(false)
+  const choices = options.filter((option, index) => options.findIndex(candidate => candidate.value === option.value) === index)
+  const selected = choices.find(option => option.value === value) ?? choices[0]
+  const close = () => setOpen(false)
+  const choose = (option: RuntimeOption) => {
+    if (option.locked) return
+    onChange(option.value)
+    close()
+  }
+  const openChoices = () => {
+    if (disabled) return
+    dismissAppKeyboard()
+    if (Platform.OS === 'ios') {
+      if (iosChoicesPresented.current) return
+      iosChoicesPresented.current = true
+      const labels = choices.map(option => option.locked ? `${option.label} (upgrade required)` : option.label)
+      const cancelButtonIndex = labels.length
+      const disabledButtonIndices = choices.flatMap((option, index) => option.locked ? [index] : [])
+      try {
+        ActionSheetIOS.showActionSheetWithOptions({
+          title,
+          message: selected?.label ? `Current: ${selected.label}` : undefined,
+          options: [...labels, 'Cancel'],
+          cancelButtonIndex,
+          disabledButtonIndices,
+        }, buttonIndex => {
+          iosChoicesPresented.current = false
+          if (buttonIndex === cancelButtonIndex) return
+          const option = choices[buttonIndex]
+          if (option) choose(option)
+        })
+      } catch {
+        iosChoicesPresented.current = false
+      }
+      return
+    }
+    setOpen(true)
+  }
+  return <>
+    <Pressable accessibilityRole="button" accessibilityLabel={selected?.label ?? (value || 'Default')} accessibilityState={{ expanded: Platform.OS === 'ios' ? false : open, disabled }} disabled={disabled} onPress={openChoices} style={[styles.choice, { borderColor: colors.border, backgroundColor: colors.surface, opacity: disabled ? 0.45 : 1 }]}><Text style={{ flex: 1, color: colors.text, fontSize: 12 }} numberOfLines={1}>{selected?.label ?? (value || 'Default')}</Text><ChevronDown size={14} color={colors.muted} /></Pressable>
+    {Platform.OS !== 'ios' ? <Modal visible={open && !disabled} transparent animationType="fade" onRequestClose={close}><View style={styles.modalBackdrop}><Pressable accessibilityRole="button" accessibilityLabel="Dismiss choices" style={StyleSheet.absoluteFill} onPress={close} /><View style={[styles.choiceMenu, { backgroundColor: colors.surface, borderColor: colors.border }]}><ScrollView keyboardShouldPersistTaps="always">{choices.map(option => <Pressable key={option.value || '__default'} accessibilityRole="button" accessibilityLabel={option.locked ? `${option.label}, upgrade required` : option.label} accessibilityHint={option.locked ? option.locked_reason ?? undefined : undefined} accessibilityState={{ disabled: option.locked, selected: option.value === value }} disabled={option.locked} onPress={() => choose(option)} style={[styles.choiceOption, { backgroundColor: option.value === value ? colors.raised : 'transparent', opacity: option.locked ? 0.45 : 1 }]}><Text style={{ color: colors.text }} localize>{option.label}{option.locked ? ' (upgrade required)' : ''}</Text></Pressable>)}</ScrollView></View></View></Modal> : null}
+  </>
 }
 function nextRunLabel(value?: string | null): string { if (!value) return ''; const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : ` · next ${date.toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}` }
 
 const styles = StyleSheet.create({
   root: { flex: 1, minWidth: 290, borderLeftWidth: StyleSheet.hairlineWidth }, content: { padding: 10, gap: 8, paddingBottom: 30 },
-  card: { borderRadius: 7, padding: 8, gap: 7 }, field: { flexDirection: 'row', gap: 8, alignItems: 'center' }, label: { width: 70, fontSize: 10, fontWeight: '700' },
-  input: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 8, fontSize: 12 }, multilineInput: { minHeight: 78, maxHeight: 150, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 8, fontSize: 12, textAlignVertical: 'top' },
-  choice: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center' },
-  commandGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 }, command: { minWidth: '30%', minHeight: 44, borderRadius: 6, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  card: { borderRadius: radius.md, padding: 8, gap: 7 }, field: { flexDirection: 'row', gap: 8, alignItems: 'center' }, label: { width: 70, fontSize: 10, fontWeight: '700' },
+  input: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 8, paddingVertical: 8, fontSize: 12 }, multilineInput: { minHeight: 78, maxHeight: 150, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 8, paddingVertical: 8, fontSize: 12, textAlignVertical: 'top' },
+  choice: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center' },
+  commandGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 5 }, command: { minWidth: '30%', minHeight: 44, borderRadius: radius.md, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 6 },
   hint: { fontSize: 10, paddingHorizontal: 5, paddingBottom: 5 }, pinRow: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 5 }, pinIdentity: { flex: 1, minHeight: 44, justifyContent: 'center' },
-  disclosure: { minHeight: 44, flexDirection: 'row', alignItems: 'center' }, loadMore: { minHeight: 44, borderRadius: 5, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
-  filePageStatus: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }, filePageError: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 5, paddingLeft: 9, flexDirection: 'row', alignItems: 'center', gap: 8 }, filePageRetry: { minWidth: 64, minHeight: 44, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', borderRadius: 5 }, filePageHint: { minHeight: 36, paddingHorizontal: 5, textAlign: 'center', textAlignVertical: 'center', fontSize: 10 },
+  disclosure: { minHeight: 44, flexDirection: 'row', alignItems: 'center' }, loadMore: { minHeight: 44, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
+  filePageStatus: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }, filePageError: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingLeft: 9, flexDirection: 'row', alignItems: 'center', gap: 8 }, filePageRetry: { minWidth: 64, minHeight: 44, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center', borderRadius: radius.md }, filePageHint: { minHeight: 36, paddingHorizontal: 5, textAlign: 'center', textAlignVertical: 'center', fontSize: 10 },
   jobBlock: { minHeight: 45 }, jobRow: { minHeight: 45, flexDirection: 'row', alignItems: 'center', gap: 3, paddingHorizontal: 4 },
   jobContent: { minHeight: 44, flex: 1, minWidth: 0, justifyContent: 'center' },
   runJobButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }, jobRunStatus: { minHeight: 20, paddingHorizontal: 6, paddingBottom: 4, fontSize: 10, fontWeight: '700' },
-  headerActions: { flexDirection: 'row', alignItems: 'center' }, scheduleJob: { minHeight: 44, borderRadius: 5, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  modalBackdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 30 }, choiceMenu: { width: '100%', maxWidth: 380, maxHeight: '70%', borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, padding: 6 }, choiceOption: { minHeight: 44, borderRadius: 5, paddingHorizontal: 12, justifyContent: 'center' },
-  pinPreview: { width: '100%', maxWidth: 680, maxHeight: '78%', borderRadius: 8, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 10 }, pinPreviewHeader: { minHeight: 38, flexDirection: 'row', alignItems: 'center' }, pinPreviewTitle: { flex: 1, fontSize: 14, fontWeight: '800' },
+  headerActions: { flexDirection: 'row', alignItems: 'center' }, scheduleJob: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  modalBackdrop: { flex: 1, backgroundColor: '#00000088', alignItems: 'center', justifyContent: 'center', padding: 30 }, choiceMenu: { width: '100%', maxWidth: 380, maxHeight: '70%', borderRadius: radius.sheet, borderWidth: StyleSheet.hairlineWidth, padding: 6 }, choiceOption: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 12, justifyContent: 'center' },
+  pinPreview: { width: '100%', maxWidth: 680, maxHeight: '78%', borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 14, gap: 10 }, pinPreviewHeader: { minHeight: 38, flexDirection: 'row', alignItems: 'center' }, pinPreviewTitle: { flex: 1, fontSize: 14, fontWeight: '800' },
 })

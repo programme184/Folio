@@ -8,6 +8,13 @@ import { RuntimeHealthNotice, RuntimeHealthPanel } from './RuntimeHealth'
 
 afterEach(cleanup)
 
+it('labels a Gemini API error as Gemini, not Codex', () => {
+  useAppStore.setState({ health: null, runtimeCatalog: null, snapshots: {}, sessions: [] })
+  render(<RuntimeHealthNotice backend="gemini" codexProvider="custom" sessionId="gemini-test" admissionError="API test failed" />)
+  expect(screen.getByText('Gemini')).toBeTruthy()
+  expect(screen.queryByText(/Codex runtime/)).toBeNull()
+})
+
 const readyCatalog: RuntimeCatalog = {
   generated_at: '2026-07-30T20:01:00Z',
   backends: {
@@ -45,9 +52,45 @@ beforeEach(() => {
     configurable: true,
     value: {
       runtime: { catalog: vi.fn().mockResolvedValue(readyCatalog) },
+      native: { writeClipboard: vi.fn().mockResolvedValue(undefined) },
     } as unknown as AgentsDockAPI,
   })
   useAppStore.setState({ error: null })
+})
+
+it('copies the complete error and command, including text beyond the old 520-character cutoff', async () => {
+  const message = 'Long diagnostic. '.repeat(50) + 'Run `codex unarchive example-thread` to unarchive it first.'
+  useAppStore.setState({ health: null, runtimeCatalog: null, snapshots: {}, sessions: [] })
+  const { rerender } = render(<RuntimeHealthNotice backend="codex" sessionId="copy-test" admissionError={message} />)
+  expect(screen.getByText(message)).toHaveClass('runtime-detail')
+  await userEvent.click(screen.getByRole('button', { name: 'Copy error details' }))
+  expect(window.agentsDock.native.writeClipboard).toHaveBeenCalledWith(message)
+  expect(screen.getByRole('button', { name: 'Error details copied' })).toBeInTheDocument()
+  rerender(<RuntimeHealthNotice backend="codex" sessionId="copy-test" admissionError="Another error" />)
+  expect(screen.getByRole('button', { name: 'Copy error details' })).toBeInTheDocument()
+})
+
+it('copies an entire timeline error and reports clipboard failure without executing it', async () => {
+  const message = 'Diagnostic '.repeat(70) + 'codex unarchive test-thread'
+  useAppStore.setState({ health: null, runtimeCatalog: null, sessions: [], snapshots: {
+    copy: { session: { id: 'copy', title: 'Copy', backend: 'codex' }, events: [
+      { id: 'error', seq: 1, type: 'error', backend: 'codex', message, run_id: 'r', session_id: 'copy', ts: '' },
+      { id: 'finished', seq: 2, type: 'turn_finished', backend: 'codex', is_error: true, run_id: 'r', session_id: 'copy', ts: '' }
+    ], queuedTurns: [], files: [], hasMoreEvents: false, filesTotal: 0, cachedAt: 0 }
+  } })
+  vi.mocked(window.agentsDock.native.writeClipboard).mockRejectedValue(new Error('unavailable'))
+  render(<RuntimeHealthNotice backend="codex" sessionId="copy" />)
+  expect(screen.getByText(message)).toBeInTheDocument()
+  await userEvent.click(screen.getByRole('button', { name: 'Copy error details' }))
+  expect(window.agentsDock.native.writeClipboard).toHaveBeenCalledWith(message)
+  expect(useAppStore.getState().error).toMatch(/Select the error text/)
+})
+
+it('offers Configure API for an old Gemini CLI chat instead of a login recheck', () => {
+  useAppStore.setState({ health: null, runtimeCatalog: null, snapshots: {}, sessions: [] })
+  render(<RuntimeHealthNotice backend="gemini" sessionId="legacy" admissionError="API connections only" />)
+  expect(screen.getByRole('button', { name: 'Configure API' })).toBeInTheDocument()
+  expect(screen.queryByText('Recheck')).not.toBeInTheDocument()
 })
 
 it('opens the relevant provider settings from a missing custom API without rechecking CLI', async () => {

@@ -16,6 +16,7 @@
         "NSPrivacyCollectedDataTypes": []
       },
       "infoPlist": {
+        "CFBundleAllowMixedLocalizations": true,
         "ITSAppUsesNonExemptEncryption": false,
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
@@ -33,7 +34,10 @@
       "blockedPermissions": [
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.READ_EXTERNAL_STORAGE",
-        "android.permission.WRITE_EXTERNAL_STORAGE"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
       ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
@@ -46,19 +50,47 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "locales": {
+      "zh-CN": "./languages/zh-CN.json"
+    },
     "plugins": [
+      [
+        "expo-localization",
+        {
+          "supportedLocales": ["en", "zh-CN"]
+        }
+      ],
       "./plugins/withIosNoAnalyticsPrivacy.cjs",
       "./plugins/withAndroidCleartextTraffic.cjs",
+      "./plugins/withAndroidAsyncStorageCapacity.cjs",
       "./plugins/withAndroidReleaseSigning.cjs",
       "./plugins/withAndroidSideloadUpdater.cjs",
       "expo-secure-store",
       "expo-sharing",
       "expo-video",
       "expo-image",
+      "./plugins/withAndroidMediaSave.cjs",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow AgentsDock to access photos and videos you choose to attach to agent messages.",
+          "savePhotosPermission": "Allow AgentsDock to save images and videos you choose to your photo library.",
+          "granularPermissions": [],
+          "isAccessMediaLocationEnabled": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow AgentsDock to scan a server connection QR code.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow AgentsDock to access photos you choose to attach to agent messages.",
+          "photosPermission": "Allow AgentsDock to access photos and videos you choose to attach to agent messages.",
           "cameraPermission": false,
           "microphonePermission": false
         }

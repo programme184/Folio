@@ -632,7 +632,7 @@ export class TimelineProjector {
         ? event.run_id || `job-${event.seq}`
         : ''
     )
-    if (jobId) {
+    if (jobId && !isNativeGoalSteerEvent(event)) {
       this.appendJobEvent(event, jobId)
       return
     }
@@ -673,7 +673,7 @@ export class TimelineProjector {
     }
 
     if (isNativeGoalSteerEvent(event)) {
-      // Native steering keeps the same goal/run alive. End only the previous
+      // Native user input keeps the same provider run alive. End only the previous
       // display slice so its activity and trace cannot absorb the new input.
       const prior = this.turnByRun.get(event.run_id!)
       if (prior) {
@@ -689,7 +689,7 @@ export class TimelineProjector {
         const file = this.filesById.get(id)
         if (file && agentFileBelongsToSession(file, event.session_id)) turn.files.push(file)
       }
-      this.activeTurn = turn
+      if (!jobId) this.activeTurn = turn
       return
     }
 
@@ -1550,7 +1550,7 @@ const CONTEXT_DIGEST_HEADINGS = ['# AgentsDock Context Digest']
 
 function isNativeMailboxWakeInput(event: Event): boolean {
   return event.type === 'turn_started' && event.imported !== true
-    && (event.backend === 'codex' || event.backend === 'claude')
+    && (event.backend === 'codex' || event.backend === 'claude' || event.backend === 'gemini')
     && typeof event.run_id === 'string' && Boolean(event.run_id.trim()) && !event.run_id.startsWith('import_')
     && event.purpose === 'chat_mailbox_wake' && event.prompt === '' && event.provider_generated === true
     && !hasProviderUserProvenance(event)

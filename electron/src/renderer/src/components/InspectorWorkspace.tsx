@@ -6,9 +6,10 @@ import type { Session } from '@shared/types'
 import { useLocale } from '../lib/i18n'
 import { SideChatController } from '../lib/side-chat'
 import { Inspector } from './Inspector'
+import { InspectorFiles } from './InspectorFiles'
 import './SideQuestionPanel.css'
 
-export type InspectorWorkspaceTab = 'details' | 'review'
+export type InspectorWorkspaceTab = 'details' | 'files' | 'review'
 export function InspectorWorkspace({ session, scope, controller, tab, onTabChange, onHide, review }: {
   session: Session | null; scope: SideQuestionScope; controller: SideChatController; tab: InspectorWorkspaceTab
   onTabChange: (tab: InspectorWorkspaceTab) => void; onHide: () => void; review?: ReactNode
@@ -16,11 +17,11 @@ export function InspectorWorkspace({ session, scope, controller, tab, onTabChang
   useLocale()
   const id = useId()
   const selectedTab = tab === 'review' && !review ? 'details' : tab
-  const tabs: InspectorWorkspaceTab[] = ['details', 'review']
+  const tabs: InspectorWorkspaceTab[] = review ? ['details', 'files', 'review'] : ['details', 'files']
   return <aside className="inspector inspector-workspace">
     <div className="inspector-drag-region" />
     <header className="inspector-workspace-header">
-      {review ? <div className="inspector-workspace-tabs" role="tablist" aria-label={t('sideChat.panelViews')}>
+      <div className="inspector-workspace-tabs" role="tablist" aria-label={t('sideChat.panelViews')}>
         {tabs.map(value => <button type="button" role="tab" key={value} id={`${id}-${value}-tab`}
           aria-controls={`${id}-${value}-panel`} aria-selected={selectedTab === value} tabIndex={selectedTab === value ? 0 : -1}
           onClick={() => onTabChange(value)} onKeyDown={event => {
@@ -31,12 +32,15 @@ export function InspectorWorkspace({ session, scope, controller, tab, onTabChang
               : tabs[(index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length]
             onTabChange(next)
             document.getElementById(`${id}-${next}-tab`)?.focus()
-          }}>{t(value === 'details' ? 'sideChat.details' : 'sideChat.review')}</button>)}
-      </div> : <span className="inspector-workspace-title">{t('sideChat.details')}</span>}
+          }}>{t(value === 'details' ? 'sideChat.details' : value === 'files' ? 'inspector.files' : 'sideChat.review')}</button>)}
+      </div>
       <button type="button" className="icon-button" aria-label={t('sideChat.hide')} title={t('sideChat.hide')} onClick={onHide}><X size={15} /></button>
     </header>
-    {selectedTab === 'details' && <div className="inspector-workspace-content" role={review ? 'tabpanel' : undefined} id={`${id}-details-panel`} aria-labelledby={review ? `${id}-details-tab` : undefined}>
+    {selectedTab === 'details' && <div className="inspector-workspace-content" role="tabpanel" id={`${id}-details-panel`} aria-labelledby={`${id}-details-tab`}>
       <InspectorDetails scope={scope} sessionId={session?.id ?? ''} controller={controller} />
+    </div>}
+    {selectedTab === 'files' && <div className="inspector-workspace-content" role="tabpanel" id={`${id}-files-panel`} aria-labelledby={`${id}-files-tab`}>
+      <InspectorFiles session={session} scope={scope} />
     </div>}
     {review && selectedTab === 'review' && <div className="inspector-workspace-content" role="tabpanel" id={`${id}-review-panel`} aria-labelledby={`${id}-review-tab`}>{review}</div>}
   </aside>

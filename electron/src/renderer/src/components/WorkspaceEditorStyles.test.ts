@@ -50,10 +50,12 @@ describe('workspace editor light theme', () => {
     )
   })
 
-  it('preserves usable editor space when a wide explorer preference is restored', () => {
+  it('gives the editor the full panel width with browsing in the Files inspector', () => {
     expect(styles).toMatch(
-      /\.workspace-editor-editor-panel \{[^}]*minmax\(160px, min\(var\(--workspace-explorer-width, 232px\), calc\(100% - 245px\)\)\)[^}]*5px[^}]*minmax\(0, 1fr\);/s
+      /\.workspace-editor-editor-panel \{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/s
     )
+    expect(styles).not.toContain('--workspace-explorer-width')
+    expect(styles).not.toContain('.workspace-editor-explorer-resize-handle')
   })
 
   it('allows Markdown preview text to be selected and copied', () => {

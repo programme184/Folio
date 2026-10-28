@@ -14,7 +14,7 @@ import { internalWorkspaceLinkURL } from '@shared/workspace-link-url'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
 import type { AgentFile, ChatReference, TeamReference } from '@shared/types'
 import { chatReferenceDisplayText, parseStoredChatReferences } from '../lib/chat-references'
-import { saveAgentFile } from '../lib/file-actions'
+import { openAgentFile, openLinkedFile, saveAgentFile } from '../lib/file-actions'
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
 import {
@@ -112,14 +112,14 @@ export const MarkdownContent = memo(function MarkdownContent({
       if (!sessionId) return
       if (window.agentsDock.sharedChat) void saveAgentFile(sessionId, file)
       else if (isEditorTextFile(file)) requestOpenAgentFile(sessionId, file, reference ?? {})
-      else void window.agentsDock.files.open(sessionId, file)
+      else void openAgentFile(sessionId, file)
       return
     }
     if (sessionId && reference) {
       requestOpenWorkspaceReference(sessionId, reference)
       return
     }
-    if (sessionId) void window.agentsDock.files.openLinked(sessionId, href)
+    if (sessionId) void openLinkedFile(sessionId, href)
   }, [files, sessionId])
   // Locale travels through context so updating labels does not replace these
   // React component types and discard selection, scroll or code-block state.

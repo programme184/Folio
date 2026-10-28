@@ -1,12 +1,14 @@
 // Localized display strings use semantic catalog keys.
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDown, ArrowUp, Check, LoaderCircle, Pencil, Plus, Server, Trash2, Wifi } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Check, ChevronRight, LoaderCircle, Pencil, Plus, QrCode, Server, Trash2, Wifi } from 'lucide-react'
 import type { Health, PublicServerProfile } from '@shared/types'
 import { normalizeServerURL } from '@shared/server-url'
 import { trackEvent } from '../lib/analytics'
 import { useAppStore } from '../store/app-store'
+import { ServerConnectionQr } from './ServerConnectionQr'
+import { ServerTokenRow } from './ServerTokenRow'
 
 interface ServerDraft {
   profileId: string | null
@@ -26,25 +28,35 @@ const emptyDraft = (): ServerDraft => ({
   resetServerIdentity: false
 })
 
-export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addRequest?: number; manageRequest?: number }) {
+export function ServerManagement({ addRequest = 0, manageRequest = 0, activeServerControls }: {
+  addRequest?: number; manageRequest?: number; activeServerControls?: ReactNode
+}) {
   useLocale()
   const profiles = useAppStore(state => state.profiles)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const switchServer = useAppStore(state => state.switchServer)
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [draft, setDraft] = useState<ServerDraft | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [testedHealth, setTestedHealth] = useState<Health | null>(null)
   const [testError, setTestError] = useState<string | null>(null)
   const [activationError, setActivationError] = useState<{ profileId: string; message: string } | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
+  const [tokenCopy, setTokenCopy] = useState<{ profileId: string; failed: boolean } | null>(null)
+  const [tokenPreviewRevisions, setTokenPreviewRevisions] = useState<Record<string, number>>({})
+  const [qrProfileId, setQrProfileId] = useState<string | null>(null)
+  const qrProfile = profiles.find(profile => profile.id === qrProfileId && profile.hasAccessToken)
   const testLease = useRef(0)
   const editorRef = useRef<HTMLDivElement | null>(null)
   const nameInputRef = useRef<HTMLInputElement | null>(null)
   const revealEditor = useRef(false)
 
   const openEditor = (next: ServerDraft) => {
+    setQrProfileId(null)
     revealEditor.current = true
+    const profileId = next.profileId
+    if (profileId) setExpanded(current => new Set([...current, profileId]))
     setDraft(next)
   }
 
@@ -70,6 +82,8 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
   }, [addRequest])
   useEffect(() => {
     if (manageRequest > 0) {
+      setExpanded(new Set())
+      setQrProfileId(null)
       testLease.current += 1
       setBusy(null)
       setDraft(null)
@@ -84,7 +98,22 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     nameInputRef.current?.focus({ preventScroll: true })
   }, [draft])
 
+  const copyToken = async (profile: PublicServerProfile) => {
+    setBusy(`copy:${profile.id}`)
+    setTokenCopy(null)
+    try {
+      await window.agentsDock.servers.copyToken(profile.id)
+      setTokenCopy({ profileId: profile.id, failed: false })
+    } catch {
+      // Credential-store errors must not expose secret-bearing details in the UI.
+      setTokenCopy({ profileId: profile.id, failed: true })
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const beginEdit = (profile: PublicServerProfile) => {
+    setTokenCopy(null)
     openEditor({
       profileId: profile.id,
       name: profile.name,
@@ -128,6 +157,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
     testLease.current += 1
     setBusy('save')
+    setQrProfileId(null)
     setTestError(null)
     try {
       if (draft.profileId) {
@@ -176,6 +206,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         addCompleted = true
         trackEvent('server_added', { success: true })
         await refreshProfiles()
+        setExpanded(current => new Set([...current, added.id]))
         setDraft(current => current ? { ...current, profileId: added.id } : current)
         const switched = await switchServer(added.id)
         if (!switched || useAppStore.getState().activeProfileId !== added.id) throw new Error(`“${added.name}” was saved, but AgentsDock could not switch to it.`)
@@ -188,6 +219,10 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       setTestError(detail)
       useAppStore.getState().setError(detail)
     } finally {
+      if (draft.profileId && (draft.accessToken || draft.clearAccessToken)) {
+        const profileId = draft.profileId
+        setTokenPreviewRevisions(current => ({ ...current, [profileId]: (current[profileId] ?? 0) + 1 }))
+      }
       setBusy(null)
     }
   }
@@ -213,23 +248,6 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
       if (request === testLease.current) setTestError(errorMessage(error))
     } finally {
       if (request === testLease.current) setBusy(null)
-    }
-  }
-
-  const move = async (profileId: string, direction: -1 | 1) => {
-    const index = profiles.findIndex(profile => profile.id === profileId)
-    const target = index + direction
-    if (index < 0 || target < 0 || target >= profiles.length) return
-    const order = profiles.map(profile => profile.id)
-    ;[order[index], order[target]] = [order[target], order[index]]
-    setBusy(`move:${profileId}`)
-    try {
-      const next = await window.agentsDock.servers.reorder(order)
-      useAppStore.setState({ profiles: next })
-    } catch (error) {
-      useAppStore.getState().setError(errorMessage(error))
-    } finally {
-      setBusy(null)
     }
   }
 
@@ -272,44 +290,7 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
     }
   }
 
-  return <section className="server-management" aria-label={t("ui.ServerManagement.ServerManagement.saved_servers_4bf0848")}>
-    <div className="server-management-heading">
-      <div><strong>{t("ui.ServerManagement.ServerManagement.servers_68d7beb")}</strong><small>{t("ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7")}</small></div>
-      <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => { invalidateTest(); openEditor(emptyDraft()) }}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
-    </div>
-    <div className="server-management-list">
-      {profiles.map((profile, index) => {
-        const current = profile.id === activeProfileId
-        const working = busy === `switch:${profile.id}` || switchingProfileId === profile.id
-        const rowActivationError = activationError?.profileId === profile.id ? activationError.message : null
-        const details = [profile.serverIdentity ? t("ui.ServerManagement.identity_96fbbb0", { "id": String(profile.serverIdentity) }) : '', profile.serverVersion ? `AgentsServer ${profile.serverVersion}` : ''].filter(Boolean).join(' · ')
-        return <div className={`server-management-row${current ? ' active' : ''}`} key={profile.id}>
-          <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
-          <div className="server-management-copy">
-            <strong>{profile.name}{current && <span>{t("ui.ServerManagement.active_9234069")}</span>}</strong>
-            <small>{profile.serverUrl}</small>
-            {(details || profile.lastConnectionError || rowActivationError) && <small className={rowActivationError || profile.lastConnectionError ? profile.connectionState === 'degraded' && !rowActivationError ? 'server-management-warning' : 'server-management-error' : ''}>
-              {rowActivationError || profile.lastConnectionError || details}
-            </small>}
-          </div>
-          <div className="server-management-actions">
-            <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_up_0bca820", { "server": String(profile.name) })} disabled={index === 0 || Boolean(busy)} onClick={() => void move(profile.id, -1)}><ArrowUp size={13} /></button>
-            <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.move_down_c5ebfeb", { "server": String(profile.name) })} disabled={index === profiles.length - 1 || Boolean(busy)} onClick={() => void move(profile.id, 1)}><ArrowDown size={13} /></button>
-            {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t("ui.ServerManagement.use_c36d819")}</button>}
-            <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={13} /></button>
-            <button
-              type="button"
-              className={confirmRemoveId === profile.id ? 'danger-button compact' : 'icon-button'}
-              aria-label={current ? t("ui.ServerManagement.cannot_remove_active_server_b699625", { "server": String(profile.name) }) : t("ui.ServerManagement.remove_6f8460e", { "filename": String(profile.name) })}
-              title={current ? t("ui.ServerManagement.switch_to_another_server_before_removing_t_1ed6f7e") : t("ui.ServerManagement.remove_saved_server_cached_chats_are_prese_3fae6c2")}
-              disabled={current || Boolean(busy)}
-              onClick={() => void remove(profile)}
-            >{working ? <LoaderCircle className="spin" size={12} /> : confirmRemoveId === profile.id ? 'Confirm' : <Trash2 size={13} />}</button>
-          </div>
-        </div>
-      })}
-    </div>
-    {draft && <div ref={editorRef} className="server-management-editor">
+  const editor = draft && <div ref={editorRef} className="server-management-editor">
       <div className="server-management-editor-heading">
         <div><strong>{draft.profileId ? t("ui.ServerManagement.ServerManagement.edit_966e044", { "server": String(editedProfile?.name || 'server') }) : t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</strong><small>{t("ui.ServerManagement.ServerManagement.connection_credentials_stay_in_this_mac_s__d4f7858")}</small></div>
         <button type="button" className="icon-button" aria-label={t("ui.ServerManagement.ServerManagement.close_server_editor_0b6523b")} disabled={Boolean(busy)} onClick={() => { invalidateTest(); setDraft(null) }}><XIcon /></button>
@@ -333,7 +314,91 @@ export function ServerManagement({ addRequest = 0, manageRequest = 0 }: { addReq
         <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => { invalidateTest(); setDraft(null) }}>{t("ui.ServerManagement.ServerManagement.cancel_19766ed")}</button>
         <button type="button" className="primary-button" disabled={Boolean(busy) || !draft.serverUrl.trim() || !draft.profileId && !testedHealth?.ok} onClick={() => void save()}>{busy === 'save' && <LoaderCircle className="spin" size={13} />} {draft.profileId ? t("ui.ServerManagement.ServerManagement.save_1509f56") : duplicateTestProfile ? t("ui.ServerManagement.ServerManagement.use_367b9be", { "server": String(duplicateTestProfile.name) }) : t("ui.ServerManagement.ServerManagement.add_switch_90143f7")}</button>
       </footer>
-    </div>}
+    </div>
+
+  return <section className="server-management" aria-label={t("ui.ServerManagement.ServerManagement.saved_servers_4bf0848")}>
+    <div className="server-management-heading">
+      <small>{t("ui.ServerManagement.ServerManagement.each_server_keeps_its_own_chats_drafts_fil_35087b7")}</small>
+      <button type="button" className="quiet-button" disabled={Boolean(busy)} onClick={() => { invalidateTest(); openEditor(emptyDraft()) }}><Plus size={13} />{" "}{t("ui.ServerManagement.ServerManagement.add_server_1099b2a")}</button>
+    </div>
+    {draft && !draft.profileId && editor}
+    <div className="server-management-list">
+      {profiles.map(profile => {
+        const current = profile.id === activeProfileId
+        const open = expanded.has(profile.id)
+        const panelId = `server-details-${encodeURIComponent(profile.id)}`
+        const working = busy === `switch:${profile.id}` || switchingProfileId === profile.id
+        const rowActivationError = activationError?.profileId === profile.id ? activationError.message : null
+        return <div className={`server-management-row${current ? ' active' : ''}`} key={profile.id}>
+          <button type="button" className="server-management-toggle" aria-expanded={open} aria-controls={open ? panelId : undefined}
+            aria-label={t('serverProfile.detailsFor', { server: profile.name })}
+            onClick={() => {
+              setExpanded(current => { const next = new Set(current); if (next.has(profile.id)) next.delete(profile.id); else next.add(profile.id); return next })
+              if (open && qrProfileId === profile.id) setQrProfileId(null)
+              if (open && confirmRemoveId === profile.id) setConfirmRemoveId(null)
+              if (open && tokenCopy?.profileId === profile.id) setTokenCopy(null)
+            }}>
+            <ChevronRight size={16} className="server-management-chevron" />
+            <span className="server-management-title">
+              <strong>{profile.name}</strong>
+              <span className="server-management-url">{profile.serverUrl}</span>
+            </span>
+            <span className="server-management-header-status">
+              <span className={`server-management-status ${profile.connectionState}`}>
+                <span className={`server-connection-dot ${profile.connectionState}`} title={connectionLabel(profile)} role="img" aria-label={connectionLabel(profile)} />
+                {t(`serverProfile.status.${profile.connectionState}`)}
+              </span>
+              {current && <span className="server-management-active">{t("ui.ServerManagement.active_9234069")}</span>}
+            </span>
+          </button>
+          {open && <div id={panelId} className="server-management-body">
+            {(profile.serverVersion || profile.serverIdentity) && <dl className="server-management-metadata">
+              {profile.serverVersion && <div><dt>{t('serverProfile.version')}</dt><dd>{profile.serverVersion}</dd></div>}
+              {profile.serverIdentity && <div><dt>{t('serverProfile.identity')}</dt><dd><code>{profile.serverIdentity}</code></dd></div>}
+            </dl>}
+            <ServerTokenRow key={`${profile.id}:${profile.serverUrl}:${tokenPreviewRevisions[profile.id] ?? 0}`}
+              profile={profile} disabled={Boolean(busy)} copying={busy === `copy:${profile.id}`}
+              copied={tokenCopy?.profileId === profile.id && !tokenCopy.failed}
+              onCopy={() => void copyToken(profile)} />
+            <div className="server-management-copy">
+              {tokenCopy?.profileId === profile.id && tokenCopy.failed && <small role="status" className="server-management-error">
+                {t('serverConnection.copyFailed')}
+              </small>}
+              {(profile.lastConnectionError || rowActivationError) && <small className={profile.connectionState === 'degraded' && !rowActivationError ? 'server-management-warning' : 'server-management-error'}>
+                {rowActivationError || profile.lastConnectionError}
+              </small>}
+            </div>
+            <div className="server-management-sharing">
+              <span className="server-management-section-label">{t('serverProfile.shareConnection')}</span>
+              <div className="server-management-share-actions">
+              <button type="button" className="quiet-button" aria-label={t('serverConnection.qrFor', { server: profile.name })}
+                aria-expanded={qrProfileId === profile.id}
+                title={t('serverConnection.showQr')} disabled={!profile.hasAccessToken || Boolean(busy)} onClick={() => setQrProfileId(profile.id)}>
+                <QrCode size={15} /> {t('serverProfile.showQr')}
+              </button>
+              </div>
+            </div>
+            {qrProfile?.id === profile.id && <ServerConnectionQr key={`${qrProfile.id}:${qrProfile.serverUrl}`} profile={qrProfile} onClose={() => setQrProfileId(null)} />}
+            <div className="server-management-actions">
+              <div className="server-management-primary-actions">
+              {!current && <button type="button" className="quiet-button" aria-label={working ? t("ui.ServerManagement.switching_to_e7437c0", { "server": String(profile.name) }) : t("ui.ServerManagement.use_367b9be", { "server": String(profile.name) })} disabled={Boolean(busy) || Boolean(switchingProfileId)} onClick={() => void activate(profile.id)}>{working && <LoaderCircle className="spin" size={12} />} {working ? t("ui.ServerManagement.switching_b7b9fbf") : t('serverProfile.use')}</button>}
+              <button type="button" className="quiet-button" aria-label={t("ui.ServerManagement.edit_966e044", { "server": String(profile.name) })} disabled={Boolean(busy)} onClick={() => beginEdit(profile)}><Pencil size={15} /> {t('serverProfile.edit')}</button>
+              </div>
+              <button
+                type="button"
+                className={confirmRemoveId === profile.id ? 'danger-button server-management-remove' : 'quiet-button server-management-remove'}
+                aria-label={current ? t("ui.ServerManagement.cannot_remove_active_server_b699625", { "server": String(profile.name) }) : t("ui.ServerManagement.remove_6f8460e", { "filename": String(profile.name) })}
+                title={current ? t("ui.ServerManagement.switch_to_another_server_before_removing_t_1ed6f7e") : t("ui.ServerManagement.remove_saved_server_cached_chats_are_prese_3fae6c2")}
+                disabled={current || Boolean(busy)}
+                onClick={() => void remove(profile)}
+              >{working ? <LoaderCircle className="spin" size={12} /> : confirmRemoveId === profile.id ? t('serverProfile.confirmRemove') : <><Trash2 size={13} /> {t('serverProfile.remove')}</>}</button>
+            </div>
+            {draft?.profileId === profile.id && editor}
+            {current && activeServerControls}
+          </div>}
+        </div>
+      })}
+    </div>
   </section>
 }
 

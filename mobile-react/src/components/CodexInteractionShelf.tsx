@@ -28,7 +28,7 @@ import {
   toggleMultiSelectValue,
 } from '../lib/codex-mcp-form'
 import { client } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type { JsonValue, ProviderPendingInteraction } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
@@ -142,8 +142,8 @@ export function ProviderInteractionShelf({
         <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
           <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.sheetTitle, { color: colors.text }]}>{providerName} needs your input</Text>
-              <Text style={[styles.sheetSubtitle, { color: colors.muted }]}>
+              <Text style={[styles.sheetTitle, { color: colors.text }]} localize>{providerName} needs your input</Text>
+              <Text style={[styles.sheetSubtitle, { color: colors.muted }]} localize>
                 Review each request before the active turn continues.
               </Text>
             </View>
@@ -167,7 +167,7 @@ export function ProviderInteractionShelf({
             {available && !error && interactions.length === 0 ? (
               <View style={[styles.loadingRequest, { backgroundColor: colors.surface, borderColor: colors.border }]}>
                 <ActivityIndicator size="small" color={colors.orange} />
-                <Text style={{ color: colors.muted, fontSize: 12 }}>Loading the pending {providerName} request…</Text>
+                <Text style={{ color: colors.muted, fontSize: 12 }} localize>Loading the pending {providerName} request…</Text>
               </View>
             ) : null}
             {available ? interactions.map(interaction => (
@@ -287,19 +287,19 @@ function ApprovalCard({ interaction, busy, providerName, onRespond }: ProviderIn
       {command ? <Text selectable style={[styles.command, { color: colors.text, backgroundColor: colors.background }]}>{command}</Text> : null}
       {fileApproval && hasProposedChanges ? (
         <View style={{ gap: 5 }}>
-          <Text style={[styles.fieldLabel, { color: colors.muted }]}>Proposed file changes</Text>
+          <Text style={[styles.fieldLabel, { color: colors.muted }]} localize>Proposed file changes</Text>
           <JsonBlock value={proposedChanges as JsonValue} />
         </View>
       ) : null}
       {fileApproval && !hasProposedChanges && Object.keys(toolInput).length ? (
         <View style={{ gap: 5 }}>
-          <Text style={[styles.fieldLabel, { color: colors.muted }]}>Requested file operation</Text>
+          <Text style={[styles.fieldLabel, { color: colors.muted }]} localize>Requested file operation</Text>
           <JsonBlock value={toolInput} />
         </View>
       ) : null}
       {fileApproval && !hasProposedChanges && !Object.keys(toolInput).length ? (
         <View style={[styles.warning, { backgroundColor: `${colors.orange}18`, borderColor: colors.orange }]}>
-          <Text style={{ color: colors.orange, fontSize: 11.5, lineHeight: 16 }}>
+          <Text style={{ color: colors.orange, fontSize: 11.5, lineHeight: 16 }} localize>
             {providerName} did not provide a patch preview. Review the requested path scope before allowing this change.
           </Text>
         </View>
@@ -314,13 +314,13 @@ function ApprovalCard({ interaction, busy, providerName, onRespond }: ProviderIn
       ) : null}
       {Object.keys(additionalPermissions).length ? (
         <View style={{ gap: 5 }}>
-          <Text style={[styles.fieldLabel, { color: colors.muted }]}>Additional sandbox permissions</Text>
+          <Text style={[styles.fieldLabel, { color: colors.muted }]} localize>Additional sandbox permissions</Text>
           <JsonBlock value={additionalPermissions} />
         </View>
       ) : null}
       {permissionSuggestions.length ? (
         <View style={{ gap: 5 }}>
-          <Text style={[styles.fieldLabel, { color: colors.muted }]}>{providerName} session permission scope</Text>
+          <Text style={[styles.fieldLabel, { color: colors.muted }]} localize>{providerName} session permission scope</Text>
           <JsonBlock value={permissionSuggestions} />
         </View>
       ) : null}
@@ -332,7 +332,7 @@ function ApprovalCard({ interaction, busy, providerName, onRespond }: ProviderIn
       ) : null}
       {execAmendmentDecision || networkAmendmentDecisions.length ? (
         <View style={[styles.policyBox, { borderColor: colors.orange }]}>
-          <Text style={{ color: colors.text, fontSize: 11.5, fontWeight: '800' }}>Optional policy changes</Text>
+          <Text style={{ color: colors.text, fontSize: 11.5, fontWeight: '800' }} localize>Optional policy changes</Text>
           <View style={styles.actions}>
             {execAmendmentDecision ? (
               <Action
@@ -366,7 +366,7 @@ function ApprovalCard({ interaction, busy, providerName, onRespond }: ProviderIn
         {onceDecision ? <Action label="Allow once" primary disabled={busy} onPress={() => respond({ decision: onceDecision })} /> : null}
       </View>
       {!denyDecision && !cancelDecision && !sessionDecision && !onceDecision && !execAmendmentDecision && !networkAmendmentDecisions.length ? (
-        <Text style={{ color: colors.red, fontSize: 12 }}>This request has no compatible decision exposed by the server.</Text>
+        <Text style={{ color: colors.red, fontSize: 12 }} localize>This request has no compatible decision exposed by the server.</Text>
       ) : null}
     </Card>
   )
@@ -490,7 +490,7 @@ function QuestionCard({ interaction, busy, providerName, onRespond }: ProviderIn
                     ? <Check size={12} color={colors.blue} />
                     : <View style={[styles.radioDot, { backgroundColor: colors.blue }]} /> : null}
                 </View>
-                <Text style={{ color: colors.text, fontWeight: '700' }}>Other</Text>
+                <Text style={{ color: colors.text, fontWeight: '700' }} localize>Other</Text>
               </Pressable>
               <TextInput
                 accessibilityLabel={`Other answer: ${question.question}`}
@@ -562,7 +562,7 @@ function PermissionCard({ interaction, busy, providerName, onRespond }: Provider
         </View>
       ) : null}
       <JsonBlock value={requested} />
-      <Text style={[styles.fieldLabel, { color: colors.muted }]}>Grant duration</Text>
+      <Text style={[styles.fieldLabel, { color: colors.muted }]} localize>Grant duration</Text>
       <View style={styles.segment}>
         {(['turn', 'session'] as const).map(value => (
           <Pressable
@@ -573,7 +573,7 @@ function PermissionCard({ interaction, busy, providerName, onRespond }: Provider
             onPress={() => setScope(value)}
             style={[styles.segmentOption, { backgroundColor: scope === value ? colors.blue : colors.background, borderColor: colors.border }]}
           >
-            <Text style={{ color: scope === value ? 'white' : colors.text, fontWeight: '700' }}>
+            <Text style={{ color: scope === value ? 'white' : colors.text, fontWeight: '700' }} localize>
               {value === 'turn' ? 'This turn' : 'This session'}
             </Text>
           </Pressable>
@@ -677,7 +677,7 @@ function McpFormField({ name, definition, required, value, onChange }: {
 
   return (
     <View style={styles.formField}>
-      <Text style={[styles.fieldLabel, { color: colors.text }]}>{label}{required ? ' *' : ''}</Text>
+      <Text style={[styles.fieldLabel, { color: colors.text }]} localize>{label}{required ? ' *' : ''}</Text>
       {description ? <Text style={{ color: colors.muted, fontSize: 11, lineHeight: 16 }}>{description}</Text> : null}
       {type === 'array' && multiOptions.length > 0 ? (
         <View style={styles.choiceWrap} accessibilityRole="list">
@@ -732,7 +732,7 @@ function McpFormField({ name, definition, required, value, onChange }: {
         </View>
       ) : type === 'boolean' ? (
         <View style={styles.switchRow}>
-          <Text style={{ color: value === true ? colors.text : colors.muted, fontSize: 11 }}>
+          <Text style={{ color: value === true ? colors.text : colors.muted, fontSize: 11 }} localize>
             {value === true ? 'Enabled' : 'Disabled'}
           </Text>
           <Switch
@@ -787,7 +787,7 @@ function McpFormField({ name, definition, required, value, onChange }: {
           {hints.join(' · ')}
         </Text>
       ) : invalid ? (
-        <Text style={{ color: colors.red, fontSize: 10.5 }}>Enter a valid value.</Text>
+        <Text style={{ color: colors.red, fontSize: 10.5 }} localize>Enter a valid value.</Text>
       ) : null}
     </View>
   )
@@ -824,7 +824,7 @@ function McpUrlElicitationCard({ interaction, busy, providerName, onRespond }: P
       </View>
       {!safeUrl ? (
         <View style={[styles.warning, { backgroundColor: `${colors.red}18`, borderColor: colors.red }]}>
-          <Text style={{ color: colors.red, fontSize: 11.5 }}>Only HTTPS or HTTP authorization links can be opened.</Text>
+          <Text style={{ color: colors.red, fontSize: 11.5 }} localize>Only HTTPS or HTTP authorization links can be opened.</Text>
         </View>
       ) : null}
       {openError ? (
@@ -859,7 +859,7 @@ function Card({ icon: Icon, title, subtitle, interaction, children }: {
           <Text style={[styles.cardTitle, { color: colors.text }]}>{title}</Text>
           <Text style={[styles.cardSubtitle, { color: colors.muted }]}>{subtitle}</Text>
         </View>
-        {remaining != null ? <Text style={[styles.countdown, { color: colors.orange }]}>{remaining}s</Text> : null}
+        {remaining != null ? <Text style={[styles.countdown, { color: colors.orange }]} localize>{remaining}s</Text> : null}
       </View>
       {children}
     </View>
@@ -1022,51 +1022,51 @@ const styles = StyleSheet.create({
     marginHorizontal: 10,
     marginBottom: 5,
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 8,
+    borderRadius: radius.md,
     paddingHorizontal: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 9,
   },
-  attentionDot: { width: 9, height: 9, borderRadius: 5 },
+  attentionDot: { width: 9, height: 9, borderRadius: radius.round },
   shelfTitle: { flex: 1, fontSize: 12.5, fontWeight: '800' },
   sheet: { flex: 1 },
   sheetHeader: { minHeight: 68, borderBottomWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', gap: 8 },
   sheetTitle: { fontSize: 18, fontWeight: '900' },
   sheetSubtitle: { fontSize: 11, marginTop: 3 },
   interactionList: { width: '100%', maxWidth: 760, alignSelf: 'center', padding: 12, paddingBottom: 40, gap: 10 },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 13, gap: 12 },
-  error: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 10 },
-  loadingRequest: { minHeight: 72, borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 13, gap: 12 },
+  error: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10 },
+  loadingRequest: { minHeight: 72, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9 },
   cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  cardIcon: { width: 38, height: 38, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+  cardIcon: { width: 38, height: 38, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   cardTitle: { fontSize: 14, fontWeight: '900' },
   cardSubtitle: { fontSize: 11, lineHeight: 16, marginTop: 2 },
   countdown: { fontSize: 12, fontWeight: '900' },
-  command: { borderRadius: 7, padding: 11, fontFamily: 'Menlo', fontSize: 11.5, lineHeight: 17 },
+  command: { borderRadius: radius.md, padding: 11, fontFamily: 'Menlo', fontSize: 11.5, lineHeight: 17 },
   reason: { fontSize: 12, lineHeight: 17 },
-  requestScope: { borderRadius: 7, padding: 10, gap: 3 },
-  requestPaths: { borderRadius: 7, padding: 10, gap: 8 },
-  policyBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 9, gap: 8 },
-  warning: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 9 },
-  json: { borderRadius: 7, padding: 10, fontFamily: 'Menlo', fontSize: 10.5, lineHeight: 15 },
+  requestScope: { borderRadius: radius.md, padding: 10, gap: 3 },
+  requestPaths: { borderRadius: radius.md, padding: 10, gap: 8 },
+  policyBox: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 9, gap: 8 },
+  warning: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 9 },
+  json: { borderRadius: radius.md, padding: 10, fontFamily: 'Menlo', fontSize: 10.5, lineHeight: 15 },
   actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 7 },
-  action: { minHeight: 44, borderRadius: 7, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  action: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   question: { gap: 7 },
   eyebrow: { fontSize: 10, fontWeight: '900', textTransform: 'uppercase' },
   questionText: { fontSize: 13.5, lineHeight: 19, fontWeight: '800' },
-  option: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 9, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  option: { minHeight: 48, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 9, flexDirection: 'row', alignItems: 'center', gap: 9 },
   otherOption: { flexDirection: 'column', alignItems: 'stretch', gap: 5 },
   otherOptionHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 9 },
-  radio: { width: 19, height: 19, borderRadius: 10, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
-  checkbox: { borderRadius: 4 },
-  radioDot: { width: 9, height: 9, borderRadius: 5 },
-  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, paddingVertical: 9, fontSize: 13 },
+  radio: { width: 19, height: 19, borderRadius: radius.round, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  checkbox: { borderRadius: radius.sm },
+  radioDot: { width: 9, height: 9, borderRadius: radius.round },
+  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, paddingVertical: 9, fontSize: 13 },
   formField: { gap: 5 },
   fieldLabel: { fontSize: 11, fontWeight: '800' },
   segment: { flexDirection: 'row', gap: 7 },
-  segmentOption: { minHeight: 44, flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  segmentOption: { minHeight: 44, flex: 1, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   switchRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
   choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  choiceChip: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, justifyContent: 'center' },
+  choiceChip: { minHeight: 44, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, justifyContent: 'center' },
 })

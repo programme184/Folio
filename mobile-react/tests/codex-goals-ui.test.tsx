@@ -25,16 +25,18 @@ let context: ReturnType<typeof useCodexRuntime>
 const observations: Array<string | null> = []
 function Probe() { context = useCodexRuntime(); observations.push(context.runtime?.goal?.status ?? null); return null }
 const mounted: ReactTestRenderer[] = []
-async function mount(content: 'bar' | 'editor' | 'status' = 'bar') {
+async function mount(content: 'bar' | 'editor' | 'status' = 'bar', keyboardVisible = false, expandGoal = true) {
   let tree!: ReactTestRenderer
-  await act(async () => { tree = create(<CodexRuntimeProvider sessionId="chat-a"><Probe />{content === 'bar' ? <CodexGoalBar /> : content === 'editor' ? <CodexGoalEditor /> : <CodexStatusButton compact={false} />}</CodexRuntimeProvider>) })
+  await act(async () => { tree = create(<CodexRuntimeProvider sessionId="chat-a"><Probe />{content === 'bar' ? <CodexGoalBar keyboardVisible={keyboardVisible} /> : content === 'editor' ? <CodexGoalEditor /> : <CodexStatusButton compact={false} />}</CodexRuntimeProvider>) })
   mounted.push(tree)
+  if (content === 'bar' && expandGoal && !keyboardVisible) await press(tree, 'codex-goal-details')
   return tree
 }
 function nodes(tree: ReactTestRenderer, id: string) { return tree.root.findAll(node => typeof node.type === 'string' && node.props.testID === id) }
 function node(tree: ReactTestRenderer, id: string) { const found = nodes(tree, id); assert.equal(found.length, 1, `Expected one ${id}`); return found[0] }
 function contents(value: ReactTestInstance | string): string { return typeof value === 'string' ? value : value.children.map(child => contents(child)).join('') }
 async function press(tree: ReactTestRenderer, id: string) { await act(async () => { node(tree, id).props.onPress() }) }
+async function chooseGoalAction(tree: ReactTestRenderer, id: 'edit' | 'clear') { await act(async () => { node(tree, 'codex-goal-menu').props.onPressAction({ nativeEvent: { event: id } }) }) }
 async function change(tree: ReactTestRenderer, id: string, value: string) { await act(async () => { node(tree, id).props.onChangeText(value) }) }
 beforeEach(() => {
   observations.length = 0
@@ -43,6 +45,39 @@ beforeEach(() => {
   setTestClient({ codexRuntime: async () => runtime(), codexPermissionProfiles: async () => [] })
 })
 afterEach(async () => { for (const tree of mounted.splice(0)) await act(async () => tree.unmount()) })
+
+test('keyboard focus keeps the goal summary but leaves room for the message and Send controls', async () => {
+  const tree = await mount('bar', true)
+  assert.equal(nodes(tree, 'codex-goal-bar').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-objective').length, 1)
+  assert.equal(node(tree, 'codex-goal-collapse').props.accessibilityLabel, 'Expand goal')
+  assert.equal(node(tree, 'codex-goal-collapse').findAllByType('ChevronDown').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-progress').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-toggle').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-edit').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-clear').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-menu').length, 0)
+})
+
+test('collapsed goal occupies one summary row and reveals status, progress, and actions only when expanded', async () => {
+  const tree = await mount('bar', false, false)
+  assert.equal(nodes(tree, 'codex-goal-objective').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-state').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-progress').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-toggle').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-menu').length, 0)
+  await press(tree, 'codex-goal-details')
+  assert.equal(nodes(tree, 'codex-goal-state').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-progress').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-toggle').length, 1)
+  assert.equal(node(tree, 'codex-goal-collapse').props.accessibilityLabel, 'Collapse goal')
+  assert.equal(node(tree, 'codex-goal-collapse').findAllByType('ChevronUp').length, 1)
+  assert.deepEqual(node(tree, 'codex-goal-menu').props.actions.map((action: { id: string }) => action.id), ['edit', 'clear'])
+  await press(tree, 'codex-goal-collapse')
+  assert.equal(node(tree, 'codex-goal-collapse').findAllByType('ChevronDown').length, 1)
+  assert.equal(nodes(tree, 'codex-goal-progress').length, 0)
+  assert.equal(nodes(tree, 'codex-goal-menu').length, 0)
+})
 
 test('Pause is single-flight and applies the returned snapshot before stale refreshes settle', async () => {
   const staleRead = deferred<CodexRuntimeSnapshot>()
@@ -76,13 +111,13 @@ test('Resume sends only status; Clear requires confirmation and rejects duplicat
   assert.equal(node(tree, 'codex-goal-toggle').props.accessibilityLabel, 'Resume goal')
   await press(tree, 'codex-goal-toggle')
   assert.deepEqual(inputs, [{ status: 'active' }])
-  const clearTap = node(tree, 'codex-goal-clear').props.onPress
-  await act(async () => { clearTap(); clearTap() })
+  const clearTap = node(tree, 'codex-goal-menu').props.onPressAction
+  await act(async () => { clearTap({ nativeEvent: { event: 'clear' } }); clearTap({ nativeEvent: { event: 'clear' } }) })
   assert.equal(Alert.__calls.length, 1)
   assert.equal(cleared, 0)
   await act(async () => Alert.__calls[0].buttons?.find(button => button.style === 'cancel')?.onPress?.())
   assert.equal(cleared, 0)
-  await press(tree, 'codex-goal-clear')
+  await chooseGoalAction(tree, 'clear')
   await act(async () => Alert.__calls[1].buttons?.find(button => button.style === 'destructive')?.onPress?.())
   assert.equal(cleared, 1)
   assert.equal(nodes(tree, 'codex-goal-bar').length, 0)
@@ -179,6 +214,7 @@ test('late goal mutation results cannot replace the newly selected server snapsh
   await act(async () => { setTestClient({ codexRuntime: async () => runtime(otherGoal) }); useAppStore.setState({ activeProfileId: 'profile-b', profileGeneration: 2 }) })
   await act(async () => save.resolve({ goal: { ...goal, status: 'paused' }, time_budget_seconds: 600 }))
   assert.equal(contents(node(tree, 'codex-goal-objective')), 'Other server goal')
+  await press(tree, 'codex-goal-details')
   assert.equal(contents(node(tree, 'codex-goal-state')), 'Goal blocked')
 })
 
@@ -187,7 +223,7 @@ test('Clear confirmation cannot delete a replacement goal or another selected se
   let clears = 0
   setTestClient({ codexRuntime: async () => value, clearCodexGoal: async () => { clears++; return { goal: null, time_budget_seconds: null } } })
   const tree = await mount()
-  await press(tree, 'codex-goal-clear')
+  await chooseGoalAction(tree, 'clear')
   value = runtime({ ...goal, objective: 'Replacement goal', createdAt: 100 })
   await act(async () => { await context.refresh() })
   await act(async () => Alert.__calls[0].buttons?.find(button => button.style === 'destructive')?.onPress?.())
@@ -195,7 +231,7 @@ test('Clear confirmation cannot delete a replacement goal or another selected se
   assert.match(contents(node(tree, 'codex-goal-error')), /goal changed/)
   await act(async () => { await assert.rejects(context.clearGoal(goal), /goal changed/) })
   assert.equal(clears, 0)
-  await press(tree, 'codex-goal-clear')
+  await chooseGoalAction(tree, 'clear')
   await act(async () => useAppStore.setState({ activeProfileId: 'profile-b', profileGeneration: 2 }))
   await act(async () => Alert.__calls[1].buttons?.find(button => button.style === 'destructive')?.onPress?.())
   assert.equal(clears, 0)
@@ -210,7 +246,7 @@ test('blocked, budget-limited and complete goals show honest states without a re
     await act(async () => { await context.refresh() })
     assert.equal(contents(node(tree, 'codex-goal-state')), label)
     assert.equal(nodes(tree, 'codex-goal-toggle').length, 0)
-    assert.equal(nodes(tree, 'codex-goal-edit').length, 1)
+    assert.equal(nodes(tree, 'codex-goal-menu').length, 1)
   }
   value = { ...runtime({ ...goal, status: 'paused' }), time_budget_seconds: 20 }
   await act(async () => { await context.refresh() })
@@ -229,12 +265,12 @@ test('lifecycle Running overrides an idle provider snapshot and opening controls
   assert.ok(reads > before)
 })
 
-test('direct Edit opens the goal editor and refreshes the current chat', async () => {
+test('Edit in the goal menu opens the goal editor and refreshes the current chat', async () => {
   let reads = 0
   setTestClient({ codexRuntime: async () => { reads++; return runtime({ ...goal, status: 'paused' }) } })
   const tree = await mount()
   const before = reads
-  await press(tree, 'codex-goal-edit')
+  await chooseGoalAction(tree, 'edit')
   assert.equal(nodes(tree, 'codex-goal-editor').length, 1)
   assert.ok(reads > before)
   assert.equal(node(tree, 'codex-goal-objective-input').props.value, goal.objective)
@@ -255,7 +291,7 @@ test('explicitly unsupported goals stay read-only and unavailable runtime action
   value = { ...runtime(), available: false }
   await act(async () => { await context.refresh() })
   assert.equal(node(tree, 'codex-goal-toggle').props.disabled, true)
-  assert.equal(node(tree, 'codex-goal-edit').props.disabled, true)
+  assert.equal(node(tree, 'codex-goal-menu').props.actions[0].attributes.disabled, true)
 })
 
 test('a late pre-reconnect failure cannot clear a newer mutation or report a stale error', async () => {

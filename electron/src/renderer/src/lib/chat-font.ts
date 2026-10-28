@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { WorkspaceProfileScope } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import { getWorkspacePreference, setWorkspacePreference } from './workspace-preferences'
+import { trackEvent } from './analytics'
 
 export const CHAT_FONT_SIZES = [13, 14, 15, 16, 18, 20, 22, 24]
 export const CHAT_FONT_FAMILIES: Array<[value: string, label: string]> = [
@@ -48,12 +49,15 @@ export function nudgeChatFontSize(delta: number): void {
 export function setChatFontSize(size: number): void {
   if (!CHAT_FONT_SIZES.includes(size) || size === currentSize) return
   applyChatFont(size, currentFamily)
+  trackEvent('chat_font_changed')
   void setWorkspacePreference(readChatFontScope(), 'chatFontSize', size).catch(() => undefined)
 }
 
 /** Imperative typeface setter for the native View menu. */
 export function setChatFontFamily(family: string): void {
+  if (family === currentFamily || !CHAT_FONT_FAMILIES.some(([value]) => value === family)) return
   applyChatFont(currentSize, family)
+  trackEvent('chat_font_changed')
   void setWorkspacePreference(readChatFontScope(), 'chatFontFamily', family).catch(() => undefined)
 }
 
@@ -85,6 +89,8 @@ export function useChatFontController() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeKey])
   const update = (nextSize = size, nextFamily = family) => {
+    if (nextSize === size && nextFamily === family) return
+    trackEvent('chat_font_changed')
     setSize(nextSize)
     setFamily(nextFamily)
     applyChatFont(nextSize, nextFamily)

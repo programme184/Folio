@@ -47,9 +47,60 @@ async function confirmForget() {
   fireEvent.click(await screen.findByRole('menuitem', { name: 'Forget endpoint' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Forget endpoint' }))
 }
-afterEach(() => { cleanup(); setLocale('en'); vi.restoreAllMocks(); vi.useRealTimers() })
+afterEach(() => { cleanup(); localStorage.clear(); setLocale('en'); vi.restoreAllMocks(); vi.useRealTimers() })
+
+it('restores an unconnected Codex URL draft after closing without retaining the key', async () => {
+  const api = bridge()
+  const mounted = render(<CodexAuthSettings {...props} />)
+  const fields = await openCustomForm()
+  fillProvider(fields)
+  mounted.unmount()
+  render(<CodexAuthSettings {...props} />)
+  const restored = await openCustomForm()
+  expect(restored.endpoint).toHaveValue('https://inference.example/v1')
+  expect(restored.key).toHaveValue('')
+  expect(restored.endpoint).toBeRequired()
+  expect(restored.key).toBeRequired()
+  expect(screen.getByLabelText('API protocol')).toHaveValue('responses')
+  expect(screen.getByLabelText('Authentication header')).toHaveValue('bearer')
+  expect(api.testProvider).not.toHaveBeenCalled()
+  expect(api.setProvider).not.toHaveBeenCalled()
+  const persisted = Array.from({ length: localStorage.length }, (_, i) => localStorage.getItem(localStorage.key(i)!)).join('')
+  expect(persisted).not.toContain('synthetic-provider-key')
+})
 
 describe('Codex · Native account settings', () => {
+  it('mounts passively and reloads sign-in only after an explicit click', async () => {
+    const status = { ...snapshot('chatgpt'), login_reload_available: true }
+    const reloadAuth = vi.fn().mockResolvedValue({ ...status, login_reload_pending: true })
+    const api = bridge(vi.fn().mockResolvedValue(status), undefined, { reloadAuth })
+    const mounted = render(<CodexAuthSettings {...props} />)
+    const button = await screen.findByRole('button', { name: 'Reload sign-in' })
+    expect(api.read).toHaveBeenCalledOnce()
+    expect(reloadAuth).not.toHaveBeenCalled()
+    fireEvent.click(button)
+    await waitFor(() => expect(reloadAuth).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 }))
+    await screen.findByText(/New sign-in requested/)
+    expect(api.read).toHaveBeenCalledOnce()
+    mounted.rerender(<CodexAuthSettings {...props} profileId="other" profileGeneration={2} />)
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(2))
+    expect(reloadAuth).toHaveBeenCalledOnce()
+    expect(screen.queryByText(/New sign-in requested/)).not.toBeInTheDocument()
+  })
+
+  it('does not apply a late sign-in reload to another server', async () => {
+    const status = { ...snapshot('chatgpt'), login_reload_available: true }
+    let finish!: (value: CodexAuthStatus) => void
+    const reloadAuth = vi.fn(() => new Promise<CodexAuthStatus>(resolve => { finish = resolve }))
+    const api = bridge(vi.fn().mockResolvedValue(status), undefined, { reloadAuth })
+    const mounted = render(<CodexAuthSettings {...props} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Reload sign-in' }))
+    mounted.rerender(<CodexAuthSettings {...props} profileId="other" profileGeneration={2} />)
+    await waitFor(() => expect(api.read).toHaveBeenCalledTimes(2))
+    await act(async () => finish({ ...status, login_reload_pending: true }))
+    expect(screen.queryByText(/New sign-in requested/)).not.toBeInTheDocument()
+  })
+
   it('shows the existing account read-only and has one separate endpoint action', async () => {
     const api = bridge(vi.fn().mockResolvedValue(snapshot('chatgpt')))
     render(<CodexAuthSettings {...props} />)

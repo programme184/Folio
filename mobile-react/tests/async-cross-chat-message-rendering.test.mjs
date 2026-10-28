@@ -19,11 +19,13 @@ const fixture = {
 }
 globalThis.__asyncChatMessageFixture = fixture
 const mocks = {
+  './store/useAppearanceStore': `export const useAppearanceStore = selector => selector({ preference: 'system' });`,
   'react-native': `import { createElement } from 'react';
     export const View='View', Text='Text', ActivityIndicator='ActivityIndicator', ScrollView='ScrollView', Image='Image', TouchableWithoutFeedback='TouchableWithoutFeedback';
     export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children);
     export const StyleSheet = { create: value => value, absoluteFill: {}, hairlineWidth: 0.5, flatten: value => Object.assign({}, ...[value].flat(Infinity).filter(Boolean)) };
     export const Platform = { OS: 'ios', select: values => values.ios ?? values.default };
+    export const UIManager = { hasViewManagerConfig: () => true };
     export const Linking = { openURL: async url => { globalThis.__asyncChatMessageFixture.links.push(url); } };
     export const useColorScheme = () => globalThis.__asyncChatMessageFixture.theme;
     export const AccessibilityInfo = { announceForAccessibility() {} };`,

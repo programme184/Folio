@@ -30,6 +30,7 @@ test('wide Markdown tables scroll horizontally without squeezing every column in
 
 test('long messages fold around formulas instead of cutting TeX source', () => {
   assert.match(timelineRows, /foldMarkdownSource\(full, MESSAGE_PREVIEW_CHARACTER_LIMIT\)/)
+  assert.match(timelineRows, /visibleMarkdownPreview\(full, fold, MESSAGE_PREVIEW_CHARACTER_LIMIT\)/)
   assert.doesNotMatch(timelineRows, /full\.slice\(0, MESSAGE_PREVIEW_CHARACTER_LIMIT\)/)
   assert.match(timelineRows, /full\.length - fold\.cutIndex/)
 })

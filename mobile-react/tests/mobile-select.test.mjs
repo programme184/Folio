@@ -10,10 +10,11 @@ test('chat runtime choices distinguish the server default from a pinned model', 
   // Per-chat model/effort selection lives in the chat details Inspector. (The
   // old Create Chat dialog's copy of these selects was removed in favor of
   // direct plus-button creation.)
-  assert.match(inspector, /runtimeCatalogOptions\(runtime, session\.backend, 'models', session\.model\)/)
-  assert.match(inspector, /runtimeEffortOptions\(runtime, session\.backend, session\.model, session\.effort\)/)
-  assert.match(inspector, /runtimeEffortAfterModelChange\(runtime, session\.backend, model, session\.effort\)/)
-  assert.match(inspector, /<ChoiceField value=\{session\.model \?\? ''\} options=\{modelOptions\}/)
+  assert.match(inspector, /const catalog = providerRuntimeCatalog\(runtime, session\)/)
+  assert.match(inspector, /runtimeCatalogOptions\(catalog, session\.backend, 'models', session\.model\)/)
+  assert.match(inspector, /runtimeEffortOptions\(catalog, session\.backend, session\.model, session\.effort\)/)
+  assert.match(inspector, /runtimeEffortAfterModelChange\(catalog, session\.backend, model, session\.effort\)/)
+  assert.match(inspector, /<ChoiceField title="Model" value=\{session\.model \?\? ''\} options=\{modelOptions\}/)
   assert.doesNotMatch(inspector, /label: runtime\?\.backends\[session\.backend\]\?\.default_model/)
 })
 
@@ -23,4 +24,13 @@ test('mobile select uses a bounded safe-area sheet with an explicit close target
   assert.match(dialogs, /maxHeight: Math\.min\(440, height \* 0\.62\)/)
   assert.match(dialogs, /<SheetCloseButton onPress=\{close\} label=\{`Close \$\{title\.toLocaleLowerCase\(\)\}`\} \/>/)
   assert.match(dialogs, /selectBackdropCompact: \{ justifyContent: 'flex-end'/)
+})
+
+test('chat details choices avoid nested iOS modals inside the page sheet', () => {
+  assert.match(inspector, /ActionSheetIOS\.showActionSheetWithOptions\(/)
+  assert.match(inspector, /if \(Platform\.OS === 'ios'\) \{[\s\S]*?ActionSheetIOS\.showActionSheetWithOptions\(/)
+  assert.match(inspector, /\{Platform\.OS !== 'ios' \? <Modal visible=\{open && !disabled\}/)
+  assert.match(inspector, /disabledButtonIndices/)
+  assert.match(inspector, /if \(iosChoicesPresented\.current\) return/)
+  assert.match(inspector, /iosChoicesPresented\.current = false/)
 })

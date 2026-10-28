@@ -60,6 +60,25 @@ describe('native Codex account transport', () => {
     expect(handler).not.toHaveBeenCalled()
   })
 
+  it('reloads sign-in only through the separate native POST, never the catalog', async () => {
+    const calls: string[] = []
+    await withServer(async (req, res) => {
+      calls.push(`${req.method} ${req.url}`)
+      const chunks: Buffer[] = []
+      for await (const chunk of req) chunks.push(Buffer.from(chunk))
+      expect(Buffer.concat(chunks).toString()).toBe('{}')
+      expect(req.headers['x-agentsdock-token']).toBe('synthetic-admin-token')
+      for (const header of ['origin', 'cookie', 'sec-fetch-mode', 'authorization']) expect(req.headers[header]).toBeUndefined()
+      res.end(JSON.stringify({ ...account, login_reload_available: true, login_reload_pending: true }))
+    }, async url => {
+      const client = new AgentServerClient(url, 'synthetic-admin-token')
+      try {
+        expect(await client.codexAuth(true)).toEqual({ ...account, login_reload_available: true, login_reload_pending: true })
+      } finally { client.dispose() }
+    })
+    expect(calls).toEqual(['POST /api/admin/codex/auth/reload'])
+  })
+
   it.each([[400, 'INVALID_KEY'], [401, 'ADMIN'], [403, 'ADMIN'], [404, 'UPDATE'], [405, 'UPDATE'],
     [409, 'BUSY'], [422, 'INVALID_KEY'], [500, 'FAILED'], [501, 'UPDATE'], [502, 'FAILED']])(
     'sanitizes HTTP %s including echoed secrets and does not retry', async (status, code) => {
@@ -88,7 +107,8 @@ describe('native Codex account transport', () => {
 
   it('does not forward malformed provider data or account secrets', () => {
     expect(parseCodexAuthStatus({ ...account, email: fakeKey, plan_type: fakeKey, token: fakeKey })).toEqual(account)
-    for (const value of [null, [], { ...account, auth_mode: fakeKey }, { ...account, auth_mode: ['apiKey'] }, { ...account, available: 1 }]) {
+    for (const value of [null, [], { ...account, auth_mode: fakeKey }, { ...account, auth_mode: ['apiKey'] }, { ...account, available: 1 },
+      { ...account, login_reload_available: 'true' }, { ...account, login_reload_pending: 1 }]) {
       expect(() => parseCodexAuthStatus(value)).toThrow('CODEX_AUTH_RESPONSE')
     }
   })

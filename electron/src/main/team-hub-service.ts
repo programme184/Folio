@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { fstatSync, read as readFileDescriptor } from 'node:fs'
 import { basename } from 'node:path'
+import { TeamHubStoppedHostingError } from './team-hub-role-change'
 import type {
   TeamHubBootstrapInput,
   TeamHubConnectInput,
@@ -2260,12 +2261,29 @@ export class TeamHubService {
       profileGeneration: server.profileGeneration,
       serverIdentity: server.serverIdentity!
     }
-    const discovered = await this.discovery.configureTeamHubServerRole(expected, {
-      role: input.role,
-      serverName,
-      ...(input.networkName === undefined ? {} : { networkName: requireServerName(input.networkName) }),
-      ...(input.renameOnly === true ? { renameOnly: true as const } : {})
-    })
+    let discovered: TeamHubDiscovery
+    try {
+      discovered = await this.discovery.configureTeamHubServerRole(expected, {
+        role: input.role,
+        serverName,
+        ...(input.networkName === undefined ? {} : { networkName: requireServerName(input.networkName) }),
+        ...(input.renameOnly === true ? { renameOnly: true as const } : {})
+      })
+    } catch (error) {
+      // Only the native role controller can confirm a partial commit using
+      // fresh authenticated health. Generic missing discovery is not proof.
+      if (input.role === 'member' && error instanceof TeamHubStoppedHostingError) {
+        try {
+          this.requireSameServerScope(server)
+          this.retireStoppedHostBinding(server)
+          await this.connect()
+        } catch (recoveryError) {
+          if (isStaleScopeError(recoveryError)) throw recoveryError
+          // Demotion is confirmed; keep its original warning if reconnect fails.
+        }
+      }
+      throw error
+    }
     this.requireSameServerScope(server)
     if (input.role === 'host') {
       if (!discovered?.designatedHost || discovered.hostServerIdentity !== server.serverIdentity) {
@@ -2274,9 +2292,22 @@ export class TeamHubService {
     } else if (discovered?.designatedHost) {
       throw new Error('AgentsServer did not change this server to the Team Network member role.')
     }
+    if (input.role === 'member') this.retireStoppedHostBinding(server)
     const status = await this.connect()
     this.requireSameServerScope(server)
     return status
+  }
+
+  private retireStoppedHostBinding(server: TeamHubServerScope): void {
+    this.requireSameServerScope(server)
+    const saved = this.settings.publicSettings(server.profileId)
+    if (!this.isSavedServerSessionBinding(server, saved)) return
+    // Only retire this app's cached server session after authenticated role
+    // confirmation. Hosted teams, human credentials and peer pairings remain
+    // server-owned; ordinary discovery still enforces session continuity.
+    this.settings.forgetBinding(server.profileId)
+    this.invalidateVerifiedClient('unavailable')
+    this.error = null
   }
 
   async securePeerStatus(scope: SecurePeerProfileScope): Promise<SecurePeerControlStatus> {

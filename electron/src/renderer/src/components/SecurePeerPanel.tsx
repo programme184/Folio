@@ -80,7 +80,6 @@ export function SecurePeerPanel({
   const [copied, setCopied] = useState(false)
   const [confirmedSas, setConfirmedSas] = useState<Set<string>>(() => new Set())
   const [confirmForget, setConfirmForget] = useState<string | null>(null)
-  const [confirmDisableHost, setConfirmDisableHost] = useState(false)
   const [completionObservation, setCompletionObservation] = useState(0)
 
   const humanCanManage = Boolean(details && ['owner', 'admin'].includes(details.membership.role))
@@ -228,7 +227,6 @@ export function SecurePeerPanel({
     setCopied(false)
     setConfirmedSas(new Set())
     setConfirmForget(null)
-    setConfirmDisableHost(false)
     setError(null)
     setApprovalRefreshError(null)
     setCompletionNotice(null)
@@ -749,22 +747,12 @@ export function SecurePeerPanel({
       copied={copied}
       hostAddress={hostAddress}
       confirmedSas={confirmedSas}
-      confirmingDisableHost={confirmDisableHost}
       onCopy={() => void copyServerInvite()}
       onHostAddressChange={setHostAddress}
       onConfirmSas={(pairing, checked) => setConfirmedSas(current => toggleConfirmation(current, pairingConfirmationKey(pairing), checked))}
       onApprove={pairing => void approve(pairing)}
       onReject={pairing => void reject(pairing)}
       onRevoke={pairing => void revoke(pairing)}
-      onRequestDisableHost={() => setConfirmDisableHost(true)}
-      onCancelDisableHost={() => setConfirmDisableHost(false)}
-      onDisableHost={() => void run('disable-host', requestEpoch => window.agentsDock.teamHub.configureSecurePeerHost(scope, { enabled: false }).then(value => {
-        if (epoch.current !== requestEpoch) throw new StaleSecurePeerResponse()
-        setControl(value)
-        setCopied(false)
-        setConfirmDisableHost(false)
-        return value
-      }))}
     />}
 
     {control && !status.designatedHost && <PeerConnectionView
@@ -823,7 +811,7 @@ function sameSecurePeerPairings(
   return current === incoming || JSON.stringify(current) === JSON.stringify(incoming)
 }
 
-function HostConnectionView({ status, control, pending, expired, managedPeers, canManage, busy, copied, hostAddress, confirmedSas, confirmingDisableHost, onCopy, onHostAddressChange, onConfirmSas, onApprove, onReject, onRevoke, onRequestDisableHost, onCancelDisableHost, onDisableHost }: {
+function HostConnectionView({ status, control, pending, expired, managedPeers, canManage, busy, copied, hostAddress, confirmedSas, onCopy, onHostAddressChange, onConfirmSas, onApprove, onReject, onRevoke }: {
   status: TeamHubStatus
   control: SecurePeerControlStatus
   pending: SecurePeerPairing[]
@@ -834,16 +822,12 @@ function HostConnectionView({ status, control, pending, expired, managedPeers, c
   copied: boolean
   hostAddress: string
   confirmedSas: Set<string>
-  confirmingDisableHost: boolean
   onCopy: () => void
   onHostAddressChange: (value: string) => void
   onConfirmSas: (pairing: SecurePeerPairing, checked: boolean) => void
   onApprove: (pairing: SecurePeerPairing) => void
   onReject: (pairing: SecurePeerPairing) => void
   onRevoke: (pairing: SecurePeerPairing) => void
-  onRequestDisableHost: () => void
-  onCancelDisableHost: () => void
-  onDisableHost: () => void
 }) {
   const locale = useLocale()
   const livePeers = managedPeers.filter(pairing => (
@@ -924,12 +908,6 @@ function HostConnectionView({ status, control, pending, expired, managedPeers, c
         <span>{t('teamNetwork.peer.hostIdentity')} · <code>{status.serverIdentity}</code></span>
         {control.host.caFingerprint && <span>{t('teamNetwork.peer.hostFingerprint')} · <code>{control.host.caFingerprint}</code></span>}
         {control.host.certificateExpiresAt && <span>{t('teamNetwork.peer.inviteExpires', { date: new Date(control.host.certificateExpiresAt).toLocaleString(locale) })}</span>}
-        {control.host.enabled && !confirmingDisableHost && <button type="button" className="quiet-button danger" disabled={busy} onClick={onRequestDisableHost}>{t('teamNetwork.peer.disableHostingEllipsis')}</button>}
-        {control.host.enabled && confirmingDisableHost && <div className="secure-peer-destructive-confirm" role="group" aria-label={t('teamNetwork.peer.disableHosting')}>
-          <span>{t('teamNetwork.peer.disableHostingConfirm')}</span>
-          <button type="button" className="quiet-button danger" disabled={busy} onClick={onDisableHost}>{t('teamNetwork.peer.disableTakeOffline')}</button>
-          <button type="button" className="quiet-button" disabled={busy} onClick={onCancelDisableHost}>{t('teamNetwork.peer.keepHosting')}</button>
-        </div>}
       </div>
     </details>
   </>

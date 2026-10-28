@@ -14,6 +14,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  server-cli:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Verify public CLI and existing signed-update entry point
+        run: node --test server/npm/cli.test.cjs server/npm/agentsdock/*.test.cjs
+      - name: Verify matched npm staging and publication guards
+        run: node --test scripts/tests/verify*publication.test.mjs scripts/tests/agentsdock_cli_candidate_release.test.mjs scripts/tests/server_npm_publish_workflow.test.mjs scripts/tests/release_credentials_preflight.test.mjs
+      - name: Verify desktop build reservations and non-publishing replay guards
+        run: node --test scripts/tests/validate_desktop_build_number.test.mjs scripts/tests/direct-release-verification.test.mjs scripts/tests/direct-release-mirror.test.mjs scripts/tests/coordinated-release.test.mjs scripts/tests/published-server-paths.test.mjs
+      - name: Verify disposable native CLI acceptance guards without creating services
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts/tests -p test_agentsdock_cli_native_acceptance.py
+      - name: Pack and install exact CLI/runtime in disposable npm prefixes
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 -m unittest discover -s server/tests -t server -p test_agentsdock_cli_package.py
+          python3 -m unittest discover -s server/tests -t server -p test_npm_release_package.py
+
   electron:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -63,6 +91,47 @@ jobs:
       - run: pnpm test:history
         working-directory: mobile-react
       - run: pnpm test:server-setup
+        working-directory: mobile-react
+      - name: Verify mobile provider defaults, approvals, and update discovery
+        run: |
+          node scripts/run-history-tests.mjs src/store/useAppStore.session-creation.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/new-chat-recovery.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/provider-selection.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/optional-agent-permissions.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/api/AgentServerClient.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/android-update.test.ts --native-mocks
+          node --test tests/gemini-interactions.test.mjs tests/settings-agents.test.mjs tests/settings-navigation.test.mjs tests/inspector-chat-actions.test.mjs tests/sidebar-selection.test.mjs
+        working-directory: mobile-react
+      - name: Verify stopped queue recovery without replay
+        run: |
+          node scripts/run-history-tests.mjs src/lib/queue.test.ts
+          node scripts/run-history-tests.mjs src/store/useAppStore.paused-queue.test.ts --native-mocks
+        working-directory: mobile-react
+      - name: Verify manual server connection and profile management
+        run: |
+          node --test tests/server-manual-connection.test.mjs tests/server-profiles.test.mjs tests/server-qr-scanner.test.mjs tests/multi-server-isolation.test.mjs
+          node scripts/run-history-tests.mjs src/lib/server-address-selection.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/server-connection-link.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.address-fallback.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.server-removal.test.ts --native-mocks
+        working-directory: mobile-react
+      - name: Verify media actions and native integration contracts
+        run: |
+          pnpm test:downloads
+          node scripts/run-history-tests.mjs src/lib/file-transfer.test.ts --native-mocks
+          node --test tests/media-save-config.test.mjs tests/expo-ui-touch-lifecycle.test.mjs tests/expo-hmr-recovery.test.mjs tests/backend-mark.test.mjs
+        working-directory: mobile-react
+      - name: Verify mobile latest-first sync and stable text rendering
+        run: |
+          node scripts/run-history-tests.mjs src/api/AgentServerClient.cancellation.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/lib/server-profiles.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/storage/cache.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.integration.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.latest-first.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.sync-stress.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.lifecycle-hardening.test.ts --native-mocks
+          node scripts/run-history-tests.mjs src/store/useAppStore.timeline-recovery.test.ts --native-mocks
+          node --test tests/markdown-reconciliation.test.mjs tests/markdown-content-compact.test.mjs tests/timeline-text-selection.test.mjs tests/team-network-ui-contract.test.mjs tests/button-wiring.test.mjs tests/interaction-reliability.test.mjs
         working-directory: mobile-react
       - run: node scripts/run-history-tests.mjs src/lib/team-references.test.ts
         working-directory: mobile-react

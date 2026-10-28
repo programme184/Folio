@@ -22,7 +22,8 @@ assert(artifactVideoStageProgress(25, -1, 50) === 0.5, 'metadata should backstop
 assert(artifactVideoStageProgress(125, 100, null) === 1, 'progress should clamp above one')
 assert(artifactVideoStageProgress(10, -1, null) === null, 'unknown length should remain indeterminate')
 
-assert(!shouldGenerateAutomaticVideoThumbnail('ios', false), 'iOS must not create timeline AVPlayers')
+assert(shouldGenerateAutomaticVideoThumbnail('ios', false), 'iOS can generate bounded timeline thumbnails')
+assert(!shouldGenerateAutomaticVideoThumbnail('ios', true), 'an open viewer suspends iOS thumbnails')
 assert(!shouldGenerateAutomaticVideoThumbnail('android', true), 'an open viewer suspends Android thumbnails')
 assert(shouldGenerateAutomaticVideoThumbnail('android', false), 'Android can keep bounded thumbnail generation')
 

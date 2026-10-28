@@ -14,7 +14,7 @@ import {
   nextImageViewerScale,
   shouldDismissImageViewer,
 } from '../lib/image-viewer-gesture'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import { Text } from './AppText'
 
 const SPRING_BACK = { damping: 22, stiffness: 240 }
@@ -296,10 +296,10 @@ export function FullscreenViewerCloseButton({ onPress, label, testID }: { onPres
 }
 
 const styles = StyleSheet.create({
-  close: { width: 48, height: 48, flexShrink: 0, borderRadius: 24, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  close: { width: 48, height: 48, flexShrink: 0, borderRadius: radius.round, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
   zoomViewport: { overflow: 'hidden' },
   zoomControlsPosition: { position: 'absolute', top: 10, right: 10, zIndex: 6 },
-  zoomControls: { height: 44, borderRadius: 22, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
+  zoomControls: { height: 44, borderRadius: radius.round, borderWidth: StyleSheet.hairlineWidth, flexDirection: 'row', alignItems: 'center', overflow: 'hidden' },
   zoomButton: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   zoomLabel: { fontSize: 11, fontWeight: '800', fontVariant: ['tabular-nums'] },
 })

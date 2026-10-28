@@ -43,11 +43,13 @@ test('connection installation is validation-gated, advances generation, and disp
 test('reconnect validates health, contract, and identity before fetching sessions', () => {
   assert.match(store, /const MIN_API_CONTRACT = 8/)
   const reconnect = section(store, '  async reconnect() {', '\n  async retryConnection() {')
-  const health = reconnect.indexOf('health = await scope.client.health()')
+  const address = reconnect.indexOf('await resolveReconnectAddress(scope, set, get)')
+  const health = reconnect.indexOf('health = resolved.health ?? await scope.client.health()')
   const contract = reconnect.indexOf('health.api_contract_version')
   const identity = reconnect.indexOf('await acceptHealthIdentity(scope, health,')
   const sessions = reconnect.indexOf('scope.client.sessions()')
   assert.ok(health >= 0, 'Reconnect must fetch health')
+  assert.ok(address >= 0 && health > address, 'Reconnect must use authenticated health from the selected address or fetch it')
   assert.ok(contract > health, 'Reconnect must validate the API contract after health')
   assert.ok(identity > contract, 'Reconnect must validate canonical identity after the API contract')
   assert.ok(sessions > identity, 'Session requests must begin only after health and identity validation')
@@ -63,8 +65,8 @@ test('reconnect validates health, contract, and identity before fetching session
   assert.match(identityValidation, /scope\.client\.markValidated\(\)/)
   assert.match(store, /const identity = typeof health\.server_identity === 'string' \? health\.server_identity\.trim\(\) : ''/)
 
-  const probe = section(store, 'async function probeServerHealth(', '\nasync function acceptHealthIdentity(')
-  assert.match(probe, /await probe\.health\(\)/)
+  const probe = section(store, 'async function probeServerHealth(', '\nasync function resolveReconnectAddress(')
+  assert.match(probe, /await probe\.health\(timeoutMs, signal\)/)
   assert.match(probe, /health\.api_contract_version/)
   assert.match(probe, /requiredServerIdentity\(health\)/)
   assert.match(probe, /finally \{[\s\S]*?probe\.dispose\(\)/)
@@ -84,7 +86,7 @@ test('every durable workspace cache call is namespace-scoped', () => {
     assert.doesNotMatch(firstArgument, /serverURL|serverUrl/, `${call[1]} regressed to URL-scoped cache ownership`)
   }
   assert.match(store, /const namespace = profileNamespace\(activeProfile\)/)
-  assert.match(store, /const namespace = profileNamespace\(profile\)/)
+  assert.match(store, /const namespace = profile \? profileNamespace\(profile\) : 'profile:unconfigured'/)
   assert.match(store, /migrateCacheNamespace\(sourceNamespace, targetNamespace\)/)
   assert.match(store, /purgeCacheNamespace\(fallbackToPurge\.namespace, fallbackToPurge\.verifiedSourceKeys\)/)
 })
@@ -111,7 +113,8 @@ test('profile activation serializes durable preparation and releases cached stat
   assert.match(prepare, /syncInFlight = null/)
   assert.match(prepare, /foregroundRepairInFlight = null/)
   assert.match(prepare, /if \(readReceiptTimer\) clearTimeout\(readReceiptTimer\)/)
-  assert.match(prepare, /const scope = installConnection\(profileId, profile\.serverURL, token, namespace, set\)/)
+  assert.match(prepare, /const scope = installConnection\(profileId \?\? 'unconfigured', profile\?\.serverURL \?\? DEFAULT_SERVER_URL, token, namespace, set\)/)
+  assert.match(prepare, /profile \? await Promise\.all\([\s\S]*?\) : \['', \[\], \[\], normalizeWorkspacePreferences\(\{\}\)\]/)
   assert.match(prepare, /catch \(error\) \{[\s\S]*?intent === profileSwitchIntent[\s\S]*?switchingProfileId: null/)
   assert.match(prepare, /scope\.client\.revokeValidation\(\)/)
   assert.ok(prepare.indexOf('await saveProfileSettings(') < prepare.indexOf('const scope = installConnection('), 'Active-profile metadata must commit before installing its connection')
@@ -199,9 +202,9 @@ test('canonical namespace adoption releases interaction before delete-only sourc
 })
 
 test('notifications resolve both profile ID and canonical identity before selecting a reused session ID', () => {
-  const notify = section(store, 'async function notifyOnce(', '\n}')
-  assert.match(notify, /const key = `\$\{scope\.profileId\}:\$\{scope\.namespace\}:\$\{session\.id\}:\$\{seq\}`/)
-  assert.match(notify, /data: \{ profileId: scope\.profileId, serverIdentity: scope\.namespace, sessionId: session\.id \}/)
+  const notify = section(store, 'async function scheduleAgentNotification(', '\n}')
+  assert.match(notify, /const key = `\$\{scope\.profileId\}:\$\{scope\.namespace\}:\$\{session\.id\}:\$\{notification\.key\}`/)
+  assert.match(notify, /data: \{ profileId: scope\.profileId, serverIdentity: scope\.namespace, sessionId: session\.id, level: notification\.level \}/)
 
   const responseHandler = section(appShell, '    const openNotification = async', '\n    const subscription = Notifications.addNotificationResponseReceivedListener')
   assert.match(responseHandler, /const profileId = typeof data\.profileId === 'string' \? data\.profileId : null/)

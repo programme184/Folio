@@ -220,6 +220,42 @@ describe('Composer', () => {
     expect(view.container.querySelector('.queued-row.local-pending button')).toBeNull()
   })
 
+  it('keeps the focused draft outside queue scrolling when a queued turn arrives and leaves', () => {
+    const session: Session = { id: 'chat-1', title: 'Chat', backend: 'codex' }
+    const snapshot = {
+      session, events: [], queuedTurns: [] as QueuedTurn[], files: [],
+      hasMoreEvents: false, filesTotal: 0, cachedAt: 0
+    }
+    useAppStore.setState({ activeSessionIds: new Set(['chat-1']), snapshots: { 'chat-1': snapshot } })
+    const view = render(<Composer />)
+    const editor = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement
+    const draft = 'First line of my draft\nSecond line stays editable\nFinal detail'
+    fireEvent.change(editor, { target: { value: draft } })
+    editor.focus()
+    editor.setSelectionRange(6, 10)
+
+    act(() => useAppStore.setState({ snapshots: { 'chat-1': { ...snapshot, queuedTurns: [{
+      queued_id: 'queued-other', session_id: 'chat-1', prompt: 'Previously queued message',
+      file_ids: [], position: 1
+    }] } } }))
+    const extras = view.container.querySelector('.composer-scroll-region')!
+    expect(extras).toContainElement(screen.getByText('Previously queued message'))
+    expect(extras).not.toContainElement(editor)
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBe(editor)
+    expect(editor).toHaveValue(draft)
+    expect(editor).toHaveFocus()
+    fireEvent.scroll(extras, { target: { scrollTop: 100 } })
+    expect([editor.selectionStart, editor.selectionEnd, editor.scrollTop]).toEqual([6, 10, 0])
+
+    act(() => useAppStore.setState({ snapshots: { 'chat-1': snapshot } }))
+    expect(screen.queryByText('Previously queued message')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBe(editor)
+    expect(editor).toHaveFocus()
+    fireEvent.change(editor, { target: { value: `${draft}\nContinue writing` } })
+    expect(editor).toHaveValue(`${draft}\nContinue writing`)
+    expect(view.container.querySelector('.composer-bar')).not.toBeNull()
+  })
+
   it('keeps an offline shared-chat draft editable while gating message and attachment writes', () => {
     const send = vi.fn()
     Object.defineProperty(window, 'agentsDock', { configurable: true, value: {
@@ -1767,6 +1803,27 @@ describe('Composer', () => {
     confirm.mockRestore()
   })
 
+  it.each(['codex_thread_id', 'session_id'] as const)('keeps idle Stop subagents with %s until a native terminal arrives, without queuing Send', async providerId => {
+    const owner = { id: 'chat-1', title: 'Chat', backend: 'codex' as const, [providerId]: 'root' }
+    const child = { id: 'child-event', seq: 1, session_id: owner.id, type: 'subagent_state',
+      backend: 'codex' as const, ts: '2026-10-25T10:00:00Z', subagent_id: 'child',
+      subagent_parent_thread_id: 'root', subagent_status: 'running' }
+    const snapshot = { session: owner, events: [child], queuedTurns: [], files: [], filesTotal: 0, hasMoreEvents: false, cachedAt: 0 }
+    const stop = vi.fn().mockResolvedValue({ stopped: true, subagents: { pending: ['child'] } })
+    window.agentsDock.turns = { stop } as unknown as AgentsDockAPI['turns']
+    useAppStore.setState({ sessions: [owner], snapshots: { [owner.id]: snapshot } })
+    render(<Composer />)
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Stop subagents' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop subagents' })).toBeEnabled())
+    expect(stop).toHaveBeenCalledExactlyOnceWith(owner.id)
+    expect(useAppStore.getState().error).toContain('subagents')
+    act(() => useAppStore.setState({ snapshots: { [owner.id]: { ...snapshot,
+      events: [child, { ...child, id: 'child-end', seq: 2, subagent_status: 'stopped' }] } } }))
+    expect(screen.queryByRole('button', { name: 'Stop subagents' })).not.toBeInTheDocument()
+    expect(useAppStore.getState().activeSessionIds.has(owner.id)).toBe(false)
+  })
+
   it.each(['idle', 'cached', 'syncing', 'reconnecting', 'offline', 'error'] as const)(
     'shows only a neutral sync status for an unknown active origin while chat sync is %s', status => {
       useAppStore.setState({
@@ -1778,6 +1835,8 @@ describe('Composer', () => {
       expect(notice).toHaveAttribute('role', 'status')
       expect(notice).toHaveClass('composer-sync-status')
       expect(notice).not.toHaveClass('chat-reference-warning')
+      expect(notice.closest('.composer-context-row')).not.toBeNull()
+      expect(notice.closest('.composer-scroll-region')).toBeNull()
       expect(screen.queryByText(/An active turn is running while chat sync is not live/)).not.toBeInTheDocument()
 
       act(() => useAppStore.setState({ syncBySession: { 'chat-1': { status: 'live', error: null } } }))
@@ -1786,6 +1845,24 @@ describe('Composer', () => {
       expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
     }
   )
+
+  it('keeps shared-chat sync status outside the compact input without exposing the folder control', () => {
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: { ...window.agentsDock, sharedChat: true } })
+    useAppStore.setState({
+      activeSessionIds: new Set(['chat-1']),
+      syncBySession: { 'chat-1': { status: 'syncing', error: null } }
+    })
+    const view = render(<Composer />)
+    const notice = screen.getByText('Syncing…')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice.closest('.composer-context-row')).not.toBeNull()
+    expect(notice.closest('.composer-scroll-region')).toBeNull()
+    expect(view.container.querySelector('.cwd-pill')).toBeNull()
+    expect(screen.getByPlaceholderText('Message')).toBeEnabled()
+
+    act(() => useAppStore.setState({ syncBySession: { 'chat-1': { status: 'live', error: null } } }))
+    expect(view.container.querySelector('.composer-context-row')).toBeNull()
+  })
 
   it('localizes the neutral unknown-origin sync status without inventing activity for an idle chat', () => {
     setLocale('zh-CN')
@@ -4305,7 +4382,7 @@ describe('Composer', () => {
 
     const starting = screen.getByRole('status', { name: 'Hand this off, starting provider handoff' })
     expect(within(starting).getByText('Starting…')).toBeVisible()
-    expect(within(starting).getByText(/handed to the provider/)).toBeVisible()
+    expect(within(starting).getByText(/waiting for the provider/)).toBeVisible()
     expect(within(starting).queryByTitle('Drag to reorder')).not.toBeInTheDocument()
     expect(within(starting).queryByTitle('Remove from queue')).not.toBeInTheDocument()
     expect(within(starting).queryByTitle('More queue actions')).not.toBeInTheDocument()
@@ -4315,6 +4392,30 @@ describe('Composer', () => {
       'title',
       'A queued message is already starting'
     )
+  })
+
+  it('restores Send now when a stopped queue snapshot still carries an old promotion', async () => {
+    const runNow = vi.fn().mockResolvedValue({ ok: true })
+    window.agentsDock.queue = { runNow, list: vi.fn().mockResolvedValue([]) } as unknown as AgentsDockAPI['queue']
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'claude' }],
+      snapshots: { 'chat-1': {
+        session: { id: 'chat-1', title: 'Chat', backend: 'claude' }, events: [],
+        queuedTurns: [{ queued_id: 'stopped-handoff', session_id: 'chat-1', prompt: 'Check the quota',
+          file_ids: [], position: 1, promoted: true, paused: true, pause_reason: 'stopped' }],
+        files: [], hasMoreEvents: false, filesTotal: 0, cachedAt: 0
+      } }
+    })
+    render(<Composer />)
+    expect(screen.getByText('Paused after Stop')).toBeVisible()
+    expect(screen.queryByText('1 starting')).not.toBeInTheDocument()
+    expect(screen.queryByText(/handed to the provider/)).not.toBeInTheDocument()
+    const send = screen.getByRole('button', { name: 'Send now' })
+    expect(send).toBeEnabled()
+    expect(screen.getByTitle('Remove from queue')).toBeEnabled()
+    await userEvent.click(send)
+    await waitFor(() => expect(runNow).toHaveBeenCalledTimes(1))
+    expect(runNow.mock.calls[0].slice(0, 2)).toEqual(['chat-1', 'stopped-handoff'])
   })
 
   it('keeps a long steer prompt in the bounded queue prompt surface', () => {
@@ -4643,6 +4744,45 @@ describe('Composer', () => {
     await waitFor(() => expect(confirm).toHaveBeenCalledOnce())
     expect(runNow).not.toHaveBeenCalled()
     confirm.mockRestore()
+  })
+
+  it('prefills feedback with the originating chat context even if the selected server changes during IPC', async () => {
+    let resolveEnvironment!: (value: unknown) => void
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    const send = vi.fn()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        native: { openExternal, issueReportEnvironment: () => new Promise(resolve => { resolveEnvironment = resolve }) },
+        turns: { send }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      connected: true,
+      health: { ok: true, server_version: '1.0.9' },
+      sessions: [{ id: 'chat-1', title: 'Private title', backend: 'codex', model: 'gpt-5.6-sol', cwd: '/private/work' }]
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+    const editor = screen.getByPlaceholderText('Message')
+    await user.type(editor, '/feedback')
+    await user.click(screen.getByRole('option', { name: /^Send feedback/ }))
+    act(() => useAppStore.setState({
+      activeProfileId: 'profile-b', health: { ok: true, server_version: 'different-server' }
+    }))
+    await act(async () => resolveEnvironment({
+      platform: 'darwin', systemVersion: '15.7', architecture: 'arm64', appVersion: '1.0.9', appBuild: '1200'
+    }))
+
+    expect(openExternal).toHaveBeenCalledOnce()
+    const url = new URL(openExternal.mock.calls[0][0])
+    expect(url.searchParams.get('extra')).toContain('AgentsServer version: 1.0.9')
+    expect(url.searchParams.get('extra')).toContain('Agent: Codex')
+    expect(url.searchParams.get('extra')).toContain('Model: gpt-5.6-sol')
+    expect(url.toString()).not.toContain('different-server')
+    expect(send).not.toHaveBeenCalled()
+    expect(editor).toHaveValue('')
   })
 
   it('exposes an accessible slash palette and filters commands by provider and server capability', async () => {

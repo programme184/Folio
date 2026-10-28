@@ -20,6 +20,9 @@ import {
   useRef,
   useState
 } from 'react'
+import { createPortal } from 'react-dom'
+import { requestNativeFileOpen } from '../lib/file-actions'
+import { useWorkspaceFilesHost, workspaceFilesKey } from './WorkspaceFilesContext'
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import {
   ChevronRight,
@@ -67,7 +70,7 @@ import {
   readEditorAppearance,
   writeEditorAppearance
 } from '../lib/editor-appearance'
-import { trackEvent } from '../lib/analytics'
+import { trackEvent, trackOperation } from '../lib/analytics'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import {
   workspacePathForAgentFile,
@@ -109,7 +112,6 @@ const DEFAULT_EXPLORER_WIDTH = 232
 const MIN_EXPLORER_WIDTH = 160
 const MIN_EDITOR_CONTENT_WIDTH = 240
 const EXPLORER_RESIZE_HANDLE_WIDTH = 5
-const COMPACT_EXPLORER_PANEL_WIDTH = 440
 const DEFAULT_MARKDOWN_SOURCE_PERCENT = 50
 const MIN_MARKDOWN_SOURCE_PERCENT = 20
 const MAX_MARKDOWN_SOURCE_PERCENT = 80
@@ -292,12 +294,19 @@ export interface WorkspaceEditorProps {
   onReady?: () => void
   onReturnToChat?: () => void
   onAskPaper?: (draft: string) => void
+  filesOnly?: boolean
+  onActivate?: () => void
+  onFileOpen?: () => void
+  /** Keep Chat and files inside one chat pane without nested editor splits. */
+  tabbedPane?: boolean
+  paneActive?: boolean
+  paneFocused?: boolean
 }
 
 const EMPTY_WORKSPACE_DIRECTORIES: string[] = []
 
 function folderLabel(path: string): string {
-  const segments = path.replace(/[\\/]+$/, '').split(/[\\/]/)
+  const segments = path.replace(/[\/]+$/, '').split(/[\/]/)
   return segments[segments.length - 1] || path
 }
 
@@ -312,9 +321,17 @@ export function WorkspaceEditor({
   unavailableMessage,
   onReady,
   onReturnToChat,
-  onAskPaper
+  onAskPaper,
+  filesOnly = false,
+  onActivate,
+  onFileOpen,
+  tabbedPane = false,
+  paneActive = true,
+  paneFocused = true
 }: WorkspaceEditorProps) {
   useLocale()
+  const onFileOpenRef = useRef(onFileOpen)
+  onFileOpenRef.current = onFileOpen
   const gitLabels = useWorkspaceGitLabels()
   const [changesOpen, setChangesOpen] = useState(false)
   const [changesVisited, setChangesVisited] = useState(false)
@@ -329,8 +346,14 @@ export function WorkspaceEditor({
     if (!folder || folder.toLocaleLowerCase() === 'general') return EMPTY_WORKSPACE_DIRECTORIES
     return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
   })
+  const registeredFilesHost = useWorkspaceFilesHost(workspaceFilesKey(profileScope, session.id, cwd))
+  const filesHost = !tabbedPane || (paneActive && paneFocused) ? registeredFilesHost : null
+  const filesHostRef = useRef(filesHost)
+  filesHostRef.current = filesHost
   const maxEditableFileBytes = resolvedWorkspaceFileByteLimit(maxTextFileBytes)
-  const memory = workspaceMemory.get(workspaceKey)
+  // Keep restoration tied to the snapshot that initialized this instance.
+  // An outgoing editor can populate the cache during a replacement commit.
+  const [memory] = useState(() => workspaceMemory.get(workspaceKey))
   const memoryMatches = memory?.sessionId === session.id && memory.cwd === cwd
   const memoryFiles = memoryMatches
     ? memory.openFiles.filter(file => (
@@ -340,9 +363,33 @@ export function WorkspaceEditor({
   const memoryPaths = new Set(memoryFiles.map(file => file.path))
   const [openFiles, setOpenFiles] = useState<OpenWorkspaceFile[]>(memoryFiles)
   const [activePath, setActivePath] = useState<string | null>(() => memory?.activePath && memoryPaths.has(memory.activePath) ? memory.activePath : null)
-  const [secondaryPath, setSecondaryPath] = useState<string | null>(() => memory?.secondaryPath && memoryPaths.has(memory.secondaryPath) ? memory.secondaryPath : null)
-  const [activeGroup, setActiveGroup] = useState<EditorGroupId>(() => memoryMatches ? memory.activeGroup ?? 'primary' : 'primary')
+  const [secondaryPath, setSecondaryPath] = useState<string | null>(() => !tabbedPane && memory?.secondaryPath && memoryPaths.has(memory.secondaryPath) ? memory.secondaryPath : null)
+  const [activeGroup, setActiveGroup] = useState<EditorGroupId>(() => !tabbedPane && memoryMatches ? memory.activeGroup ?? 'primary' : 'primary')
   const [restored, setRestored] = useState(memoryMatches)
+  const pendingPaneOpenRef = useRef<(() => void) | null>(null)
+  const paneOwnershipRef = useRef({ tabbedPane, paneActive, paneFocused, profileScope, sessionId: session.id, cwd, restored })
+  paneOwnershipRef.current = { tabbedPane, paneActive, paneFocused, profileScope, sessionId: session.id, cwd, restored }
+  const paneOwnsCommands = (): boolean => {
+    const owner = paneOwnershipRef.current
+    return !owner.tabbedPane || (owner.paneActive && owner.paneFocused)
+  }
+  const acceptsWorkspaceRequest = (detail?: {
+    sessionId?: string | null; profileId?: string; profileGeneration?: number; serverIdentity?: string | null; cwd?: string
+  }): boolean => {
+    const owner = paneOwnershipRef.current
+    if (detail?.sessionId && detail.sessionId !== owner.sessionId) return false
+    if (!owner.tabbedPane) return true
+    if (!owner.paneActive || (!detail?.sessionId && !owner.paneFocused)) return false
+    return (detail?.profileId === undefined || detail.profileId === owner.profileScope?.profileId)
+      && (detail?.profileGeneration === undefined || detail.profileGeneration === owner.profileScope?.profileGeneration)
+      && (detail?.serverIdentity === undefined || detail.serverIdentity === owner.profileScope?.serverIdentity)
+      && (detail?.cwd === undefined || detail.cwd === owner.cwd)
+  }
+  const afterPaneRestoration = (open: () => void): void => {
+    const owner = paneOwnershipRef.current
+    if (owner.tabbedPane && !owner.restored && owner.profileScope) pendingPaneOpenRef.current = open
+    else open()
+  }
   const [pendingClosePath, setPendingClosePath] = useState<string | null>(null)
   const [pendingReloadPath, setPendingReloadPath] = useState<string | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -377,8 +424,6 @@ export function WorkspaceEditor({
     memoryMatches ? new Map(memory.markdownViewModes ?? []) : new Map()
   ))
   const [splitDragging, setSplitDragging] = useState(false)
-  const [explorerDragging, setExplorerDragging] = useState(false)
-  const [editorPanelWidth, setEditorPanelWidth] = useState(0)
   const paletteInputRef = useRef<HTMLInputElement>(null)
   const paletteDialogRef = useRef<HTMLDivElement>(null)
   const splitTabStripRef = useRef<HTMLElement>(null)
@@ -390,8 +435,6 @@ export function WorkspaceEditor({
     primary: null,
     secondary: null
   })
-  const explorerDragRef = useRef<{ pointerId: number; width: number } | null>(null)
-  const explorerFrameRef = useRef<number | null>(null)
   const markdownScrollSyncRef = useRef<Record<EditorGroupId, MarkdownScrollSyncController> | null>(null)
   if (!markdownScrollSyncRef.current) {
     markdownScrollSyncRef.current = {
@@ -428,6 +471,7 @@ export function WorkspaceEditor({
   const artifactReadSequence = useRef(0)
   const artifactReadRequestsRef = useRef(new Map<string, string>())
   const directoryGeneration = useRef(0)
+  const directoryRootRef = useRef<string | null>(null)
   const directoryLoadsRef = useRef(new Map<string, Promise<void>>())
   const directoriesRef = useRef(directories)
   const revealRequestSequence = useRef(0)
@@ -468,9 +512,9 @@ export function WorkspaceEditor({
     archived: Boolean(session.archived)
   }
 
-  const focusedPath = activeGroup === 'secondary' && secondaryPath ? secondaryPath : activePath
+  const focusedPath = !tabbedPane && activeGroup === 'secondary' && secondaryPath ? secondaryPath : activePath
   const primaryFile = openFiles.find(file => file.path === activePath) ?? null
-  const secondaryFile = openFiles.find(file => file.path === secondaryPath) ?? null
+  const secondaryFile = !tabbedPane ? openFiles.find(file => file.path === secondaryPath) ?? null : null
   const activeFile = openFiles.find(file => file.path === focusedPath) ?? null
   const paletteRenderGroup: EditorGroupId | null = paletteGroup === 'secondary'
     ? secondaryPath ? 'secondary' : activePath ? 'primary' : null
@@ -480,7 +524,7 @@ export function WorkspaceEditor({
   const pendingCloseFile = openFiles.find(file => file.path === pendingClosePath) ?? null
   const pendingReloadFile = openFiles.find(file => file.path === pendingReloadPath) ?? null
   const untitledSaveDirectory = pendingUntitledSave
-    ? directories[pendingUntitledSave.directory]
+    ? directoryAt(directories, pendingUntitledSave.directory)
     : null
   const mutationsAvailable = available === true && capabilityVersion >= 2 && !session.archived
   const creationAvailable = available === true && capabilityVersion >= 4 && !session.archived
@@ -590,16 +634,16 @@ export function WorkspaceEditor({
     return true
   }
 
-  useTransientClose(paletteOpen, cancelPalette)
-  useTransientClose(Boolean(pendingUntitledSave), () => {
+  useTransientClose(paneOwnsCommands() && paletteOpen, cancelPalette)
+  useTransientClose(paneOwnsCommands() && Boolean(pendingUntitledSave), () => {
     if (!pendingUntitledSave?.saving) setPendingUntitledSave(null)
   })
-  useTransientClose(Boolean(pendingCloseFile), () => setPendingClosePath(null))
-  useTransientClose(Boolean(pendingReloadFile), () => setPendingReloadPath(null))
-  useTransientClose(Boolean(pendingRenameEntry), () => {
+  useTransientClose(paneOwnsCommands() && Boolean(pendingCloseFile), () => setPendingClosePath(null))
+  useTransientClose(paneOwnsCommands() && Boolean(pendingReloadFile), () => setPendingReloadPath(null))
+  useTransientClose(paneOwnsCommands() && Boolean(pendingRenameEntry), () => {
     if (!renamingEntry) setPendingRenameEntry(null)
   })
-  useTransientClose(Boolean(pendingDeleteEntry), () => {
+  useTransientClose(paneOwnsCommands() && Boolean(pendingDeleteEntry), () => {
     if (!deletingEntry) setPendingDeleteEntry(null)
   })
 
@@ -607,13 +651,10 @@ export function WorkspaceEditor({
     mountedRef.current = true
     return () => {
       mountedRef.current = false
+      pendingPaneOpenRef.current = null
       if (splitFrameRef.current !== null) {
         window.cancelAnimationFrame(splitFrameRef.current)
         splitFrameRef.current = null
-      }
-      if (explorerFrameRef.current !== null) {
-        window.cancelAnimationFrame(explorerFrameRef.current)
-        explorerFrameRef.current = null
       }
       markdownScrollSyncRef.current?.primary.destroy()
       markdownScrollSyncRef.current?.secondary.destroy()
@@ -630,23 +671,6 @@ export function WorkspaceEditor({
   useEffect(() => {
     writeEditorSplitPreference(editorSplit)
   }, [editorSplit])
-
-  useLayoutEffect(() => {
-    const panel = editorPanelRef.current
-    if (!panel || activePath === null) return
-    const updateWidth = () => {
-      const width = Math.max(0, Math.round(panel.getBoundingClientRect().width))
-      setEditorPanelWidth(current => current === width ? current : width)
-    }
-    updateWidth()
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateWidth)
-      return () => window.removeEventListener('resize', updateWidth)
-    }
-    const observer = new ResizeObserver(updateWidth)
-    observer.observe(panel)
-    return () => observer.disconnect()
-  }, [activePath, filePresentation])
 
   useEffect(() => {
     referenceRequestSequence.current += 1
@@ -701,12 +725,12 @@ export function WorkspaceEditor({
             ? persisted.activePath
             : null
         ))
-        setSecondaryPath(current => current ?? (
+        if (!tabbedPane) setSecondaryPath(current => current ?? (
           persisted.secondaryPath && restoredFiles.some(file => file.path === persisted.secondaryPath)
             ? persisted.secondaryPath
             : null
         ))
-        setActiveGroup(current => current === 'secondary' || persisted.activeGroup !== 'secondary'
+        if (!tabbedPane) setActiveGroup(current => current === 'secondary' || persisted.activeGroup !== 'secondary'
           ? current
           : persisted.secondaryPath ? 'secondary' : 'primary')
         if (!filePresentationTouchedRef.current) {
@@ -717,7 +741,7 @@ export function WorkspaceEditor({
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setRestored(true) })
     return () => { cancelled = true }
-  }, [cwd, memoryMatches, preferenceKey, profileScope, session.id])
+  }, [cwd, memoryMatches, preferenceKey, profileScope, session.id, tabbedPane])
 
   const persistWorkspace = useCallback(() => {
     const currentFiles = openFilesRef.current
@@ -810,7 +834,7 @@ export function WorkspaceEditor({
   }, [persistWorkspace, restored])
 
   const currentEditorGroup = (): EditorGroupId | null => (
-    activeGroupRef.current === 'secondary' && secondaryPathRef.current
+    !paneOwnershipRef.current.tabbedPane && activeGroupRef.current === 'secondary' && secondaryPathRef.current
       ? 'secondary'
       : activePathRef.current ? 'primary' : null
   )
@@ -822,6 +846,7 @@ export function WorkspaceEditor({
   )
 
   const fileWorkspaceOwnsFocus = (): boolean => {
+    if (!paneOwnsCommands()) return false
     const focusedElement = document.activeElement
     if (!(focusedElement instanceof Element)) return false
     if (
@@ -837,6 +862,8 @@ export function WorkspaceEditor({
   }
 
   const workspaceSurfaceOwnsFocus = (): boolean => {
+    if (!paneOwnsCommands()) return false
+    if (paneOwnershipRef.current.tabbedPane) return true
     const focusedElement = document.activeElement
     if (!(focusedElement instanceof Element)) return false
     if (
@@ -846,6 +873,7 @@ export function WorkspaceEditor({
     if (
       splitContainerRef.current?.contains(focusedElement)
       || splitTabStripRef.current?.contains(focusedElement)
+      || filesHostRef.current?.contains(focusedElement)
     ) return true
     return (
       (focusedElement === document.body || focusedElement === document.documentElement)
@@ -854,11 +882,13 @@ export function WorkspaceEditor({
   }
 
   const requestOpenPalette = (returnToChatOnCancel = false) => {
+    if (!paneOwnershipRef.current.tabbedPane) onActivate?.()
     setChangesOpen(false)
     if (available !== true) {
       setWorkspaceError(capabilityMessage)
       return
     }
+    if (!paletteOpenRef.current) trackEvent('open_file_clicked')
     paletteReturnToChatOnCancelRef.current = returnToChatOnCancel
     setWorkspaceError(null)
     setPaletteError(null)
@@ -880,6 +910,11 @@ export function WorkspaceEditor({
   }
 
   const activateFilePath = (path: string, group: EditorGroupId = activeGroupRef.current): void => {
+    if (paneOwnershipRef.current.tabbedPane) group = 'primary'
+    else {
+      onActivate?.()
+      onFileOpenRef.current?.()
+    }
     setChangesOpen(false)
     if (group === 'secondary') {
       secondaryPathRef.current = path
@@ -914,8 +949,8 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const open = (event: Event) => {
-      const targetSessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
-      if (targetSessionId && targetSessionId !== session.id) return
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail
+      if (!acceptsWorkspaceRequest(detail)) return
       if (paletteOpenRef.current) {
         cancelPalette()
         return
@@ -923,7 +958,7 @@ export function WorkspaceEditor({
       if (document.querySelector('[aria-modal="true"]')) return
       const initial = initialWorkspaceOpenPendingRef.current
       initialWorkspaceOpenPendingRef.current = false
-      requestOpenPalette(initial)
+      afterPaneRestoration(() => requestOpenPalette(initial))
     }
     window.addEventListener('agentsdock:open-workspace-file', open)
     return () => window.removeEventListener('agentsdock:open-workspace-file', open)
@@ -931,7 +966,7 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const quickOpen = (event: Event) => {
-      if (event.defaultPrevented) return
+      if (event.defaultPrevented || !paneOwnsCommands()) return
       const detail = (event as CustomEvent<{
         source?: 'contextual' | 'workspace-file'
         sessionId?: string | null
@@ -951,7 +986,7 @@ export function WorkspaceEditor({
       // direct key handler. Claim it for the selected workspace, but never
       // stack quick open on top of an unsaved/reload/rename/delete dialog.
       if (document.querySelector('[aria-modal="true"]')) return
-      requestOpenPalette()
+      afterPaneRestoration(() => requestOpenPalette())
     }
     window.addEventListener('agentsdock:quick-open-active-surface', quickOpen)
     return () => window.removeEventListener('agentsdock:quick-open-active-surface', quickOpen)
@@ -959,7 +994,7 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const dismissFilePicker = () => {
-      if (paletteOpenRef.current) cancelPalette()
+      if (paneOwnsCommands() && paletteOpenRef.current) cancelPalette()
     }
     window.addEventListener('agentsdock:dismiss-workspace-file-picker', dismissFilePicker)
     return () => window.removeEventListener('agentsdock:dismiss-workspace-file-picker', dismissFilePicker)
@@ -967,6 +1002,7 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const navigateWorkspaceTab = (direction: -1 | 1): boolean => {
+      if (!paneOwnsCommands()) return false
       if (paletteOpen || pendingClosePath || pendingReloadPath || document.querySelector('[aria-modal="true"]')) return false
       const target = workspaceTabNavigationTarget(
         changesOpenRef.current ? CHANGES_TAB_TARGET : currentFocusedPath(),
@@ -982,6 +1018,7 @@ export function WorkspaceEditor({
       return true
     }
     const handleShortcut = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !paneOwnsCommands()) return
       const navigation = workspaceTabNavigationShortcut(event)
       if (navigation) {
         const handled = navigation.kind === 'cycle'
@@ -1019,7 +1056,7 @@ export function WorkspaceEditor({
         if (!workspaceSurfaceOwnsFocus()) return
         event.preventDefault()
         event.stopImmediatePropagation()
-        requestOpenPalette()
+        afterPaneRestoration(() => requestOpenPalette())
         return
       }
       if (key === 's' && focusedPath && !changesOpenRef.current) {
@@ -1042,7 +1079,7 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const closeActive = (event: Event) => {
-      if (event.defaultPrevented) return
+      if (event.defaultPrevented || !paneOwnsCommands()) return
       if (changesOpenRef.current) {
         event.preventDefault()
         showChat()
@@ -1075,7 +1112,7 @@ export function WorkspaceEditor({
     const wasOpen = paletteFocusWasOpenRef.current
     paletteFocusWasOpenRef.current = paletteOpen
     if (paletteOpen) {
-      paletteInputRef.current?.focus()
+      if (paneOwnsCommands()) paletteInputRef.current?.focus()
       return
     }
     if (!wasOpen) return
@@ -1108,6 +1145,7 @@ export function WorkspaceEditor({
     const restoreFocus = (attempt: number) => {
       if (
         cancelled
+        || !paneOwnsCommands()
         || focusGeneration !== paletteGenerationRef.current
         || !focusIsNeutral()
       ) return
@@ -1240,7 +1278,9 @@ export function WorkspaceEditor({
         })
     }, paletteQuery ? 180 : 0)
     return () => window.clearTimeout(timer)
-  }, [available, directories, openPathsKey, paletteOpen, palettePathInput, paletteQuery, session.id])
+  // Background Files refreshes must not reset an in-flight picker selection or its error.
+  // Each search completion still reads the latest tree cache through directoriesRef.
+  }, [available, openPathsKey, paletteOpen, palettePathInput, paletteQuery, session.id])
 
   useEffect(() => {
     if (activePath) void ensureFileLoaded(activePath)
@@ -1464,7 +1504,7 @@ export function WorkspaceEditor({
     append = false,
     requestedGeneration = directoryGeneration.current
   ): Promise<void> => {
-    const current = directoriesRef.current[path]
+    const current = directoryAt(directoriesRef.current, path)
     const offset = append ? current?.entries.length ?? 0 : 0
     const loadKey = `${requestedGeneration}\0${path}\0${offset}`
     const pending = directoryLoadsRef.current.get(loadKey)
@@ -1472,8 +1512,8 @@ export function WorkspaceEditor({
     const markLoading = (state: Record<string, DirectoryState>) => ({
       ...state,
       [path]: {
-        entries: append ? state[path]?.entries ?? [] : [],
-        total: append ? state[path]?.total ?? 0 : 0,
+        entries: append ? directoryAt(state, path)?.entries ?? [] : [],
+        total: append ? directoryAt(state, path)?.total ?? 0 : 0,
         loading: true,
         error: null
       }
@@ -1489,11 +1529,13 @@ export function WorkspaceEditor({
           WORKSPACE_DIRECTORY_PAGE_SIZE
         )
         if (!mountedRef.current || requestedGeneration !== directoryGeneration.current) return
+        if (directoryRootRef.current !== null && directoryRootRef.current !== page.root) throw new Error(t('inspector.filesRootChanged'))
+        directoryRootRef.current = page.root
         setWorkspaceRoot(page.root)
         const applyPage = (state: Record<string, DirectoryState>) => ({
           ...state,
           [path]: {
-            entries: append ? mergeWorkspaceEntries(state[path]?.entries ?? [], page.entries) : page.entries,
+            entries: append ? mergeWorkspaceEntries(directoryAt(state, path)?.entries ?? [], page.entries) : page.entries,
             total: page.total,
             loading: false,
             error: null
@@ -1506,8 +1548,8 @@ export function WorkspaceEditor({
         const applyError = (state: Record<string, DirectoryState>) => ({
           ...state,
           [path]: {
-            entries: state[path]?.entries ?? [],
-            total: state[path]?.total ?? 0,
+            entries: directoryAt(state, path)?.entries ?? [],
+            total: directoryAt(state, path)?.total ?? 0,
             loading: false,
             error: errorMessage(error)
           }
@@ -1538,14 +1580,14 @@ export function WorkspaceEditor({
     })
     for (const { directory, child } of steps.slice(0, MAX_AUTO_REVEAL_STEPS)) {
       if (request !== revealRequestSequence.current || requestedGeneration !== directoryGeneration.current) return
-      let state = directoriesRef.current[directory]
+      let state = directoryAt(directoriesRef.current, directory)
       if (state?.loading) {
         const pending = [...directoryLoadsRef.current.entries()].find(([key]) => (
           key.startsWith(`${requestedGeneration}\0${directory}\0`)
         ))?.[1]
         if (pending) await pending
         if (request !== revealRequestSequence.current || requestedGeneration !== directoryGeneration.current) return
-        state = directoriesRef.current[directory]
+        state = directoryAt(directoriesRef.current, directory)
       }
       if (!state || state.error) {
         if (directoryLoadsRemaining <= 0) {
@@ -1559,7 +1601,7 @@ export function WorkspaceEditor({
         }
         directoryLoadsRemaining -= 1
         await loadDirectory(directory, false, requestedGeneration)
-        state = directoriesRef.current[directory]
+        state = directoryAt(directoriesRef.current, directory)
       }
       let extraPages = 0
       while (
@@ -1574,7 +1616,7 @@ export function WorkspaceEditor({
         await loadDirectory(directory, true, requestedGeneration)
         extraPages += 1
         if (request !== revealRequestSequence.current || requestedGeneration !== directoryGeneration.current) return
-        const nextState = directoriesRef.current[directory]
+        const nextState = directoryAt(directoriesRef.current, directory)
         if (!nextState || nextState.entries.length <= state.entries.length) break
         state = nextState
       }
@@ -1610,19 +1652,19 @@ export function WorkspaceEditor({
   }
 
   useEffect(() => {
-    if (available !== true || !focusedPath || activeFile?.origin !== 'workspace') return
+    if (!filesHost || available !== true || !focusedPath || activeFile?.origin !== 'workspace') return
     void revealWorkspaceFile(focusedPath)
-  }, [activeFile?.origin, available, focusedPath, session.id])
+  }, [filesHost, activeFile?.origin, available, focusedPath, session.id])
 
   useEffect(() => {
     if (
-      available !== true
-      || !activeFile
-      || activeFile.origin === 'workspace'
+      !filesHost
+      || available !== true
+      || !cwd
       || directoriesRef.current['']
     ) return
     void loadDirectory('')
-  }, [activeFile?.origin, activeFile?.path, available, session.id])
+  }, [filesHost, available, cwd, session.id])
 
   const toggleDirectory = (path: string) => {
     setExpandedDirectories(current => {
@@ -1631,7 +1673,7 @@ export function WorkspaceEditor({
       else next.add(path)
       return next
     })
-    if (!directories[path]) void loadDirectory(path)
+    if (!directoryAt(directories, path)) void loadDirectory(path)
   }
 
   const reloadExplorerAtRoot = () => {
@@ -1666,6 +1708,7 @@ export function WorkspaceEditor({
     directoryGeneration.current = generation
     revealRequestSequence.current += 1
     directoryLoadsRef.current.clear()
+    directoryRootRef.current = null
     directoriesRef.current = {}
     setDirectories({})
     if (focusedPath && activeFile?.origin === 'workspace') {
@@ -1684,6 +1727,7 @@ export function WorkspaceEditor({
     directoryGeneration.current = generation
     revealRequestSequence.current += 1
     directoryLoadsRef.current.clear()
+    directoryRootRef.current = null
     directoriesRef.current = {}
     setDirectories({})
     setExpandedDirectories(nextExpanded)
@@ -1793,7 +1837,7 @@ export function WorkspaceEditor({
       return next
     })
     for (const candidate of ['', ...directoryAncestors]) {
-      if (!directoriesRef.current[candidate]) void loadDirectory(candidate)
+      if (!directoryAt(directoriesRef.current, candidate)) void loadDirectory(candidate)
     }
   }
 
@@ -1830,14 +1874,14 @@ export function WorkspaceEditor({
     try {
       const result = await window.agentsDock.workspace.create(session.id, path, pending.kind)
       setWorkspaceRoot(result.root)
-      const parentState = directoriesRef.current[pending.directory]
+      const parentState = directoryAt(directoriesRef.current, pending.directory)
       if (parentState && parentState.entries.length < parentState.total) {
         // A locally inserted row would shift the next server offset and skip an
         // entry. Refresh the first page instead and keep server paging exact.
         void loadDirectory(pending.directory, false)
       } else {
         const applyCreatedEntry = (state: Record<string, DirectoryState>) => {
-          const directory = state[pending.directory]
+          const directory = directoryAt(state, pending.directory)
           if (!directory) return state
           const existed = directory.entries.some(entry => entry.path === result.entry.path)
           const entries = sortWorkspaceEntries(mergeWorkspaceEntries(directory.entries, [result.entry]))
@@ -1907,6 +1951,7 @@ export function WorkspaceEditor({
 
   useEffect(() => {
     const createOnActiveSurface = (event: Event) => {
+      if (event.defaultPrevented || !paneOwnsCommands()) return
       if (document.querySelector('[aria-modal="true"]')) {
         event.preventDefault()
         return
@@ -1951,6 +1996,7 @@ export function WorkspaceEditor({
   const requestRenameWorkspaceEntry = (entry: WorkspaceEntry) => {
     setWorkspaceError(null)
     setRenameValue(entry.name)
+    onActivate?.()
     setPendingRenameEntry(entry)
   }
 
@@ -2209,7 +2255,7 @@ export function WorkspaceEditor({
       }
       setWorkspaceError(message)
     }
-    const targetGroup = paletteLease?.targetGroup ?? options.targetGroup ?? (
+    const targetGroup = tabbedPane ? 'primary' : paletteLease?.targetGroup ?? options.targetGroup ?? (
       activePathRef.current && activeGroupRef.current === 'secondary' ? 'secondary' : 'primary'
     )
     if (!paletteLeaseIsCurrent(paletteLease)) return false
@@ -2234,7 +2280,7 @@ export function WorkspaceEditor({
       setPendingClosePath(null)
       setWorkspaceError(null)
       void ensureFileLoaded(path)
-      if (alreadyActive && existing.origin === 'workspace' && available === true) {
+      if (filesHostRef.current && alreadyActive && existing.origin === 'workspace' && available === true) {
         void revealWorkspaceFile(path)
       }
       return true
@@ -2314,7 +2360,7 @@ export function WorkspaceEditor({
         }
         setPendingClosePath(null)
         setWorkspaceError(null)
-        if (available === true) void revealWorkspaceFile(path)
+        if (filesHostRef.current && available === true) void revealWorkspaceFile(path)
         return true
       } catch (error) {
         if (
@@ -2841,25 +2887,27 @@ export function WorkspaceEditor({
   useEffect(() => {
     const open = (event: Event) => {
       const detail = (event as CustomEvent<OpenWorkspacePathDetail>).detail
-      if (!detail || detail.sessionId !== session.id || !detail.path) return
-      initialWorkspaceOpenPendingRef.current = false
-      if (available !== true) {
-        setWorkspaceError(capabilityMessage)
-        return
-      }
-      if (detail.resolve) void openWorkspaceReference(detail)
-      else {
-        const pathInput = resolveWorkspacePathInput(cwd, detail.path)
-        if (pathInput.kind === 'outside-workspace') {
-        setWorkspaceError(t('editor.fileOutsideDirectory'))
+      if (!detail || detail.sessionId !== session.id || !detail.path || !acceptsWorkspaceRequest(detail)) return
+      afterPaneRestoration(() => {
+        initialWorkspaceOpenPendingRef.current = false
+        if (available !== true) {
+          setWorkspaceError(capabilityMessage)
           return
         }
-        if (pathInput.kind === 'absolute-file') {
-          void openAbsoluteFile(pathInput.path, detail)
-          return
+        if (detail.resolve) void openWorkspaceReference(detail)
+        else {
+          const pathInput = resolveWorkspacePathInput(cwd, detail.path)
+          if (pathInput.kind === 'outside-workspace') {
+            setWorkspaceError(t('editor.fileOutsideDirectory'))
+            return
+          }
+          if (pathInput.kind === 'absolute-file') {
+            void openAbsoluteFile(pathInput.path, detail)
+            return
+          }
+          void openFile(pathInput.kind === 'workspace-file' ? pathInput.path : detail.path, undefined, detail)
         }
-        void openFile(pathInput.kind === 'workspace-file' ? pathInput.path : detail.path, undefined, detail)
-      }
+      })
     }
     window.addEventListener('agentsdock:open-workspace-path', open)
     return () => window.removeEventListener('agentsdock:open-workspace-path', open)
@@ -2868,26 +2916,40 @@ export function WorkspaceEditor({
   useEffect(() => {
     const open = (event: Event) => {
       const detail = (event as CustomEvent<OpenAgentFileDetail>).detail
-      if (!detail || detail.sessionId !== session.id || !detail.file?.id) return
-      initialWorkspaceOpenPendingRef.current = false
-      if (!agentFileBelongsToSession(detail.file, session.id)) {
-        setWorkspaceError(t('editor.thatFileBelongsToADifferentChat'))
-        return
-      }
-      const workspacePath = workspacePathForAgentFile(detail.file, cwd)
-      if (workspacePath && available === true) {
-        void openFile(workspacePath, detail.file, detail)
-        return
-      }
-      void openArtifactFile(detail.file, detail)
+      if (!detail || detail.sessionId !== session.id || !detail.file?.id || !acceptsWorkspaceRequest(detail)) return
+      afterPaneRestoration(() => {
+        initialWorkspaceOpenPendingRef.current = false
+        if (!agentFileBelongsToSession(detail.file, session.id)) {
+          setWorkspaceError(t('editor.thatFileBelongsToADifferentChat'))
+          return
+        }
+        const workspacePath = workspacePathForAgentFile(detail.file, cwd)
+        if (workspacePath && available === true) {
+          void openFile(workspacePath, detail.file, detail)
+          return
+        }
+        void openArtifactFile(detail.file, detail)
+      })
     }
     window.addEventListener('agentsdock:open-agent-file', open)
     return () => window.removeEventListener('agentsdock:open-agent-file', open)
   }, [available, cwd, session.id])
 
   useEffect(() => {
-    onReady?.()
-  }, [onReady, session.id])
+    if (!restored && profileScope) return
+    // A split workspace replays its pending open from this callback. Finish
+    // restoring the selected tab first so hydration cannot invalidate that
+    // request, and let mount effect cleanup finish before accepting it.
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      const pending = pendingPaneOpenRef.current
+      pendingPaneOpenRef.current = null
+      if (paneOwnershipRef.current.paneActive) pending?.()
+      onReady?.()
+    })
+    return () => { cancelled = true }
+  }, [onReady, restored, Boolean(profileScope), session.id])
 
   const updateFile = (path: string, update: (file: OpenWorkspaceFile) => OpenWorkspaceFile) => {
     setOpenFiles(current => current.map(file => file.path === path ? update(file) : file))
@@ -2896,7 +2958,7 @@ export function WorkspaceEditor({
   async function refreshWorkspaceEntryAfterSave(path: string): Promise<boolean> {
     const generation = directoryGeneration.current
     const directory = workspaceParentDirectory(path)
-    const state = directoriesRef.current[directory]
+    const state = directoryAt(directoriesRef.current, directory)
     const entryIndex = state?.entries.findIndex(entry => entry.path === path) ?? -1
     if (entryIndex < 0) return true
     const offset = Math.floor(entryIndex / WORKSPACE_DIRECTORY_PAGE_SIZE) * WORKSPACE_DIRECTORY_PAGE_SIZE
@@ -3042,7 +3104,7 @@ export function WorkspaceEditor({
       error: null
     })
     const directory = file.saveDirectory ?? ''
-    if (!directoriesRef.current[directory]) void loadDirectory(directory)
+    if (!directoryAt(directoriesRef.current, directory)) void loadDirectory(directory)
   }
 
   function currentCreationAuthorityError(): string | null {
@@ -3092,7 +3154,7 @@ export function WorkspaceEditor({
       } : current)
       return
     }
-    const knownTarget = directoriesRef.current[pending.directory]?.entries.find(entry => (
+    const knownTarget = directoryAt(directoriesRef.current, pending.directory)?.entries.find(entry => (
       entry.kind === 'file' && entry.name === pending.name.trim()
     ))
     if (knownTarget && !pending.overwriteConfirmed) {
@@ -3161,12 +3223,12 @@ export function WorkspaceEditor({
         }
       }
       assertCreationAuthority()
-      const saved = await window.agentsDock.workspace.write(
+      const saved = await trackOperation('workspace_file_saved', () => window.agentsDock.workspace.write(
         session.id,
         targetPath,
         draft,
         target.revision
-      )
+      ))
       writeCompleted = true
       if (!mountedRef.current) return
       const currentFiles = openFilesRef.current
@@ -3289,13 +3351,13 @@ export function WorkspaceEditor({
     const draft = file.draft
     updateFile(path, current => ({ ...current, saving: true, error: null }))
     try {
-      const saved = file.origin === 'external'
+      const saved = await trackOperation('workspace_file_saved', () => file.origin === 'external'
         ? overwriteConflict
-          ? await window.agentsDock.workspace.overwriteAbsolute(session.id, path, draft)
-          : await window.agentsDock.workspace.writeAbsolute(session.id, path, draft, file.revision)
+          ? window.agentsDock.workspace.overwriteAbsolute(session.id, path, draft)
+          : window.agentsDock.workspace.writeAbsolute(session.id, path, draft, file.revision)
         : overwriteConflict
-          ? await window.agentsDock.workspace.overwrite(session.id, path, draft)
-          : await window.agentsDock.workspace.write(session.id, path, draft, file.revision)
+          ? window.agentsDock.workspace.overwrite(session.id, path, draft)
+          : window.agentsDock.workspace.write(session.id, path, draft, file.revision))
       if (!mountedRef.current) return null
       const stillCurrent = openFilesRef.current.find(current => current.path === path)?.draft === draft
       updateFile(path, current => ({
@@ -3394,26 +3456,13 @@ export function WorkspaceEditor({
   const fileActive = activePath !== null
   const pdfPath = primaryFile?.viewerKind === 'pdf' ? primaryFile.path : null
   const pdfFull = pdfFullPath !== null && pdfFullPath === pdfPath
-  const pdfReader = Boolean(pdfPath) && !onReturnToChat && !changesOpen
-  const editorOnly = fileActive && (Boolean(onReturnToChat) || (pdfReader ? pdfFull : filePresentation === 'full'))
-  const splitActive = !changesOpen && fileActive && !onReturnToChat && (pdfReader ? !pdfFull : filePresentation === 'split')
+  const pdfReader = Boolean(pdfPath) && !tabbedPane && !onReturnToChat && !changesOpen
+  const editorOnly = fileActive && (tabbedPane || Boolean(onReturnToChat) || (pdfReader ? pdfFull : filePresentation === 'full'))
+  const splitActive = !tabbedPane && !changesOpen && fileActive && !onReturnToChat && (pdfReader ? !pdfFull : filePresentation === 'split')
   const splitSide = pdfReader && !pdfFull ? 'right' : editorSplit.side
   const splitStyle = splitActive
     ? { '--workspace-editor-width': `${editorSplit.editorPercent}%` } as CSSProperties
     : undefined
-  const explorerMaximum = maximumExplorerWidth(
-    editorPanelWidth || undefined,
-    editorSplit.explorerWidth
-  )
-  const effectiveExplorerWidth = clampExplorerWidth(
-    editorSplit.explorerWidth,
-    editorPanelWidth || undefined
-  )
-  const compactExplorer = editorPanelWidth > 0
-    && editorPanelWidth <= COMPACT_EXPLORER_PANEL_WIDTH
-  const explorerStyle = {
-    '--workspace-explorer-width': `${effectiveExplorerWidth}px`
-  } as CSSProperties
   const resizeSplitFromKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
     event.preventDefault()
@@ -3466,56 +3515,6 @@ export function WorkspaceEditor({
     setEditorSplit(current => ({ ...current, editorPercent: drag.editorPercent }))
     setSplitDragging(false)
   }
-  const resizeExplorerFromKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-    event.preventDefault()
-    const panelWidth = editorPanelRef.current?.getBoundingClientRect().width
-    const step = event.shiftKey ? 32 : 12
-    setEditorSplit(current => {
-      const currentEffectiveWidth = clampExplorerWidth(current.explorerWidth, panelWidth)
-      return {
-        ...current,
-        explorerWidth: event.key === 'Home'
-          ? MIN_EXPLORER_WIDTH
-          : event.key === 'End'
-            ? maximumExplorerWidth(panelWidth, currentEffectiveWidth)
-            : clampExplorerWidth(
-              currentEffectiveWidth + (event.key === 'ArrowRight' ? step : -step),
-              panelWidth
-            )
-      }
-    })
-  }
-  const updateExplorerFromPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = explorerDragRef.current
-    const panel = editorPanelRef.current
-    if (!drag || drag.pointerId !== event.pointerId || !panel) return
-    const bounds = panel.getBoundingClientRect()
-    if (bounds.width <= 0) return
-    drag.width = clampExplorerWidth(event.clientX - bounds.left, bounds.width)
-    if (explorerFrameRef.current !== null) return
-    explorerFrameRef.current = window.requestAnimationFrame(() => {
-      explorerFrameRef.current = null
-      const latest = explorerDragRef.current
-      if (!latest) return
-      editorPanelRef.current?.style.setProperty('--workspace-explorer-width', `${latest.width}px`)
-    })
-  }
-  const finishExplorerPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = explorerDragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    explorerDragRef.current = null
-    if (explorerFrameRef.current !== null) {
-      window.cancelAnimationFrame(explorerFrameRef.current)
-      explorerFrameRef.current = null
-    }
-    editorPanelRef.current?.style.setProperty('--workspace-explorer-width', `${drag.width}px`)
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId)
-    }
-    setEditorSplit(current => ({ ...current, explorerWidth: drag.width }))
-    setExplorerDragging(false)
-  }
   const chatWorkspaceTab = <button
     key="chat"
     type="button"
@@ -3524,16 +3523,19 @@ export function WorkspaceEditor({
     aria-pressed={activePath === null && !changesOpen}
     aria-controls={chatPanelId}
     aria-label={t('editor.chatPinned')}
-    title={t('editor.chat1')}
+    title={tabbedPane ? `${t('editor.chat')}: ${session.title}` : t('editor.chat1')}
     onClick={() => {
       referenceRequestSequence.current += 1
       openRequestSequence.current += 1
       showChat()
     }}
+    onDoubleClick={tabbedPane && paneActive
+      ? () => window.dispatchEvent(new CustomEvent('agentsdock:rename-chat', { detail: session }))
+      : undefined}
   >
     <MessageSquare size={13} aria-hidden="true" />
-    <span>{t('editor.chat')}</span>
-    <span className="workspace-editor-pinned-label">{t('editor.pinned')}</span>
+    <span>{tabbedPane ? session.title || t('editor.chat') : t('editor.chat')}</span>
+    {!tabbedPane && <span className="workspace-editor-pinned-label">{t('editor.pinned')}</span>}
   </button>
   const handleFileTabWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     if (event.deltaY === 0 || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return
@@ -3609,7 +3611,7 @@ export function WorkspaceEditor({
         </div>
       })}
     </div>
-    <button type="button" className="workspace-editor-command-button" aria-label={t('editor.openFile')} title={t('editor.openFile')} onClick={() => { trackEvent('open_file_clicked'); requestOpenPalette() }}><Search size={13} aria-hidden="true" /><span className="workspace-editor-open-label">{t('editor.openFile')}</span><ShortcutKey shortcut="openWorkspaceFile" /></button>
+    <button type="button" className="workspace-editor-command-button" aria-label={t('editor.openFile')} title={t('editor.openFile')} onClick={() => requestOpenPalette()}><Search size={13} aria-hidden="true" /><span className="workspace-editor-open-label">{t('editor.openFile')}</span><ShortcutKey shortcut="openWorkspaceFile" /></button>
   </div>
 
   const renderEditorGroup = (file: OpenWorkspaceFile | null, group: EditorGroupId) => {
@@ -3620,8 +3622,11 @@ export function WorkspaceEditor({
       && workspacePathIsWithin(file.path, workspaceMutationPath)
     )
     const largeTextPreview = Boolean(file?.truncated)
+    const savedMarkdownMode = file ? markdownViewModes.get(file.path) : undefined
     const markdownMode = file?.viewerKind === 'markdown'
-      ? largeTextPreview ? 'source' : markdownViewModes.get(file.path) ?? 'split'
+      ? largeTextPreview ? 'source' : tabbedPane
+        ? savedMarkdownMode === 'source' ? 'source' : 'preview'
+        : savedMarkdownMode ?? 'split'
       : null
     const setMarkdownMode = (mode: MarkdownViewMode) => {
       if (!file) return
@@ -3644,7 +3649,7 @@ export function WorkspaceEditor({
           ariaLabel={t('editor.contentsOf', { name: editorContentLabel(file) })}
           maxBytes={maxEditableFileBytes}
           initialViewState={viewStatesRef.current.get(editorViewStateKey(group, file.path))}
-          navigationRequest={focused && editorNavigation?.path === file.path ? editorNavigation : undefined}
+          navigationRequest={focused && paneOwnsCommands() && activePath !== null && !changesOpen && editorNavigation?.path === file.path ? editorNavigation : undefined}
           onLimitExceeded={() => updateFile(file.path, current => ({
             ...current,
             error: t('editor.editSizeLimit', { size: formatByteSize(maxEditableFileBytes) })
@@ -3698,19 +3703,19 @@ export function WorkspaceEditor({
               {file.viewerKind === 'pdf' && <PaperMarkBar />}
               {file.viewerKind === 'markdown' && !largeTextPreview && <div className="workspace-editor-markdown-controls" role="group" aria-label={t('editor.markdownViewMode')}>
                 <button type="button" aria-pressed={markdownMode === 'source'} onClick={() => setMarkdownMode('source')}><FileCode2 size={12} />{t('editor.source')}</button>
-                <button type="button" aria-pressed={markdownMode === 'split'} onClick={() => setMarkdownMode('split')}><Columns2 size={12} />{t('editor.split')}</button>
+                {!tabbedPane && <button type="button" aria-pressed={markdownMode === 'split'} onClick={() => setMarkdownMode('split')}><Columns2 size={12} />{t('editor.split')}</button>}
                 <button type="button" aria-pressed={markdownMode === 'preview'} onClick={() => setMarkdownMode('preview')}><Eye size={12} />{t('editor.preview')}</button>
               </div>}
               {file.truncated && file.artifact && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 onClick={() => {
-                  void window.agentsDock.files.open(session.id, file.artifact as AgentFile).catch(error => {
+                  void requestNativeFileOpen(session.id, file.artifact as AgentFile).catch(error => {
                     updateFile(file.path, current => ({ ...current, error: errorMessage(error) }))
                   })
                 }}
               >{t('editor.openCompleteFile')}</button>}
-              {group === 'primary' && !secondaryPath && <button
+              {!tabbedPane && group === 'primary' && !secondaryPath && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 aria-label={t('editor.splitEditorRight')}
@@ -3749,7 +3754,7 @@ export function WorkspaceEditor({
                   onClick={() => setEditorSplit(current => ({ ...current, side: 'right' }))}
                 >{t('editor.editorRight')}</button>
               </div>}
-              {focused && onReturnToChat && <button
+              {focused && !tabbedPane && onReturnToChat && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 aria-label={t('editor.returnToSplitChats')}
@@ -3759,7 +3764,7 @@ export function WorkspaceEditor({
                 <Minimize2 size={13} aria-hidden="true" />
                 <span className="workspace-editor-expand-label">{t('editor.showChats')}</span>
               </button>}
-              {focused && !onReturnToChat && <button
+              {focused && !tabbedPane && !onReturnToChat && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 aria-label={editorOnly ? t('editor.restoreChatSplitView') : t('editor.showFileWorkspaceFullScreen')}
@@ -3982,9 +3987,55 @@ export function WorkspaceEditor({
   </div>
 
   return <>
+    {filesHost && available === true && createPortal(<>
+      {filesOnly && workspaceErrorNotice}
+        <Explorer
+          root={workspaceLabel}
+          cwd={workspaceRoot}
+          workspaceFolders={workspaceFolders}
+          onOpenWorkspaceFolder={path => {
+            if (!path || path === cwd) return
+            void useAppStore.getState().updateSession(session.id, { cwd: path }).then(() => {
+              window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
+            })
+          }}
+          activePath={focusedPath}
+          openPaths={openPaths}
+          directories={directories}
+          expanded={expandedDirectories}
+          mutationsAvailable={mutationsAvailable && !workspaceMutationPath}
+          creationAvailable={creationAvailable && !workspaceMutationPath}
+          pendingCreate={pendingCreate}
+          onOpen={path => void openFile(path)}
+          onOpenToSide={tabbedPane ? undefined : openFileToSide}
+          onToggle={toggleDirectory}
+          onLoadMore={path => void loadDirectory(path, true)}
+          onRefresh={refreshExplorer}
+          onRequestCreate={(kind, target) => {
+            if (kind === 'file') requestNewWorkspaceFile(target)
+            else requestCreateWorkspaceEntry(kind, target)
+          }}
+          onCreateCommit={name => void createWorkspaceEntry(name)}
+          onCreateErrorClear={() => setPendingCreate(current => (
+            current?.error ? { ...current, error: null } : current
+          ))}
+          onCreateCancel={() => {
+            if (!pendingCreate?.creating) setPendingCreate(null)
+          }}
+          onCopyPath={(entry, relative) => void copyWorkspaceEntryPath(entry, relative)}
+          onDownload={entry => void downloadWorkspaceEntry(entry)}
+          onRename={requestRenameWorkspaceEntry}
+          onDelete={entry => {
+            setWorkspaceError(null)
+            onActivate?.()
+            setPendingDeleteEntry(entry)
+          }}
+        />
+    </>, filesHost)}
     <nav
       ref={splitTabStripRef}
-      className={`workspace-editor-tab-strip${splitActive ? ` workspace-editor-tab-strip-split workspace-editor-${splitSide}` : ''}`}
+      hidden={filesOnly || (tabbedPane && !paneActive)}
+      className={`workspace-editor-tab-strip${tabbedPane ? ' workspace-editor-tabbed-pane' : ''}${splitActive ? ` workspace-editor-tab-strip-split workspace-editor-${splitSide}` : ''}`}
       aria-label={t('editor.workspaceTabs')}
       style={splitStyle}
     >
@@ -3995,7 +4046,9 @@ export function WorkspaceEditor({
 
     <section
       ref={splitContainerRef}
-      className={`workspace-editor-content${splitActive ? ` workspace-editor-content-split workspace-editor-${splitSide}${splitDragging ? ' workspace-editor-split-dragging' : ''}` : ''}${editorOnly ? ' workspace-editor-content-editor-only' : ''}`}
+      hidden={filesOnly || (tabbedPane && !paneActive)}
+      inert={tabbedPane && !paneActive ? true : undefined}
+      className={`workspace-editor-content${tabbedPane ? ' workspace-editor-tabbed-pane' : ''}${splitActive ? ` workspace-editor-content-split workspace-editor-${splitSide}${splitDragging ? ' workspace-editor-split-dragging' : ''}` : ''}${editorOnly ? ' workspace-editor-content-editor-only' : ''}`}
       style={splitStyle}
     >
       <div
@@ -4004,6 +4057,7 @@ export function WorkspaceEditor({
         role="region"
         aria-labelledby={chatTabId}
         hidden={editorOnly || changesOpen}
+        inert={tabbedPane && (editorOnly || changesOpen) ? true : undefined}
       >{chatContent}</div>
 
       {changesVisited && profileScope && <div id={`${instanceId}-changes-panel`} className="workspace-changes-host" hidden={!changesOpen}>
@@ -4042,79 +4096,12 @@ export function WorkspaceEditor({
       <div
         ref={editorPanelRef}
         id={editorPanelId}
-        className={`workspace-editor-editor-panel${pdfPath ? ' workspace-editor-pdf-focus' : ''}${explorerDragging ? ' workspace-editor-explorer-dragging' : ''}${compactExplorer ? ' workspace-editor-explorer-compact' : ''}`}
+        className={`workspace-editor-editor-panel${pdfPath ? ' workspace-editor-pdf-focus' : ''}`}
         role="tabpanel"
         tabIndex={-1}
         aria-labelledby={activeFile ? `${instanceId}-${pathToken(activeFile.path)}-tab` : undefined}
         hidden={activePath === null || changesOpen}
-        style={explorerStyle}
       >
-        <Explorer
-          root={workspaceLabel}
-          cwd={workspaceRoot}
-          workspaceFolders={workspaceFolders}
-          onOpenWorkspaceFolder={path => {
-            if (!path || path === cwd) return
-            void useAppStore.getState().updateSession(session.id, { cwd: path }).then(() => {
-              window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
-            })
-          }}
-          activePath={focusedPath}
-          openPaths={openPaths}
-          directories={directories}
-          expanded={expandedDirectories}
-          mutationsAvailable={mutationsAvailable && !workspaceMutationPath}
-          creationAvailable={creationAvailable && !workspaceMutationPath}
-          pendingCreate={pendingCreate}
-          onOpen={path => void openFile(path)}
-          onOpenToSide={openFileToSide}
-          onToggle={toggleDirectory}
-          onLoadMore={path => void loadDirectory(path, true)}
-          onRefresh={refreshExplorer}
-          onRequestCreate={(kind, target) => {
-            if (kind === 'file') requestNewWorkspaceFile(target)
-            else requestCreateWorkspaceEntry(kind, target)
-          }}
-          onCreateCommit={name => void createWorkspaceEntry(name)}
-          onCreateErrorClear={() => setPendingCreate(current => (
-            current?.error ? { ...current, error: null } : current
-          ))}
-          onCreateCancel={() => {
-            if (!pendingCreate?.creating) setPendingCreate(null)
-          }}
-          onCopyPath={(entry, relative) => void copyWorkspaceEntryPath(entry, relative)}
-          onDownload={entry => void downloadWorkspaceEntry(entry)}
-          onRename={requestRenameWorkspaceEntry}
-          onDelete={entry => {
-            setWorkspaceError(null)
-            setPendingDeleteEntry(entry)
-          }}
-        />
-        <div
-          className="workspace-editor-explorer-resize-handle"
-          role="separator"
-          aria-label={t('editor.resizeFileExplorer')}
-          aria-orientation="vertical"
-          aria-valuemin={MIN_EXPLORER_WIDTH}
-          aria-valuemax={Math.round(explorerMaximum)}
-          aria-valuenow={Math.round(effectiveExplorerWidth)}
-          tabIndex={0}
-          onPointerDown={(event: ReactPointerEvent<HTMLDivElement>) => {
-            if (event.button !== 0 || event.isPrimary === false) return
-            event.preventDefault()
-            explorerDragRef.current = {
-              pointerId: event.pointerId,
-              width: effectiveExplorerWidth
-            }
-            event.currentTarget.setPointerCapture?.(event.pointerId)
-            setExplorerDragging(true)
-          }}
-          onPointerMove={updateExplorerFromPointer}
-          onPointerUp={finishExplorerPointer}
-          onPointerCancel={finishExplorerPointer}
-          onLostPointerCapture={finishExplorerPointer}
-          onKeyDown={resizeExplorerFromKeyboard}
-        ><span aria-hidden="true" /></div>
         <div className={`workspace-editor-editor-groups${secondaryFile ? ' workspace-editor-editor-groups-split' : ''}`}>
           {renderEditorGroup(primaryFile, 'primary')}
           {secondaryFile && <>
@@ -4124,7 +4111,7 @@ export function WorkspaceEditor({
         </div>
       </div>
 
-      {!paletteOpen && workspaceErrorNotice}
+      {!filesOnly && !paletteOpen && workspaceErrorNotice}
 
       {paletteOpen && paletteRenderGroup === null && renderFilePalette()}
 
@@ -4161,7 +4148,7 @@ export function WorkspaceEditor({
                 overwriteConfirmed: false,
                 error: null
               } : current)
-              if (!directoriesRef.current[directory]) void loadDirectory(directory)
+              if (!directoryAt(directoriesRef.current, directory)) void loadDirectory(directory)
             }}
           ><FolderOpen size={13} aria-hidden="true" /><span>..</span><small>{t('editor.parentFolder')}</small></button>}
           {untitledSaveDirectory?.entries.map(entry => <button
@@ -4176,7 +4163,7 @@ export function WorkspaceEditor({
                   overwriteConfirmed: false,
                   error: null
                 } : current)
-                if (!directoriesRef.current[entry.path]) void loadDirectory(entry.path)
+                if (!directoryAt(directoriesRef.current, entry.path)) void loadDirectory(entry.path)
                 return
               }
               if (entry.kind === 'file') {
@@ -4321,7 +4308,7 @@ const Explorer = memo(function Explorer({
   creationAvailable: boolean
   pendingCreate: PendingWorkspaceCreate | null
   onOpen: (path: string) => void
-  onOpenToSide: (path: string) => void
+  onOpenToSide?: (path: string) => void
   onToggle: (path: string) => void
   onLoadMore: (path: string) => void
   onRefresh: () => void
@@ -4359,7 +4346,7 @@ const Explorer = memo(function Explorer({
   const creationUnavailableTitle = t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
   return <aside className="workspace-editor-explorer" aria-label={t('editor.fileExplorer')}>
     <header className="workspace-editor-explorer-header">
-      <strong>{t('editor.explorer')}</strong>
+      <strong>{t('inspector.files')}</strong>
       <div className="workspace-editor-explorer-actions">
         <button type="button" aria-label={t('editor.newFile')} title={creationAvailable ? t('editor.newFileN') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('file', null)}><FilePlus2 size={13} /></button>
         <button type="button" aria-label={t('editor.newFolder')} title={creationAvailable ? t('editor.newFolder115') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('directory', null)}><FolderPlus size={13} /></button>
@@ -4419,7 +4406,7 @@ const Explorer = memo(function Explorer({
           : contextEntry.kind === 'directory'
             ? () => onToggle(contextEntry.path)
             : undefined}
-        onOpenToSide={contextEntry.kind === 'file'
+        onOpenToSide={contextEntry.kind === 'file' && onOpenToSide
           ? () => onOpenToSide(contextEntry.path)
           : undefined}
         onRequestCreate={kind => onRequestCreate(kind, contextEntry)}
@@ -4436,17 +4423,11 @@ const Explorer = memo(function Explorer({
     </ContextMenu.Root>
     <p className="workspace-editor-explorer-note">{t('editor.filesAreLoadedFromTheChatWorkingDirectoryOnAgentsserver')}</p>
   </aside>
-}, (previous, next) => (
-  previous.root === next.root
-  && previous.cwd === next.cwd
-  && previous.activePath === next.activePath
-  && previous.openPaths === next.openPaths
-  && previous.directories === next.directories
-  && previous.expanded === next.expanded
-  && previous.mutationsAvailable === next.mutationsAvailable
-  && previous.creationAvailable === next.creationAvailable
-  && previous.pendingCreate === next.pendingCreate
-))
+})
+
+function directoryAt(directories: Record<string, DirectoryState>, path: string): DirectoryState | undefined {
+  return Object.prototype.hasOwnProperty.call(directories, path) ? directories[path] : undefined
+}
 
 function DirectoryRows({
   path,
@@ -4480,9 +4461,8 @@ function DirectoryRows({
   onCreateCancel: () => void
 }) {
   useLocale()
-  const directory = directories[path]
+  const directory = directoryAt(directories, path)
   if (!directory) return <p className="workspace-editor-tree-status"><LoaderCircle className="spin" size={12} /> {t('editor.loadingFiles')}</p>
-  if (directory.error) return <p className="workspace-editor-tree-status workspace-editor-tree-error">{directory.error}</p>
   return <>
     {pendingCreate?.directory === path && <WorkspaceCreateRow
       key={`${pendingCreate.directory}\0${pendingCreate.kind}`}
@@ -4505,7 +4485,7 @@ function DirectoryRows({
         </div>
       }
       if (entry.kind === 'symlink') {
-        return <div key={entry.path} data-workspace-entry-path={entry.path} className="workspace-editor-tree-row workspace-editor-symlink" style={{ paddingLeft: `${21 + depth * 13}px` }} title={t('editor.symlinkUnavailable', { path: entry.path })}><Link2 size={12} /><span>{entry.name}</span></div>
+        return <button type="button" disabled aria-label={t('editor.openNamed', { path: entry.path })} key={entry.path} data-workspace-entry-path={entry.path} className="workspace-editor-tree-row workspace-editor-symlink" style={{ paddingLeft: `${21 + depth * 13}px` }} title={t('editor.symlinkUnavailable', { path: entry.path })}><Link2 size={12} /><span>{entry.name}</span></button>
       }
       const active = activePath === entry.path
       return <button
@@ -4522,7 +4502,9 @@ function DirectoryRows({
       ><FileCode2 size={13} aria-hidden="true" /><span>{entry.name}</span>{openPaths.has(entry.path) && <span className="workspace-editor-open-mark" aria-label={t('editor.openState')}>•</span>}</button>
     })}
     {directory.loading && <p className="workspace-editor-tree-status"><LoaderCircle className="spin" size={12} /> {t('editor.loading')}</p>}
-    {!directory.loading && directory.entries.length < directory.total && <button type="button" className="workspace-editor-load-more" onClick={() => onLoadMore(path)}>{t('editor.loadMore')}</button>}
+    {directory.error && <div className="workspace-editor-tree-status workspace-editor-tree-error" role="alert">{directory.error}<button type="button" className="quiet-button" onClick={() => onLoadMore(path)}>{t('editor.retry')}</button></div>}
+    {!directory.loading && !directory.error && directory.entries.length === 0 && <p className="workspace-editor-tree-status">{t('inspector.filesEmpty')}</p>}
+    {!directory.loading && !directory.error && directory.entries.length < directory.total && <button type="button" className="workspace-editor-load-more" onClick={() => onLoadMore(path)}>{t('editor.loadMore')}</button>}
   </>
 }
 

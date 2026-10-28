@@ -13,6 +13,7 @@ import { createDesktopPaperShelf } from './paper-shelf-desktop'
 import type { PaperMarkStore } from './paper-marks'
 import type { PaperShelf } from './paper-shelf'
 import { translateToChinese } from './paper-translate'
+import { issueReportEnvironment } from './issue-report'
 
 export interface RegisterIpcOptions {
   language?: Pick<LanguageSettings, 'get' | 'set'>
@@ -227,6 +228,10 @@ export function registerIpc(
   handle('servers:switch', (profileId, force) => service.switchServer(profileId, force))
   handle('servers:refresh', (profileId, profileGeneration) => service.refreshServer(profileId, profileGeneration))
   handle('servers:test-connection', input => service.testServerConnection(input))
+  handle('servers:copy-token', profileId => service.copyServerToken(profileId))
+  handle('servers:token-preview', profileId => service.serverTokenPreview(profileId))
+  handle('servers:connection-qr', profileId => service.serverConnectionQr(profileId))
+  handle('servers:save-connection-qr', (profileId, revision) => service.saveServerConnectionQr(profileId, revision))
   handle('servers:restart-status', scope => service.serverRestartStatus(scope))
   handle('servers:restart', (scope, expectedServerInstanceId, forceConfirmation) => forceConfirmation === undefined
     ? service.restartServer(scope, expectedServerInstanceId)
@@ -265,6 +270,7 @@ export function registerIpc(
   handle('sessions:read', (sessionId, seq) => service.markRead(sessionId, seq))
   handle('sessions:unread', sessionId => service.markUnread(sessionId))
   handle('sessions:emergency:acknowledge', (sessionId, alertId) => service.acknowledgeEmergency(sessionId, alertId))
+  handle('sessions:emergency:dismiss-all', (sessionId, throughAlertId) => service.dismissEmergencyAlerts(sessionId, throughAlertId))
   handle('sessions:import-history', (sessionId, force) => service.importHistory(sessionId, force))
   handle('sessions:list-local', () => service.listLocalSessions())
   handle('sessions:bulk-import', items => service.bulkImportSessions(
@@ -297,6 +303,7 @@ export function registerIpc(
   handle('codex:auth:get', scope => service.codexAuth(scope))
   handle('codex:auth:import', (scope, authFile) => service.importCodexAuth(scope, authFile))
   handle('cursor:auth:import', (scope, authFile) => service.importCursorAuth(scope, authFile))
+  handle('codex:auth:reload', scope => service.codexAuth(scope, true))
   handle('codex:provider:get', scope => service.codexProvider(scope))
   handle('codex:provider:models', (scope, sessionId) => service.codexProviderModels(scope, sessionId))
   handle('codex:provider:test', (scope, input) => service.testCodexProvider(scope, input))
@@ -328,6 +335,8 @@ export function registerIpc(
   ))
 
   handle('claude:runtime', sessionId => service.claudeRuntime(sessionId))
+  handle('gemini:runtime', sessionId => service.geminiRuntime(sessionId))
+  handle('gemini:interaction:resolve', (sessionId, interactionId, response) => service.resolveGeminiInteraction(sessionId, interactionId, response))
   handle('claude:goal:set', (sessionId, condition) => service.setClaudeGoal(sessionId, condition))
   handle('claude:goal:clear', sessionId => service.clearClaudeGoal(sessionId))
   handle('claude:context-usage:refresh', sessionId => service.refreshClaudeContextUsage(sessionId))
@@ -484,6 +493,7 @@ export function registerIpc(
   handle('preferences:get-scoped', (scope, key, fallback) => service.scopedPreference(scope, key, fallback))
   handle('preferences:set-scoped', (scope, key, value) => service.putScopedPreference(scope, key, value))
 
+  handle('native:issue-report-environment', issueReportEnvironment)
   handle('native:open-external', async url => {
     const parsed = new URL(url)
     if (!['http:', 'https:', 'mailto:'].includes(parsed.protocol)) throw new Error('Unsupported external URL')

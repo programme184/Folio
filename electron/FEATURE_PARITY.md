@@ -41,6 +41,9 @@ packaged-app smoke pass.
 - [x] Codex-style per-file unified diff review and full-diff copy
 - [x] Per-chat cwd explorer, quick open, pinned Chat/file tabs, lazy syntax
   highlighting, draft recovery, and revision-checked text editing
+- [ ] Details-panel Files tab: folder browsing, editor file actions, remembered
+  Details/Files selection and split-chat ownership implemented; native desktop interaction remains pending because computer
+  control is unavailable. This does not change mobile or server APIs.
 
 ## Runtime and automation
 

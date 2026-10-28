@@ -5,7 +5,7 @@ import { useAppStore } from '../store/app-store'
 import { EmergencyTimelineDock } from './EmergencyTimelineDock'
 
 const originalOpenNotificationRoute = useAppStore.getState().openNotificationRoute
-const originalAcknowledgeEmergency = useAppStore.getState().acknowledgeEmergency
+const originalDismissEmergencyAlerts = useAppStore.getState().dismissEmergencyAlerts
 
 const profile: PublicServerProfile = {
   id: 'profile-a',
@@ -44,7 +44,7 @@ describe('EmergencyTimelineDock', () => {
       sessions: [],
       selectedSessionId: 'current',
       openNotificationRoute: originalOpenNotificationRoute,
-      acknowledgeEmergency: originalAcknowledgeEmergency,
+      dismissEmergencyAlerts: originalDismissEmergencyAlerts,
       error: null
     })
   })
@@ -54,7 +54,7 @@ describe('EmergencyTimelineDock', () => {
     vi.restoreAllMocks()
   })
 
-  it('keeps the newest active emergency reachable without a dismiss control', () => {
+  it('opens other chats without offering to dismiss their alerts from the current chat', () => {
     useAppStore.setState({
       sessions: [
         { id: 'current', title: 'Current chat', backend: 'codex' },
@@ -104,26 +104,26 @@ describe('EmergencyTimelineDock', () => {
     })
   })
 
-  it('prioritizes the focused chat emergency and keeps acknowledgement retryable', async () => {
-    const current = emergencySession('current', 'Focused incident', 'alert-current', '2026-09-05T12:00:00Z')
+  it('dismisses all in the focused chat through the displayed alert and keeps failure retryable', async () => {
+    const current = { ...emergencySession('current', 'Focused incident', 'alert-current', '2026-09-05T12:00:00Z'), unacknowledged_emergency_count: 7 }
     const newer = emergencySession('newer', 'Newer incident', 'alert-newer', '2026-09-05T12:05:00Z')
-    const acknowledgeEmergency = vi.fn()
+    const dismissEmergencyAlerts = vi.fn()
       .mockResolvedValueOnce(false)
       .mockImplementationOnce(async () => {
         act(() => useAppStore.setState({ sessions: [newer] }))
         return true
       })
-    useAppStore.setState({ sessions: [current, newer], acknowledgeEmergency })
+    useAppStore.setState({ sessions: [current, newer], dismissEmergencyAlerts })
     render(<EmergencyTimelineDock sessionId="current" focused />)
 
-    const button = screen.getByRole('button', { name: 'Acknowledge emergency in Focused incident' })
+    const button = screen.getByRole('button', { name: 'Dismiss all emergency alerts in Focused incident' })
     fireEvent.click(button)
-    expect(await screen.findByRole('alert')).toHaveTextContent('Couldn’t acknowledge. Try again.')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Couldn’t dismiss the alerts. Try again.')
     expect(button).toBeEnabled()
     fireEvent.click(button)
 
-    await waitFor(() => expect(acknowledgeEmergency).toHaveBeenCalledTimes(2))
-    expect(acknowledgeEmergency).toHaveBeenLastCalledWith('current', 'alert-current')
+    await waitFor(() => expect(dismissEmergencyAlerts).toHaveBeenCalledTimes(2))
+    expect(dismissEmergencyAlerts).toHaveBeenLastCalledWith('current', 'alert-current')
     expect(await screen.findByRole('region', { name: 'Active emergency in Newer incident' })).toHaveAttribute('data-alert-id', 'alert-newer')
   })
 

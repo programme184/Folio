@@ -15,7 +15,8 @@ export const ANALYTICS_PRIVACY_POLICY_URL = 'https://agentsdock.net/privacy.html
 export const ANALYTICS_CONSENT_CHANGED_EVENT = 'agentsdock:analytics-consent-changed'
 
 export type AnalyticsConsentDecision = 'granted' | 'denied'
-export type AnalyticsEventProps = { success?: boolean }
+export const ANALYTICS_BACKENDS = ['codex', 'claude', 'cursor', 'opencode', 'gemini'] as const
+export type AnalyticsEventProps = { success?: boolean; backend?: typeof ANALYTICS_BACKENDS[number] }
 
 let runtimeDecision: AnalyticsConsentDecision | null = null
 let consentRevision = 0
@@ -40,14 +41,15 @@ function clearLegacyMixpanelPersistence(): void {
 }
 
 export function getAnalyticsConsentDecision(): AnalyticsConsentDecision {
+  // Shared web installs its restricted bridge after module imports. Recheck
+  // this boundary on every event, even if an early import cached "granted".
+  // CI's disposable packaged-app smoke profiles use the same disabled flag.
+  if (window.agentsDock?.native?.analyticsDisabled) {
+    if (runtimeDecision !== 'denied') clearAnalyticsIdentifier()
+    runtimeDecision = 'denied'
+    return 'denied'
+  }
   if (!runtimeDecision) {
-    // CI's packaged-app smoke-test launches run the real binary with a
-    // fresh, disposable user-data directory on every run, so they would
-    // otherwise mint and report a brand-new anonymous install id each time.
-    if (window.agentsDock?.native?.analyticsDisabled) {
-      runtimeDecision = 'denied'
-      return runtimeDecision
-    }
     try {
       const stored = window.localStorage.getItem(CONSENT_STORAGE_KEY)
       // Anonymous aggregate analytics is enabled by default. Preserve an
@@ -105,8 +107,19 @@ function desktopPlatform(): 'mac' | 'windows' | 'linux' | 'desktop' {
   return 'desktop'
 }
 
-function safeEventProps(props?: AnalyticsEventProps): Record<string, boolean> {
-  return typeof props?.success === 'boolean' ? { success: props.success } : {}
+const BACKEND_EVENTS = new Set<string>([
+  'chat_created', 'chat_resumed', 'message_sent', 'message_queued', 'message_steered',
+  'provider_connection_tested', 'provider_connection_saved', 'provider_connection_forgotten',
+  'provider_default_model_saved', 'chat_agent_changed', 'chat_model_changed',
+  'chat_permission_mode_changed', 'imported_chat_api_connected'
+])
+
+function safeEventProps(name: AnalyticsEvent, props?: AnalyticsEventProps): Record<string, boolean | string> {
+  const safe: Record<string, boolean | string> = typeof props?.success === 'boolean' ? { success: props.success } : {}
+  // A provider family is not an API endpoint, account, custom model or profile.
+  // Unknown values and backend metadata on unrelated events are dropped.
+  if (BACKEND_EVENTS.has(name) && props?.backend && ANALYTICS_BACKENDS.includes(props.backend)) safe.backend = props.backend
+  return safe
 }
 
 /** The complete set of analytics events tracked in this app. Extend deliberately. */
@@ -123,10 +136,26 @@ export const ANALYTICS_EVENTS = [
   'scheduled_job_run_requested',
   'scheduled_job_run_cancelled',
   'chat_created',
+  'chat_agent_changed',
+  'chat_model_changed',
+  'chat_permission_mode_changed',
+  'imported_chat_api_connected',
+  'chat_archived',
+  'chat_unarchived',
+  'workspace_files_opened',
+  'file_open_requested',
+  'language_changed',
+  'chat_font_changed',
+  'error_details_copied',
+  'issue_report_opened',
+  'server_restart_requested',
+  'server_restart_reconnected',
   'chats_bulk_imported',
   'chat_resumed',
   'chat_opened',
   'chat_share_opened',
+  'chat_share_snapshot_selected',
+  'chat_share_interactive_selected',
   'chat_share_snapshot_created',
   'chat_share_interactive_created',
   'chat_share_revoked',
@@ -135,8 +164,41 @@ export const ANALYTICS_EVENTS = [
   'chat_reordered',
   'team_network_opened',
   'message_sent',
+  'message_queued',
+  'message_steered',
+  'side_chat_opened',
+  'side_chat_message_submitted',
+  'side_chat_stop_requested',
+  'provider_settings_opened',
+  'provider_connection_tested',
+  'provider_connection_saved',
+  'provider_connection_forgotten',
+  'provider_default_model_saved',
+  'goal_saved',
+  'goal_cleared',
+  'goal_paused',
+  'goal_resumed',
+  'workspace_file_saved',
+  'workspace_changes_opened',
+  'workspace_git_staged',
+  'workspace_git_unstaged',
+  'workspace_git_committed',
+  'workspace_git_conflict_resolved',
+  'workspace_git_continued',
+  'workspace_git_aborted',
+  'attachment_uploaded',
+  'app_update_checked',
+  'app_update_channel_changed',
+  'app_update_install_requested',
+  'app_update_cancelled',
+  'server_update_checked',
+  'server_update_requested',
+  'server_update_now_requested',
+  'server_update_cancelled',
+  'server_update_retry_requested',
   'slash_skill_used',
   'slash_command_used',
+  'builtin_slash_command_used',
   'chat_reference_sent',
   'team_reference_sent',
   'folder_created',
@@ -154,7 +216,26 @@ export const ANALYTICS_EVENTS = [
 
 export type AnalyticsEvent = typeof ANALYTICS_EVENTS[number]
 
+/** One explicit operation, not a subscription/replay. Never serialize its input,
+ * result or error; success means this request resolved, not eventual completion. */
+export async function trackOperation<T>(
+  name: AnalyticsEvent,
+  operation: () => Promise<T>,
+  succeeded: (result: T) => boolean = () => true,
+  props?: Pick<AnalyticsEventProps, 'backend'>
+): Promise<T> {
+  try {
+    const result = await operation()
+    trackEvent(name, { ...props, success: succeeded(result) })
+    return result
+  } catch (error) {
+    trackEvent(name, { ...props, success: false })
+    throw error
+  }
+}
+
 export function trackEvent(name: AnalyticsEvent, props?: AnalyticsEventProps): void {
+  if (!ANALYTICS_EVENTS.includes(name)) return
   const invokedRevision = consentRevision
   if (getAnalyticsConsentDecision() !== 'granted') return
   if (invokedRevision !== consentRevision) return
@@ -169,7 +250,7 @@ export function trackEvent(name: AnalyticsEvent, props?: AnalyticsEventProps): v
       distinct_id: getOrCreateDistinctId(),
       time: Math.floor(Date.now() / 1000),
       platform: desktopPlatform(),
-      ...safeEventProps(props)
+      ...safeEventProps(name, props)
     }
   }]
   const controller = new AbortController()

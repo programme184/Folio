@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { AppState as NativeAppState } from 'react-native'
-import { ServerError } from '../api/AgentServerClient'
+import { AgentServerRequestInterruptedError, AgentServerRequestTimeoutError, ServerError } from '../api/AgentServerClient'
 import { SNAPSHOT_CACHE_VERSION } from '../lib/history'
 import type { FilesPage, Health, Session, Snapshot, TimelinePage } from '../types'
 import { client, useAppStore } from './useAppStore'
@@ -240,6 +240,24 @@ try {
   missingSessions.delete(sessionB.id)
   await useAppStore.getState().syncSelectedSession('foreground')
   assert.equal(useAppStore.getState().syncStatus, 'live', 'an explicit foreground refresh may recover after terminal state changes')
+
+  for (const error of [new AgentServerRequestTimeoutError(), new AgentServerRequestInterruptedError()]) {
+    const successfulPage = client.sessionPage
+    client.sessionPage = async () => { throw error }
+    useAppStore.getState().clearError()
+    const visible = useAppStore.getState().snapshots[sessionB.id]
+    await useAppStore.getState().selectSession(sessionB.id)
+    assert.equal(useAppStore.getState().snapshots[sessionB.id], visible)
+    assert.equal(useAppStore.getState().error, null, 'automatic sync failure stays local to sync status')
+    assert.equal(useAppStore.getState().syncStatus, 'reconnecting')
+    assert.equal(activeRecoveryTimers().length, 1)
+    client.sessionPage = successfulPage
+    activeRecoveryTimers()[0]!.callback()
+    await flushRecoveryWork()
+    assert.equal(useAppStore.getState().syncStatus, 'live', 'native cancellation recovers without a tap')
+    assert.equal(useAppStore.getState().syncError, null)
+    assert.equal(activeRecoveryTimers().length, 0)
+  }
 
   console.log('selected timeline bounded recovery regressions passed')
 } finally {

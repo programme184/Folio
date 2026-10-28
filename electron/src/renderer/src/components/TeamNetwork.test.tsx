@@ -465,6 +465,163 @@ describe('Team Network language', () => {
   })
 })
 
+describe('leaving a hosted Team Space', () => {
+  function prepare(statusValue = managedHostStatus) {
+    useAppStore.setState({ activeProfileId: statusValue.profileId,
+      profileGeneration: statusValue.profileGeneration, switchingProfileId: null,
+      profiles: [{ id: statusValue.profileId, name: 'Local server', serverUrl: 'https://example.test',
+        serverIdentity: statusValue.serverIdentity, hasAccessToken: true, serverSetupComplete: true,
+        connectionState: 'online', cachedUnreadCount: 0 }] })
+    const member: TeamHubStatus = {
+      ...statusValue, designatedHost: false, serverManaged: false, authenticated: false,
+      authenticationMode: undefined, generation: statusValue.generation + 1,
+      hubUrl: '', hubIdentity: null, savedHubIdentity: null, transport: null,
+      principal: null, session: null, canForgetBinding: false, connectionState: 'disconnected',
+      backgroundReconnectAllowed: false
+    }
+    const api = installAPI({ statusValue })
+    api.configureServerRole.mockResolvedValue(member)
+    api.securePeerStatus.mockResolvedValue(secureControl(member))
+    return { api, member }
+  }
+
+  async function openConfirmation() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop hosting…' }))
+    return screen.getByRole('dialog', { name: 'Stop hosting' })
+  }
+
+  it.each([['managed', managedHostStatus], ['legacy', hostStatus]] as const)('lets a %s host stop hosting and submit an invite to another team', async (_kind, statusValue) => {
+    const { api } = prepare(statusValue)
+    api.requestSecurePeerPairing.mockResolvedValue(securePairing({ hostServerIdentity: 'other-host' }))
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    expect(confirmation).toHaveTextContent('Connected servers will lose access to this Team Space.')
+    expect(confirmation).toHaveTextContent('Your chats and stored team data stay on this server.')
+    expect(api.configureServerRole).not.toHaveBeenCalled()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    const invite = await screen.findByRole('textbox', { name: 'Server invite' })
+    expect(screen.getByRole('heading', { name: 'Hosting stopped' })).toBeVisible()
+    expect(screen.getByText('Your chats and stored team data are still on this server. Use an invite below to join another Team Space, or start hosting again.')).toBeVisible()
+    expect(screen.queryByText('The local Team Network was forgotten')).not.toBeInTheDocument()
+    expect(api.configureServerRole).toHaveBeenCalledExactlyOnceWith({
+      profileId: statusValue.profileId, profileGeneration: statusValue.profileGeneration,
+      serverIdentity: statusValue.serverIdentity
+    }, { role: 'member', serverName: statusValue.serverName })
+    expect(api.configureSecurePeerHost).not.toHaveBeenCalled()
+    expect(api.disconnect).not.toHaveBeenCalled()
+    expect(api.forgetBinding).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Stop hosting…' })).not.toBeInTheDocument()
+    fireEvent.change(invite, { target: { value: 'agentsdock://secure-peer/join-other-team' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect this server' }))
+    await waitFor(() => expect(api.requestSecurePeerPairing).toHaveBeenCalledTimes(1))
+    expect(api.requestSecurePeerPairing.mock.calls[0][1].host).toBe('agentsdock://secure-peer/join-other-team')
+  })
+
+  it('can cancel without changing the host, then retry a failed exit', async () => {
+    const { api, member } = prepare()
+    api.configureServerRole.mockRejectedValueOnce(new Error('The server could not be reached.')).mockResolvedValue(member)
+    render(<TeamNetwork onClose={vi.fn()} />)
+    let confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Keep hosting' }))
+    expect(screen.queryByRole('dialog', { name: 'Stop hosting' })).not.toBeInTheDocument()
+    expect(api.configureServerRole).not.toHaveBeenCalled()
+    confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await within(confirmation).findByRole('alert')).toHaveTextContent('The server could not be reached.')
+    expect(screen.queryByRole('textbox', { name: 'Server invite' })).not.toBeInTheDocument()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await screen.findByRole('textbox', { name: 'Server invite' })).toBeVisible()
+    expect(api.configureServerRole).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps exit available if the host listener is disabled or its workspace cannot load', async () => {
+    const { api } = prepare()
+    api.workspace.mockRejectedValue(new Error('Team Space could not be loaded.'))
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await screen.findByRole('textbox', { name: 'Server invite' })).toBeVisible()
+    expect(api.configureSecurePeerHost).not.toHaveBeenCalled()
+  })
+
+  it('shows the join form and preserves the warning when exit committed before its response failed', async () => {
+    const { api, member } = prepare()
+    api.configureServerRole.mockRejectedValue(new Error("Error invoking remote method 'team-hub:server-role:configure': TeamHubStoppedHostingError: The connection closed before confirmation."))
+    api.status.mockResolvedValueOnce(managedHostStatus).mockResolvedValue(member)
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await screen.findByRole('textbox', { name: 'Server invite' })).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('Hosting stopped, but the request reported: The connection closed before confirmation.')
+    expect(screen.getByRole('status')).not.toHaveTextContent('team-hub:server-role:configure')
+    expect(screen.getByRole('status')).not.toHaveTextContent('TeamHubStoppedHostingError')
+    expect(api.configureServerRole).toHaveBeenCalledTimes(1)
+    expect(api.status).toHaveBeenCalledTimes(2)
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    act(() => setLocale('zh-CN'))
+    expect(screen.getByRole('heading', { name: '已停止托管' })).toBeVisible()
+    expect(screen.getByText('你的会话和已有团队数据仍保留在此服务器上。可在下方使用邀请链接加入其他团队空间，或重新开始托管。')).toBeVisible()
+  })
+
+  it('loads a previous remote team if stopping hosting restores an authenticated membership', async () => {
+    const { api, member } = prepare()
+    const restored: TeamHubStatus = { ...member, authenticated: true, transport: 'secure_peer',
+      connectionState: 'authenticated', authenticationMode: 'paired_node',
+      connectionId: 'restored-connection', hostServerIdentity: 'other-host', hubIdentity: 'other-hub',
+      principal: peerStatus.principal, session: peerStatus.session }
+    const restoredWorkspace = workspaceFor(restored)
+    restoredWorkspace.teams[0].display_name = 'Restored team'
+    const restoredDetails = detailsFor(restored)
+    restoredDetails.team.display_name = 'Restored team'
+    api.configureServerRole.mockResolvedValue(restored)
+    api.workspace.mockResolvedValueOnce(workspaceFor(managedHostStatus)).mockResolvedValue(restoredWorkspace)
+    api.team.mockResolvedValueOnce(detailsFor(managedHostStatus)).mockResolvedValue(restoredDetails)
+    api.network.mockResolvedValueOnce(projectionFor(managedHostStatus)).mockResolvedValue(projectionFor(restored))
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await screen.findByText('Restored team')).toBeVisible()
+    expect(screen.queryByText('Team Space could not be loaded.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop hosting…' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Connect server' })).toBeVisible()
+  })
+
+  it('does not change a newly selected server if selection changes before confirmation', async () => {
+    const { api } = prepare()
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    act(() => useAppStore.setState({ activeProfileId: 'other-profile', profileGeneration: 5 }))
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(api.configureServerRole).not.toHaveBeenCalled()
+    expect(within(confirmation).getByRole('alert')).toHaveTextContent('selected server')
+  })
+
+  it('ignores an old role-change reply after the app switches servers', async () => {
+    const { api, member } = prepare()
+    const reply = deferred<TeamHubStatus>()
+    api.configureServerRole.mockReturnValue(reply.promise)
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    await waitFor(() => expect(api.configureServerRole).toHaveBeenCalledTimes(1))
+    act(() => useAppStore.setState({ activeProfileId: 'other-profile', profileGeneration: 5 }))
+    await act(async () => reply.resolve(member))
+    expect(screen.queryByRole('textbox', { name: 'Server invite' })).not.toBeInTheDocument()
+    expect(api.securePeerStatus).not.toHaveBeenCalled()
+  })
+
+  it('keeps the retry path when the returned status still identifies a host', async () => {
+    const { api } = prepare()
+    api.configureServerRole.mockResolvedValue(managedHostStatus)
+    render(<TeamNetwork onClose={vi.fn()} />)
+    const confirmation = await openConfirmation()
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Stop hosting' }))
+    expect(await within(confirmation).findByRole('alert')).toHaveTextContent('The server has not confirmed that hosting stopped.')
+    expect(within(confirmation).getByRole('button', { name: 'Stop hosting' })).toBeEnabled()
+  })
+})
+
 describe('owned Host Rename', () => {
   function prepare() {
     const details = detailsFor(managedHostStatus)

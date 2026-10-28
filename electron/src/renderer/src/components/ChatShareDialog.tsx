@@ -102,6 +102,7 @@ function ChatSharePanel({ target: { session, scope, initialOrigin }, onClose }: 
     finally { operation.current = false; if (mounted.current) { setBusy(false); setBusyMode(null) } }
   }
   const create = (mode: ChatShareMode) => run(async () => {
+    trackEvent(mode === 'snapshot' ? 'chat_share_snapshot_selected' : 'chat_share_interactive_selected')
     let baseUrl: string
     try { baseUrl = normalizeChatShareOrigin(shareAddress) }
     catch { throw new Error(t('chatShare.invalidAddress')) }

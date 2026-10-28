@@ -29,11 +29,12 @@ export function overlayReasoningStream(
     // A snapshot can race its durable completion or terminal delivery. Durable
     // history always wins, including after reconnecting with a stale snapshot.
     if (owner?.kind === 'turn' && (owner.finishedAt || owner.stoppedAt
+      || (item.phase === 'assistant' && owner.assistant.some(event => event.item_id === item.item_id))
       || owner.trace.some(event => (event.type === 'reasoning_summary' || event.type === 'reasoning_text') && event.item_id === item.item_id && event.run_id === item.run_id
         && (event.phase === 'reasoning') === (item.phase === 'reasoning')))) continue
     const event: Event = {
       ...item, id: `stream:${JSON.stringify([item.run_id, item.item_id, ...(item.phase === 'reasoning' ? ['reasoning'] : [])])}`,
-      session_id: sessionId, type: item.phase === 'reasoning' ? 'reasoning_text' : 'reasoning_summary', seq,
+      session_id: sessionId, type: item.phase === 'assistant' ? 'assistant_text' : item.phase === 'reasoning' ? 'reasoning_text' : 'reasoning_summary', seq,
       reasoning_after_seq: item.after_seq
     }
     if (!owner || owner.kind !== 'turn') {
@@ -46,6 +47,14 @@ export function overlayReasoningStream(
           || ['turn_finished', 'turn_stopped', 'turn_failed'].includes(event.type)))) continue
       if (result === rows) result = [...rows]
       result[index] = { ...row, events: [...row.events, event] }
+      continue
+    }
+    if (item.phase === 'assistant') {
+      if (result === rows) result = [...rows]
+      const before = result.findIndex(row => row.seq > seq)
+      result.splice(before < 0 ? result.length : before, 0, {
+        kind: 'message', id: event.id, key: event.id, seq, event, events: [event], role: 'assistant', files: []
+      })
       continue
     }
     const previousAnswer = owner.assistant.findLast(event => !isPublicCommentary(event) && event.seq < seq)

@@ -108,7 +108,12 @@ export function parseCodexAuthStatus(value: unknown): CodexAuthStatus {
   }
   // Pick fields rather than forwarding a provider response, even for errors.
   // In API-key mode there is no email/plan to expose.
+  for (const field of ['login_reload_available', 'login_reload_pending']) {
+    if (item[field] !== undefined && typeof item[field] !== 'boolean') throw new Error('CODEX_AUTH_RESPONSE')
+  }
   return {
+    ...(item.login_reload_available !== undefined ? { login_reload_available: item.login_reload_available as boolean } : {}),
+    ...(item.login_reload_pending !== undefined ? { login_reload_pending: item.login_reload_pending as boolean } : {}),
     available: item.available,
     auth_mode: item.auth_mode as CodexAuthStatus['auth_mode'],
     email: item.auth_mode === 'chatgpt' ? label('email') : null,

@@ -1,4 +1,5 @@
-export type Backend = 'claude' | 'codex' | 'cursor'
+export type Backend = 'claude' | 'codex' | 'cursor' | 'opencode' | 'gemini'
+export type ProviderMode = 'default' | 'custom'
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue }
 
 export type ServerConnectionState = 'online' | 'degraded' | 'connecting' | 'retrying' | 'offline' | 'cached'
@@ -8,6 +9,15 @@ export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-ac
 export type CodexApprovalsReviewer = 'user' | 'auto_review' | 'guardian_subagent'
 export type ClaudePermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk' | 'auto'
 export type CursorPermissionMode = 'default' | 'full_access' | 'plan'
+export type OpenCodePermissionMode = 'default' | 'full_access' | 'plan'
+export type GeminiPermissionMode = 'default' | 'autoEdit' | 'yolo' | 'plan'
+
+export interface GeminiRuntimeSnapshot {
+  available: boolean
+  pending_interactions: ProviderPendingInteraction[]
+  permission_modes?: GeminiPermissionMode[]
+  permission_mode?: GeminiPermissionMode
+}
 export type ProviderJobsAccess = 'full' | 'read_only' | 'blocked'
 export type CodexGoalStatus = 'active' | 'paused' | 'blocked' | 'usageLimited' | 'budgetLimited' | 'complete'
 export type CodexThreadActiveFlag = 'waitingOnApproval' | 'waitingOnUserInput'
@@ -303,6 +313,8 @@ export interface StoredServerProfile {
   id: string
   name: string
   serverURL: string
+  /** Explicitly shared QR addresses, bound to serverIdentity. */
+  serverURLs?: string[]
   serverIdentity: string | null
   serverConfigured: boolean
   /** Selects the only credential record that is authoritative for this profile. */
@@ -323,13 +335,15 @@ export interface PublicServerProfile extends StoredServerProfile {
 
 export interface StoredProfileSettings {
   schemaVersion: 2
-  activeProfileId: string
+  activeProfileId: string | null
   profiles: StoredServerProfile[]
   fontScale: number
 }
 
 export interface ChatDefaults {
   backend: Backend
+  codex_provider?: ProviderMode
+  provider_connection?: ProviderMode
   model: string
   effort: string
   folder: string
@@ -349,6 +363,7 @@ export interface WorkspacePreferences {
 export interface AddServerProfileInput {
   name?: string
   serverURL: string
+  serverURLs?: string[]
   accessToken?: string | null
   serverIdentity?: string | null
   serverConfigured?: boolean
@@ -358,6 +373,7 @@ export interface AddServerProfileInput {
 export interface UpdateServerProfileInput {
   name?: string
   serverURL?: string
+  serverURLs?: string[]
   /** Undefined preserves the stored credential; null or an empty string removes it. */
   accessToken?: string | null
   serverIdentity?: string | null
@@ -371,6 +387,10 @@ export interface Session {
   folder?: string | null
   cwd?: string | null
   backend: Backend
+  codex_provider?: ProviderMode
+  provider_connection?: ProviderMode
+  codex_provider_catalog?: CustomProviderCatalog
+  provider_connection_catalog?: CustomProviderCatalog
   model?: string | null
   effort?: string | null
   system_prompt?: string | null
@@ -385,6 +405,8 @@ export interface Session {
   codex_approvals_reviewer?: CodexApprovalsReviewer | null
   codex_thread_status?: CodexThreadStatus | null
   codex_goal?: CodexGoal | null
+  codex_goal_status?: CodexGoalStatus | null
+  codex_goal_updated_at?: number | null
   codex_goal_time_budget_seconds?: number | null
   codex_pending_interaction_count?: number | null
   codex_needs_user_action?: boolean | null
@@ -394,6 +416,11 @@ export interface Session {
   claude_needs_user_action?: boolean | null
   cursor_session_id?: string | null
   cursor_permission_mode?: CursorPermissionMode | null
+  opencode_session_id?: string | null
+  opencode_permission_mode?: OpenCodePermissionMode | null
+  gemini_session_id?: string | null
+  gemini_permission_mode?: GeminiPermissionMode | null
+  gemini_permission_modes?: GeminiPermissionMode[]
   provider_jobs_access?: ProviderJobsAccess | null
   parent_id?: string | null
   pinned?: boolean | null
@@ -412,6 +439,10 @@ export interface Session {
   last_read_agent_event_seq?: number | null
   last_read_agent_event_at?: string | null
   manual_unread?: boolean | null
+  unread_notification_level?: 'normal' | 'important' | 'emergency' | null
+  unread_notification_seq?: number | null
+  latest_notification_level?: 'normal' | 'important' | 'emergency' | null
+  latest_notification_message?: string | null
   emergency_alert?: EmergencyAlert | null
   unacknowledged_emergency_count?: number | null
 }
@@ -455,7 +486,21 @@ export interface RuntimeDiagnostic {
   last_error?: string | null
   last_error_at?: string | null
 }
+export interface CustomProviderCatalog {
+  configured: boolean
+  available: boolean
+  model?: string | null
+  base_url?: string | null
+  models?: RuntimeOption[]
+  efforts?: RuntimeOption[]
+  model_efforts?: Record<string, RuntimeOption[]>
+  default_model?: string | null
+  default_effort?: string | null
+}
 export interface RuntimeBackendCatalog {
+  permission_modes?: string[]
+  native_credentials_present?: boolean
+  custom_provider?: CustomProviderCatalog
   models: RuntimeOption[]
   efforts: RuntimeOption[]
   available?: boolean
@@ -599,7 +644,7 @@ export interface AgentCrossChatRoute {
 
 export interface AgentCrossChatRoutesSnapshot {
   routes: AgentCrossChatRoute[]
-  max_routes: number
+  max_routes: number | null
 }
 
 export interface DeleteAgentCrossChatRouteResponse {
@@ -864,6 +909,7 @@ export interface Event {
   text?: string | null
   result_text?: string | null
   message?: string | null
+  notification_level?: 'normal' | 'important' | 'emergency' | null
   error?: JsonValue
   emergency_alert?: EmergencyAlert | null
   emergency_alert_id?: string | null
@@ -937,6 +983,7 @@ export interface Event {
   stopped?: boolean | null
   codex_thread_status?: CodexThreadStatus | null
   codex_goal?: CodexGoal | null
+  goal?: CodexGoal | null
   /** Durable normalized/native Codex usage; every field is additive. */
   token_usage?: CodexTokenUsage | null
   token_usage_before?: CodexTokenUsage | null
@@ -1171,6 +1218,10 @@ export interface AgentTeamMailCapability extends ServerCapability {
 }
 
 export interface HealthCapabilities {
+  opencode_backend?: { available?: boolean; version?: number; permission_modes?: string[] }
+  gemini_backend?: { available?: boolean; version?: number; client_capability?: string; permission_modes?: string[]; features?: Record<string, boolean> }
+  codex_provider_v1?: { available?: boolean; per_chat?: boolean; per_chat_models?: boolean }
+  provider_connections_v1?: { available?: boolean; per_chat?: boolean; backends?: string[] }
   scheduled_jobs?: ScheduledJobsCapability
   agent_emergency_alerts_v1?: AgentEmergencyAlertsCapability
   provider_jobs_access_control_v1?: ProviderJobsAccessControlCapability
@@ -1314,6 +1365,8 @@ export interface CreateSessionInput {
   folder: string
   cwd: string
   backend: Backend
+  codex_provider?: ProviderMode
+  provider_connection?: ProviderMode
   model?: string | null
   effort?: string | null
   system_prompt?: string | null
@@ -1323,6 +1376,8 @@ export interface CreateSessionInput {
   codex_approvals_reviewer?: CodexApprovalsReviewer | null
   claude_permission_mode?: ClaudePermissionMode | null
   cursor_permission_mode?: CursorPermissionMode | null
+  opencode_permission_mode?: OpenCodePermissionMode | null
+  gemini_permission_mode?: GeminiPermissionMode | null
   provider_jobs_access?: ProviderJobsAccess
   providerId?: string
 }

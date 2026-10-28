@@ -1,6 +1,8 @@
 import type { AgentsDockAPI } from '@shared/ipc'
+import type { CodexPendingInteraction } from '@shared/types'
 import { secureRandomUUID } from '../lib/browser-crypto'
 import { copySharedChatText } from './clipboard'
+import { trackSharedChatEvent } from './analytics'
 import { isSharedFileId, isSharedVideoId, projectSharedVideoEvents } from './videos'
 import type { AgentFile, AppEventMap, ClaudeRuntimeSnapshot, CodexGoalSnapshot, CodexRuntimeSnapshot, Event, Health, Job, LanguageSettingsSnapshot, NativeFileRef, QueuedTurn, RuntimeCatalog, Session, SessionSnapshot, TimelinePage, TimelineTracePage, ViewState } from '@shared/types'
 
@@ -16,6 +18,7 @@ export interface SharedChatState {
   jobs: Job[]
   codex_runtime: CodexRuntimeSnapshot | null
   claude_runtime: ClaudeRuntimeSnapshot | null
+  gemini_runtime?: { available: boolean; pending_interactions: CodexPendingInteraction[] }
   health: Health | null
   runtime_catalog: RuntimeCatalog | null
   hasMoreEvents?: boolean
@@ -147,8 +150,9 @@ export function createSharedChatBridge(
     }
     state = discoveredCatalog ? { ...next, runtime_catalog: discoveredCatalog } : next
     receive(state)
+    trackSharedChatEvent('shared_chat_interactive_activated', prefix)
     emit('server:sessions', { profileId: 'shared-chat', profileGeneration: 1, serverIdentity: prefix, sessions: [next.session] })
-    if (next.session.backend === 'codex' || next.session.backend === 'claude') emit('server:provider-runtime', {
+    if (['codex', 'claude', 'gemini'].includes(next.session.backend)) emit('server:provider-runtime', {
       profileId: 'shared-chat', profileGeneration: 1, serverIdentity: prefix,
       event: { type: 'provider_runtime_changed', session_id: next.session.id, backend: next.session.backend, runtime: 'context_usage', ephemeral: true }
     })
@@ -279,12 +283,16 @@ export function createSharedChatBridge(
       const result = await write('/prompts', { method: 'POST', body: JSON.stringify({ prompt: input.prompt, upload_ids: input.fileIds, request_id: requestId }) }, value =>
         value?.accepted === true && value.request_id === requestId && typeof value.queued === 'boolean'
         && (value.queued ? typeof value.queued_id === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(value.queued_id) : value.queued_id === undefined))
+      // Count only a validated server acceptance, before optional refresh can
+      // fail. The tab-local receipt marker also excludes replayed acknowledgments.
+      trackSharedChatEvent('shared_chat_message_sent', prefix, requestId)
       await reconcileAccepted()
       return { ...result, session: current().session }
     }, stop: async (id: string) => { exact(id); return action('turn.stop') } },
     queue: { list: async (id: string) => { exact(id); return current().queue }, update: async (id: string, queuedId: string, prompt: string, chats?: unknown[], _capabilities?: string[], teams?: unknown[], revision?: number) => { exact(id); if (chats?.length || teams?.length) denied(); await action('queue.edit', { id: queuedId, prompt, ...(revision === undefined ? {} : { expected_message_revision: revision }) }); return true }, remove: async (id: string, queuedId: string) => { exact(id); await action('queue.delete', { id: queuedId }); return true }, move: async (id: string, queuedId: string, direction: string, adjacent?: string) => { exact(id); await action('queue.move', { id: queuedId, direction, ...(adjacent ? { expected_adjacent_queued_id: adjacent } : {}) }); return current().queue }, runNow: async (id: string, queuedId: string) => { exact(id); return action('queue.run_now', { id: queuedId }) } },
     codex: group({ runtime: async (id: string) => { exact(id); return current().codex_runtime }, permissionProfiles: async (id: string) => { exact(id); return current().codex_runtime?.permission_profiles ?? [] }, goal: async (id: string) => { exact(id); return current().goal }, setGoal: async (id: string, input: Record<string, unknown>) => { exact(id); await action('goal.set', input); return current().goal }, clearGoal: async (id: string) => { exact(id); await action('goal.delete'); return current().goal }, resolveInteraction: async (id: string, interactionId: string, response: unknown) => { exact(id); return action('approval.respond', { backend: 'codex', id: interactionId, response }) } }),
     claude: group({ runtime: async (id: string) => { exact(id); return current().claude_runtime }, refreshContextUsage: async (id: string) => { exact(id); return current().claude_runtime }, resolveInteraction: async (id: string, interactionId: string, response: unknown) => { exact(id); return action('approval.respond', { backend: 'claude', id: interactionId, response }) } }),
+    gemini: group({ runtime: async (id: string) => { exact(id); return current().gemini_runtime ?? { available: false, pending_interactions: [] } }, resolveInteraction: async (id: string, interactionId: string, response: unknown) => { exact(id); return action('approval.respond', { backend: 'gemini', id: interactionId, response }) } }),
     jobs: { list: async () => current().jobs, runs: async (id: string, jobId: string, beforeSeq?: number, limit = 25, timelineGroupId?: string) => { exact(id); return action('jobs.runs', { id: jobId, before_seq: beforeSeq, limit, timeline_group_id: timelineGroupId }, true) }, create: async (input: { session_id: string } & Record<string, unknown>) => { exact(input.session_id); const { session_id: _id, ...payload } = input; return (await action('job.create', payload))?.job }, update: async (id: string, patch: Record<string, unknown>) => (await action('job.update', { id, ...patch }))?.job, remove: async (id: string) => { await action('job.delete', { id }); return true }, run: async (id: string) => action('job.run', { id }) },
     pins: group({ list: async () => [] }),
     handoffs: group({ get: async (id: string) => {

@@ -1,4 +1,4 @@
-import { createContext, forwardRef, useContext, type ComponentRef, type ReactNode } from 'react'
+import { Children, createContext, forwardRef, useContext, type ComponentRef, type ReactNode } from 'react'
 import {
   StyleSheet,
   Text as NativeText,
@@ -9,7 +9,9 @@ import {
   type TextStyle,
 } from 'react-native'
 import { APP_FONT_SCALE_DEFAULT, scaleAppFont } from '../lib/typography'
+import { translate } from '../i18n'
 import { useAppStore } from '../store/useAppStore'
+import { useLanguageStore } from '../store/useLanguageStore'
 
 const DEFAULT_NATIVE_TEXT_SIZE = 14
 const AppFontScaleContext = createContext(APP_FONT_SCALE_DEFAULT)
@@ -35,17 +37,30 @@ function scaledStyle(style: StyleProp<TextStyle> | undefined, scale: number, fal
 }
 
 export type Text = ComponentRef<typeof NativeText>
-export const Text = forwardRef<Text, TextProps>(function AppText({ children, style, ...props }, ref) {
+type AppTextProps = TextProps & { localize?: boolean }
+
+function LocalizedContent({ children }: { children: ReactNode }) {
+  const locale = useLanguageStore(state => state.locale)
+  return <>{Children.map(children, child => typeof child === 'string' ? translate(child, locale) : child)}</>
+}
+
+export const Text = forwardRef<Text, AppTextProps>(function AppText({ children, style, localize = false, ...props }, ref) {
   const fontScale = useContext(AppFontScaleContext)
   const inheritedSize = useContext(InheritedTextSizeContext)
   const currentSize = baseTextSize(style, inheritedSize)
   return <InheritedTextSizeContext.Provider value={currentSize}>
-    <NativeText ref={ref} style={scaledStyle(style, fontScale, inheritedSize)} {...props}>{children}</NativeText>
+    <NativeText ref={ref} style={scaledStyle(style, fontScale, inheritedSize)} {...props}>
+      {localize ? <LocalizedContent>{children}</LocalizedContent> : children}
+    </NativeText>
   </InheritedTextSizeContext.Provider>
 })
 
 export type TextInput = ComponentRef<typeof NativeTextInput>
-export const TextInput = forwardRef<TextInput, TextInputProps>(function AppTextInput({ style, ...props }, ref) {
+export const TextInput = forwardRef<TextInput, TextInputProps>(function AppTextInput({ style, placeholder, accessibilityLabel, ...props }, ref) {
   const fontScale = useContext(AppFontScaleContext)
-  return <NativeTextInput ref={ref} style={scaledStyle(style, fontScale, DEFAULT_NATIVE_TEXT_SIZE)} {...props} />
+  const locale = useLanguageStore(state => state.locale)
+  return <NativeTextInput ref={ref} style={scaledStyle(style, fontScale, DEFAULT_NATIVE_TEXT_SIZE)}
+    placeholder={placeholder ? translate(placeholder, locale) : placeholder}
+    accessibilityLabel={accessibilityLabel ? translate(accessibilityLabel, locale) : accessibilityLabel}
+    {...props} />
 })

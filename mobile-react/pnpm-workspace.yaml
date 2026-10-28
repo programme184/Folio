@@ -1,4 +1,5 @@
 allowBuilds:
   esbuild: true
 patchedDependencies:
+  expo@57.0.4: patches/expo@57.0.4.patch
   react-native-keyboard-controller@1.21.9: patches/react-native-keyboard-controller@1.21.9.patch

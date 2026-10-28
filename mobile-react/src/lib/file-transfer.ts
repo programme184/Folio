@@ -2,14 +2,15 @@ import type { AgentFile, WorkspaceEntry } from '../types'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { inferredMobileFileContentType } from './file-viewer'
 
-export type FileTransferAction = 'download' | 'share'
-export type FileTransferPhase = 'choosing' | 'downloading' | 'saving' | 'sharing' | 'done' | 'cancelled' | 'error'
+export type FileTransferAction = 'download' | 'share' | 'save-photos'
+export type FileTransferPhase = 'choosing' | 'permission' | 'downloading' | 'saving' | 'sharing' | 'done' | 'cancelled' | 'error'
 export interface FileTransferState {
   phase: FileTransferPhase
   filename: string
   bytesWritten?: number
   totalBytes?: number
   message?: string
+  canOpenSettings?: boolean
 }
 export interface FileTransferRequest {
   action: FileTransferAction
@@ -24,6 +25,8 @@ interface TransferFile { uri: string; exists: boolean; size: number | null }
 export interface FileTransferDependencies<Folder, File extends TransferFile> {
   pickDirectory: () => Promise<Folder>
   sharingAvailable: () => Promise<boolean>
+  preparePhotoSave: () => Promise<void>
+  saveToPhotos: (file: File) => Promise<void>
   createTemporaryFile: (filename: string) => Promise<File>
   download: (source: ReturnType<FileTransferRequest['source']>, file: File, signal: AbortSignal, onProgress: (progress: { bytesWritten: number; totalBytes: number }) => void) => Promise<File>
   save: (file: File, folder: Folder, filename: string) => Promise<string>
@@ -38,10 +41,10 @@ export function createFileTransferRunner<Folder, File extends TransferFile>(depe
   return async (request: FileTransferRequest, signal: AbortSignal, update: (state: FileTransferState) => void): Promise<void> => {
     if (active) throw new Error('Another file is being saved or shared. Finish or cancel that transfer first.')
     if (!request.isCurrent() || signal.aborted) return
+    const filename = request.action === 'save-photos' ? photoSaveFilename(request.filename, request.contentType) : safeDownloadFilename(request.filename)
     active = true
     let temporary: File | undefined
     let shared = false
-    const filename = safeDownloadFilename(request.filename)
     const checkCurrent = () => {
       if (signal.aborted || !request.isCurrent()) throw new FileTransferCancelled()
     }
@@ -54,6 +57,9 @@ export function createFileTransferRunner<Folder, File extends TransferFile>(depe
       if (request.action === 'download') {
         report('choosing')
         folder = await dependencies.pickDirectory()
+      } else if (request.action === 'save-photos') {
+        report('permission', { message: 'Checking permission to save to Photos...' })
+        await dependencies.preparePhotoSave()
       } else {
         report('downloading', { bytesWritten: 0, totalBytes: validByteCount(request.expectedBytes) })
         if (!await dependencies.sharingAvailable()) throw new Error('File sharing is unavailable on this device. Use Download to choose a folder instead.')
@@ -80,6 +86,10 @@ export function createFileTransferRunner<Folder, File extends TransferFile>(depe
         report('saving')
         const savedName = await dependencies.save(downloaded, folder as Folder, filename)
         report('done', { message: `Saved ${savedName} to the selected folder.` })
+      } else if (request.action === 'save-photos') {
+        report('saving', { message: 'Saving to Photos...' })
+        await dependencies.saveToPhotos(downloaded)
+        report('done', { message: 'Saved to Photos.' })
       } else {
         report('sharing')
         await dependencies.share(downloaded, request)
@@ -149,7 +159,35 @@ export function numberedDownloadFilename(filename: string, attempt: number): str
 }
 
 export function isFileTransferBusy(state: FileTransferState | null): boolean {
-  return Boolean(state && ['choosing', 'downloading', 'saving', 'sharing'].includes(state.phase))
+  return Boolean(state && ['choosing', 'permission', 'downloading', 'saving', 'sharing'].includes(state.phase))
+}
+
+const PHOTO_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/heic': 'heic', 'image/heif': 'heif', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/tiff': 'tiff',
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/x-m4v': 'm4v', 'video/webm': 'webm',
+}
+
+export function canSaveToPhotos(filename: string, contentType?: string | null): boolean {
+  const type = contentType?.split(';')[0].trim().toLowerCase()
+  const inferred = inferredMobileFileContentType(filename)
+  if (type === 'image/svg+xml' || inferred === 'image/svg+xml') return false
+  return Boolean(PHOTO_EXTENSIONS[type || ''] || PHOTO_EXTENSIONS[inferred])
+}
+
+function photoSaveFilename(filename: string, contentType: string): string {
+  if (!canSaveToPhotos(filename, contentType)) throw new Error('This format cannot be saved to Photos. Use Download instead.')
+  const safe = safeDownloadFilename(filename)
+  if (PHOTO_EXTENSIONS[inferredMobileFileContentType(safe)]) return safe
+  const extension = PHOTO_EXTENSIONS[contentType.split(';')[0].trim().toLowerCase()]
+  return `${safe}.${extension}`
+}
+
+export class PhotoLibraryPermissionError extends Error {
+  constructor() {
+    super('Allow adding photos in Settings, then try again.')
+    this.name = 'PhotoLibraryPermissionError'
+  }
 }
 
 export function isFileTransferCancellation(cause: unknown): boolean {

@@ -5,7 +5,7 @@ import type { VideoThumbnail } from 'expo-video'
 import { Download, File, Images, Maximize2, Pin, Play } from 'lucide-react-native'
 import type { AgentServerClient } from '../api/AgentServerClient'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import { Text } from './AppText'
 import { DeferredLoadBoundary } from './DeferredLoadBoundary'
 import type { AgentFile } from '../types'
@@ -82,7 +82,7 @@ export function MediaGrid({ files, sessionId, compact = false, ownerKey = 'stand
   if (!files.length) return null
   if (!connectionReady) {
     return <View style={[styles.unavailable, { backgroundColor: colors.raised, borderColor: colors.border }]}>
-      <Text style={[styles.unavailableText, { color: colors.muted }]}>{connecting || switchingProfileId ? 'Verifying media access…' : 'Media is available after this server reconnects.'}</Text>
+      <Text style={[styles.unavailableText, { color: colors.muted }]} localize>{connecting || switchingProfileId ? 'Verifying media access…' : 'Media is available after this server reconnects.'}</Text>
     </View>
   }
   return <ScopedMediaGrid
@@ -309,7 +309,7 @@ function VideoThumbnailPreview({ file, connection, enabled }: { file: AgentFile;
   const rejectThumbnail = useCallback(() => setFailed(true), [])
 
   if (thumbnail) return <Image source={thumbnail} contentFit="contain" style={StyleSheet.absoluteFill} transition={100} />
-  if (Platform.OS === 'ios' || !enabled || failed) return <View style={[styles.center, { backgroundColor: '#090a0b' }]}><File size={22} color={colors.muted} /></View>
+  if (!enabled || failed) return <View style={[styles.center, { backgroundColor: '#090a0b' }]}><File size={22} color={colors.muted} /></View>
   return <QueuedVideoThumbnailLoader file={file} connection={connection} onThumbnail={acceptThumbnail} onFailure={rejectThumbnail} />
 }
 
@@ -446,31 +446,31 @@ function connectionIsCurrent(connection: MediaConnectionScope): boolean {
 
 const styles = StyleSheet.create({
   wrap: { width: '100%', gap: 8 },
-  unavailable: { width: '100%', minHeight: 52, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
+  unavailable: { width: '100%', minHeight: 52, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
   unavailableText: { fontSize: 11, textAlign: 'center' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: TILE_GAP },
   compactMediaList: { width: '100%', gap: TILE_GAP },
-  compactTile: { width: '100%', minHeight: 112, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 8, flexDirection: 'row', alignItems: 'stretch', gap: 10 },
+  compactTile: { width: '100%', minHeight: 112, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 8, flexDirection: 'row', alignItems: 'stretch', gap: 10 },
   compactPreviewButton: { width: '38%', minWidth: 96, maxWidth: 148, alignSelf: 'center' },
-  compactPreview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', overflow: 'hidden', borderRadius: 5, backgroundColor: '#090a0b' },
+  compactPreview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', overflow: 'hidden', borderRadius: radius.md, backgroundColor: '#090a0b' },
   compactDetails: { flex: 1, minWidth: 0, justifyContent: 'space-between' },
   compactIdentity: { flex: 1, minHeight: 50, paddingTop: 2 },
   compactTitle: { fontSize: 12, lineHeight: 16, fontWeight: '800' },
   compactActions: { minHeight: 44, flexDirection: 'row', alignItems: 'center' },
-  tile: { borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
+  tile: { borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   preview: { width: '100%', aspectRatio: 16 / 9, position: 'relative', backgroundColor: '#090a0b' },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  playBadge: { position: 'absolute', left: '50%', top: '50%', marginLeft: -19, marginTop: -19, width: 38, height: 38, borderRadius: 19, backgroundColor: '#00000099', alignItems: 'center', justifyContent: 'center' },
+  playBadge: { position: 'absolute', left: '50%', top: '50%', marginLeft: -19, marginTop: -19, width: 38, height: 38, borderRadius: radius.round, backgroundColor: '#00000099', alignItems: 'center', justifyContent: 'center' },
   caption: { paddingHorizontal: 9, paddingTop: 7, minHeight: 48 },
   fileTitle: { fontSize: 12, fontWeight: '700' },
   fileMeta: { fontSize: 10, marginTop: 2 },
   tileActions: { minHeight: 44, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 2 },
   fileList: { gap: 6 },
-  fileRow: { minHeight: 48, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 5 },
-  fileIcon: { width: 32, height: 32, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
+  fileRow: { minHeight: 48, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 7, flexDirection: 'row', alignItems: 'center', gap: 5 },
+  fileIcon: { width: 32, height: 32, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   fileIdentity: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: 'center', paddingVertical: 7 },
   fileRowTitle: { fontSize: 11.5, fontWeight: '700' },
   moreRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  moreButton: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  moreButton: { minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
   moreText: { fontSize: 11, fontWeight: '700' },
 })

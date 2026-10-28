@@ -6,6 +6,7 @@ import { createSharedChatBridge } from './bridge'
 import { receiveSharedChatConnection, receiveSharedChatState } from './SharedChatApp'
 import { SharedChatEntry } from './SharedChatEntry'
 import { initializeAppearance } from '../lib/appearance'
+import { getAnalyticsConsentDecision } from '../lib/analytics'
 import { initializeLanguage } from '../lib/i18n'
 import { useAppStore } from '../store/app-store'
 import '../styles.css'
@@ -17,6 +18,9 @@ const bridge = createSharedChatBridge(prefix,
   state => receiveSharedChatState(state, prefix),
   receiveSharedChatConnection)
 window.agentsDock = bridge.api
+// Enforce the late-installed browser boundary and remove any install ID left
+// by an older shared-web bundle before rendering reusable desktop components.
+getAnalyticsConsentDecision()
 // Sharing URLs are token-free. Discard old parameters without consuming or
 // prefilling them; access tokens are entered manually in the browser form.
 if (location.search || location.hash) history.replaceState(null, '', prefix)

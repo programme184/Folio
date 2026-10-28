@@ -1,0 +1,62 @@
+# Run on the rebuilt Dev simulator, starting at Home with a saved profile.
+# The server may be offline. No server, credentials or chat content is changed.
+appId: com.zhengyiluo.ZenithDock.dev
+---
+- repeat:
+    times: 6
+    commands:
+      - tapOn:
+          id: server-profile-selector
+          retryTapIfNoChange: false
+      - assertVisible:
+          id: server-profile-list
+      - tapOn:
+          id: server-management-close
+          retryTapIfNoChange: false
+      - tapOn:
+          id: sidebar-settings
+          retryTapIfNoChange: false
+      - tapOn:
+          id: settings-open-appearance
+          retryTapIfNoChange: false
+      - tapOn:
+          id: settings-theme-dark
+          retryTapIfNoChange: false
+      - assertVisible:
+          id: settings-theme-dark
+          selected: true
+      - tapOn:
+          id: settings-theme-light
+          retryTapIfNoChange: false
+      - assertVisible:
+          id: settings-theme-light
+          selected: true
+      - tapOn:
+          id: settings-back
+          retryTapIfNoChange: false
+      - tapOn:
+          id: settings-open-chats
+          retryTapIfNoChange: false
+      - tapOn:
+          id: settings-back
+          retryTapIfNoChange: false
+      - tapOn:
+          id: sheet-close-settings
+          retryTapIfNoChange: false
+- tapOn:
+    id: sidebar-settings
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-open-appearance
+    retryTapIfNoChange: false
+- tapOn:
+    id: settings-theme-system
+    retryTapIfNoChange: false
+- assertVisible:
+    id: settings-theme-system
+    selected: true
+- tapOn:
+    id: sheet-close-appearance
+    retryTapIfNoChange: false
+- assertVisible:
+    id: sidebar-settings

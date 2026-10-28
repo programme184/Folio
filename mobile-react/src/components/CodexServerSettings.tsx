@@ -5,7 +5,7 @@ import { ServerError, type AgentServerClient } from '../api/AgentServerClient'
 import { announceCodexGoalsConfigurationChanged } from '../lib/codex-goals-configuration'
 import { codexControlsCapability } from '../lib/codex-controls'
 import { client, useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type { CodexGoalsConfiguration } from '../types'
 import { Text } from './AppText'
 import { IconButton } from './ui'
@@ -115,7 +115,7 @@ function ScopedGoalSettings({ connection, profileId, generation, ready }: {
   return <View testID="codex-server-goals" style={[styles.card, { backgroundColor: colors.raised, borderColor: colors.border }]}>
     <View style={styles.header}>
       <Goal size={18} color={colors.blue} />
-      <Text style={[styles.title, { color: colors.text }]}>Persistent Codex goals</Text>
+      <Text style={[styles.title, { color: colors.text }]} localize>Persistent Codex goals</Text>
       {loading ? <ActivityIndicator accessibilityLabel="Loading goal setting" color={colors.blue} />
         : <Switch testID="codex-server-goals-toggle" accessibilityLabel="Allow persistent Codex goals on this server"
           disabled={!ready || saving || !configuration?.configurable} value={configuration?.enabled ?? false} onValueChange={change} />}
@@ -130,7 +130,7 @@ function unsupported(cause: unknown): boolean {
 }
 function message(cause: unknown): string { return cause instanceof Error ? cause.message : String(cause) }
 const styles = StyleSheet.create({
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 8, padding: 12, gap: 8 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 12, gap: 8 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, minHeight: 44 },
   title: { flex: 1, minWidth: 0, fontSize: 14, fontWeight: '700' },
   detail: { fontSize: 12, lineHeight: 18 },

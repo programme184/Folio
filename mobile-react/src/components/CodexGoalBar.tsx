@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, Alert, AppState, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native'
+import { MenuView, type MenuAction } from '@expo/ui/community/menu'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import { ChevronDown, Goal, Pause, Pencil, Play, Trash2 } from 'lucide-react-native'
+import { ChevronDown, ChevronUp, Goal, MoreHorizontal, Pause, Play, Trash2 } from 'lucide-react-native'
+import { t } from '../i18n'
 import { dismissAppKeyboard } from '../lib/app-keyboard'
 import { buildCodexGoalInput, formatGoalBudget, goalElapsedSeconds, goalStatusLabel, goalViewState } from '../lib/codex-goals'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, usePalette } from '../theme'
 import type { CodexGoal, CodexGoalSnapshot, CodexGoalStatus } from '../types'
 import { Text, TextInput } from './AppText'
 import { useCodexRuntime } from './CodexRuntimeContext'
 import { SheetCloseButton } from './ui'
 
-export function CodexGoalBar() {
+export function CodexGoalBar({ keyboardVisible = false }: { keyboardVisible?: boolean }) {
   const colors = usePalette()
   const { supported, goalsSupported, goalsEnabled, runtime, session, mutating, error, scopeKey, refresh, updateGoal } = useCodexRuntime()
   const lifecycleActive = useAppStore(state => session ? state.activeSessionIds.has(session.id) : false)
@@ -59,6 +61,11 @@ export function CodexGoalBar() {
   const elapsed = goalElapsedSeconds(goal, { threadActive: goalsEnabled && threadActive, observedAt, now: clock })
   const accent = !goalsEnabled || goal.status === 'paused' || view.tone === 'warning' ? colors.orange : view.tone === 'success' ? colors.green : colors.blue
   const available = goalsSupported && goalsEnabled && runtime?.available === true
+  const detailsVisible = expanded && !keyboardVisible
+  const menuActions: MenuAction[] = [
+    { id: 'edit', title: t('Edit'), image: 'pencil', attributes: { disabled: !available || mutating } },
+    { id: 'clear', title: t('Clear goal'), image: 'trash', attributes: { disabled: !available || mutating, destructive: true } },
+  ]
   const toggle = async () => {
     if (!available || mutating || !(view.canPause || view.canResume)) return
     const expectedScope = scopeKey
@@ -70,53 +77,71 @@ export function CodexGoalBar() {
     }
   }
   const closeEditor = () => { setEditorOpen(false); requestAnimationFrame(dismissAppKeyboard) }
+  const toggleDetails = () => {
+    if (keyboardVisible) {
+      setExpanded(true)
+      dismissAppKeyboard()
+    } else setExpanded(value => !value)
+  }
   return <>
     <View testID="codex-goal-bar" accessibilityLabel="Persistent Codex goal" style={[styles.card, { backgroundColor: colors.surface, borderColor: accent }]}>
-      <Pressable
-        testID="codex-goal-details"
-        accessibilityRole="button"
-        accessibilityLabel={expanded ? 'Hide goal details' : 'Show goal details'}
-        accessibilityState={{ expanded }}
-        onPress={() => setExpanded(value => !value)}
-        style={styles.summary}
-      >
+      <View style={styles.summary}>
         <Goal size={18} color={accent} />
-        <View style={styles.grow}>
-          <Text testID="codex-goal-state" style={[styles.status, { color: accent }]}>{!goalsSupported ? 'Goals unavailable' : !goalsEnabled ? 'Goals disabled' : view.label}</Text>
-          <Text testID="codex-goal-objective" style={[styles.objective, { color: colors.text }]} numberOfLines={1}>{goal.objective}</Text>
-        </View>
-        <ChevronDown size={18} color={colors.muted} style={{ transform: [{ rotate: expanded ? '180deg' : '0deg' }] }} />
-      </Pressable>
-      <Text testID="codex-goal-progress" style={[styles.progress, { color: colors.muted }]}>
-        {formatGoalBudget(elapsed, runtime?.time_budget_seconds, true)} elapsed · {formatGoalBudget(goal.tokensUsed, goal.tokenBudget)} tokens
-      </Text>
-      {expanded ? <ScrollView style={styles.details} contentContainerStyle={styles.detailContent} nestedScrollEnabled keyboardShouldPersistTaps="always">
-        <Text selectable style={[styles.objective, { color: colors.text }]}>{goal.objective}</Text>
-        <Text style={[styles.help, { color: colors.muted }]}>{!goalsSupported
-          ? 'This server does not support persistent goal controls.'
-          : !goalsEnabled
-            ? 'Persistent goals are disabled server-wide. Enable them in Settings to edit or continue this goal.'
-            : view.message}</Text>
-      </ScrollView> : null}
-      {error || actionError || clearError ? <Text testID="codex-goal-error" accessibilityRole="alert" style={[styles.help, { color: colors.red }]}>{actionError ?? clearError ?? error}</Text> : null}
-      {goalsSupported && goalsEnabled ? <View style={styles.actions}>
-        {view.canPause || goal.status === 'paused' ? <GoalAction
-          testID="codex-goal-toggle"
-          label={view.canPause ? 'Pause' : 'Resume'}
-          accessibilityLabel={view.canPause ? 'Pause goal' : 'Resume goal'}
-          icon={view.canPause ? Pause : Play}
-          disabled={!available || mutating || !(view.canPause || view.canResume)}
-          onPress={() => void toggle()}
-        /> : null}
-        <GoalAction testID="codex-goal-edit" label="Edit" accessibilityLabel="Edit goal" icon={Pencil} disabled={!available || mutating} onPress={() => { setEditorOpen(true); void refresh(); requestAnimationFrame(dismissAppKeyboard) }} />
-        <GoalAction testID="codex-goal-clear" label="Clear" accessibilityLabel="Clear goal" icon={Trash2} danger disabled={!available || mutating} onPress={() => confirmClear()} />
-      </View> : null}
+        <Pressable testID="codex-goal-details" accessibilityRole="button" accessibilityLabel={detailsVisible ? 'Hide goal details' : 'Show goal details'} accessibilityState={{ expanded: detailsVisible }} onPress={toggleDetails} style={styles.summaryTitle}>
+          <Text testID="codex-goal-objective" style={[styles.summaryObjective, { color: colors.text }]} numberOfLines={1}>{goal.objective}</Text>
+        </Pressable>
+        <Pressable testID="codex-goal-collapse" accessibilityRole="button" accessibilityLabel={detailsVisible ? 'Collapse goal' : 'Expand goal'} accessibilityState={{ expanded: detailsVisible }} onPress={toggleDetails} style={[styles.summaryToggle, { backgroundColor: colors.raised, borderColor: colors.controlBorder }]}>
+          {detailsVisible ? <ChevronUp size={20} strokeWidth={2.5} color={colors.text} /> : <ChevronDown size={20} strokeWidth={2.5} color={colors.text} />}
+        </Pressable>
+      </View>
+      {detailsVisible ? <>
+        <Text testID="codex-goal-state" style={[styles.status, { color: accent }]}>{!goalsSupported ? 'Goals unavailable' : !goalsEnabled ? 'Goals disabled' : view.label}</Text>
+        <Text testID="codex-goal-progress" style={[styles.progress, { color: colors.muted }]} localize>
+          {formatGoalBudget(elapsed, runtime?.time_budget_seconds, true)} elapsed · {formatGoalBudget(goal.tokensUsed, goal.tokenBudget)} tokens
+        </Text>
+        <ScrollView style={styles.details} contentContainerStyle={styles.detailContent} nestedScrollEnabled keyboardShouldPersistTaps="always">
+          <Text selectable style={[styles.objective, { color: colors.text }]}>{goal.objective}</Text>
+          <Text style={[styles.help, { color: colors.muted }]}>{!goalsSupported
+            ? 'This server does not support persistent goal controls.'
+            : !goalsEnabled
+              ? 'Persistent goals are disabled server-wide. Enable them in Settings to edit or continue this goal.'
+              : view.message}</Text>
+        </ScrollView>
+        {error || actionError || clearError ? <Text testID="codex-goal-error" accessibilityRole="alert" style={[styles.help, { color: colors.red }]}>{actionError ?? clearError ?? error}</Text> : null}
+        {goalsSupported && goalsEnabled ? <View style={styles.actions}>
+          {view.canPause || goal.status === 'paused' ? <GoalAction
+            testID="codex-goal-toggle"
+            label={view.canPause ? 'Pause' : 'Resume'}
+            accessibilityLabel={view.canPause ? 'Pause goal' : 'Resume goal'}
+            icon={view.canPause ? Pause : Play}
+            disabled={!available || mutating || !(view.canPause || view.canResume)}
+            onPress={() => void toggle()}
+          /> : null}
+          <MenuView
+            testID="codex-goal-menu"
+            actions={menuActions}
+            onPressAction={event => {
+              if (!available || mutating) return
+              if (event.nativeEvent.event === 'edit') {
+                setEditorOpen(true)
+                void refresh()
+                requestAnimationFrame(dismissAppKeyboard)
+              } else if (event.nativeEvent.event === 'clear') confirmClear()
+            }}
+            style={styles.menu}
+          >
+            <View accessible accessibilityRole="button" accessibilityLabel={t('More goal actions')} style={[styles.menuTrigger, { backgroundColor: colors.raised }]}>
+              <MoreHorizontal size={18} color={colors.blue} />
+            </View>
+          </MenuView>
+        </View> : null}
+      </> : null}
     </View>
     {editorOpen ? <Modal visible animationType="slide" presentationStyle="pageSheet" allowSwipeDismissal onRequestClose={closeEditor}>
       <SafeAreaView style={[styles.sheet, { backgroundColor: colors.background }]} edges={['top', 'bottom']}>
         <View style={[styles.sheetHeader, { borderBottomColor: colors.border }]}>
           <Goal size={21} color={colors.blue} />
-          <Text style={[styles.title, styles.grow, { color: colors.text }]}>Persistent goal</Text>
+          <Text style={[styles.title, styles.grow, { color: colors.text }]} localize>Persistent goal</Text>
           <SheetCloseButton testID="codex-goal-editor-close" label="Close goal editor" onPress={closeEditor} />
         </View>
         <ScrollView contentContainerStyle={styles.sheetContent} keyboardShouldPersistTaps="always">
@@ -204,26 +229,26 @@ export function CodexGoalEditor() {
     }
   }
 
-  if (!goalsSupported || !goalsEnabled) return <Text testID="codex-goals-disabled" style={[styles.help, { color: colors.muted }]}>{!goalsSupported
+  if (!goalsSupported || !goalsEnabled) return <Text testID="codex-goals-disabled" style={[styles.help, { color: colors.muted }]} localize>{!goalsSupported
     ? 'Persistent goals are unavailable on this server.'
     : 'Persistent goals are disabled on this server. Normal chats and scheduled jobs still run. Enable goals in Settings to create, edit, or continue a goal.'}</Text>
   const available = runtime?.available === true
   const view = goalViewState(goal, runtime)
   return <View testID="codex-goal-editor" style={styles.editor}>
-    <Text style={[styles.fieldLabel, { color: colors.text }]}>Objective</Text>
+    <Text style={[styles.fieldLabel, { color: colors.text }]} localize>Objective</Text>
     <TextInput testID="codex-goal-objective-input" accessibilityLabel="Goal objective" value={draft.objective} onChangeText={objective => edit({ objective })} editable={available} multiline maxLength={4_000} placeholder="What should Codex keep working toward?" placeholderTextColor={colors.muted} style={[styles.textarea, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]} />
-    <Text style={[styles.fieldLabel, { color: colors.text }]}>Status</Text>
+    <Text style={[styles.fieldLabel, { color: colors.text }]} localize>Status</Text>
     <Pressable testID="codex-goal-status" accessibilityRole="button" accessibilityLabel={`Goal status: ${goalStatusLabel(draft.status)}`} accessibilityState={{ expanded: statusOpen, disabled: !available }} disabled={!available} onPress={() => setStatusOpen(value => !value)} style={[styles.choice, { backgroundColor: colors.background, borderColor: colors.border }]}>
       <Text style={[styles.grow, { color: colors.text }]}>{goalStatusLabel(draft.status)}</Text><ChevronDown size={16} color={colors.muted} />
     </Pressable>
     {statusOpen ? <View style={styles.statusOptions}>{GOAL_STATUSES.map(status => <Pressable key={status} testID={`codex-goal-status-${status}`} accessibilityRole="button" accessibilityState={{ selected: draft.status === status }} onPress={() => { edit({ status }); setStatusOpen(false) }} style={[styles.choice, { borderColor: colors.border, backgroundColor: draft.status === status ? colors.raised : colors.background }]}><Text style={{ color: colors.text }}>{goalStatusLabel(status)}</Text></Pressable>)}</View> : null}
     <View style={styles.budgets}>
-      <View style={styles.grow}><Text style={[styles.fieldLabel, { color: colors.text }]}>Token budget</Text><TextInput testID="codex-goal-token-budget" accessibilityLabel="Goal token budget" value={draft.tokenBudget} onChangeText={tokenBudget => edit({ tokenBudget })} editable={available} keyboardType="number-pad" placeholder="No limit" placeholderTextColor={colors.muted} style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]} /></View>
-      <View style={styles.grow}><Text style={[styles.fieldLabel, { color: colors.text }]}>Time limit (seconds)</Text><TextInput testID="codex-goal-time-budget" accessibilityLabel="Goal time limit in seconds" value={draft.timeBudget} onChangeText={timeBudget => edit({ timeBudget })} editable={available} keyboardType="number-pad" placeholder="No limit" placeholderTextColor={colors.muted} style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]} /></View>
+      <View style={styles.grow}><Text style={[styles.fieldLabel, { color: colors.text }]} localize>Token budget</Text><TextInput testID="codex-goal-token-budget" accessibilityLabel="Goal token budget" value={draft.tokenBudget} onChangeText={tokenBudget => edit({ tokenBudget })} editable={available} keyboardType="number-pad" placeholder="No limit" placeholderTextColor={colors.muted} style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]} /></View>
+      <View style={styles.grow}><Text style={[styles.fieldLabel, { color: colors.text }]} localize>Time limit (seconds)</Text><TextInput testID="codex-goal-time-budget" accessibilityLabel="Goal time limit in seconds" value={draft.timeBudget} onChangeText={timeBudget => edit({ timeBudget })} editable={available} keyboardType="number-pad" placeholder="No limit" placeholderTextColor={colors.muted} style={[styles.input, { color: colors.text, backgroundColor: colors.background, borderColor: colors.border }]} /></View>
     </View>
     {view?.message ? <Text style={[styles.help, { color: view.timeBudgetExhausted || view.tokenBudgetExhausted ? colors.orange : colors.muted }]}>{view.message}</Text> : null}
-    <Text style={[styles.help, { color: colors.muted }]}>The time limit is enforced by AgentsDock; Codex reports elapsed time.</Text>
-    {!available ? <Text accessibilityRole="alert" style={[styles.help, { color: colors.orange }]}>Goal controls are unavailable until the Codex runtime is loaded.</Text> : null}
+    <Text style={[styles.help, { color: colors.muted }]} localize>The time limit is enforced by AgentsDock; Codex reports elapsed time.</Text>
+    {!available ? <Text accessibilityRole="alert" style={[styles.help, { color: colors.orange }]} localize>Goal controls are unavailable until the Codex runtime is loaded.</Text> : null}
     {saveError || clearError || error ? <Text testID="codex-goal-save-error" accessibilityRole="alert" style={[styles.help, { color: colors.red }]}>{saveError ?? clearError ?? error}</Text> : null}
     {feedback ? <Text testID="codex-goal-feedback" accessibilityLiveRegion="polite" style={[styles.help, { color: colors.green }]}>{feedback}</Text> : null}
     <View style={styles.actions}>
@@ -289,22 +314,27 @@ function GoalAction({ label, accessibilityLabel = label, icon: Icon, disabled, b
   const colors = usePalette()
   const accent = danger ? colors.red : colors.blue
   return <Pressable testID={testID} accessibilityRole="button" accessibilityLabel={accessibilityLabel} accessibilityState={{ disabled: Boolean(disabled), busy: Boolean(busy) }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.action, { backgroundColor: colors.raised, opacity: disabled ? 0.4 : pressed ? 0.65 : 1 }]}>
-    {busy ? <ActivityIndicator size="small" color={accent} /> : <Icon size={15} color={accent} />}<Text style={[styles.actionLabel, { color: accent }]}>{label}</Text>
+    {busy ? <ActivityIndicator size="small" color={accent} /> : <Icon size={15} color={accent} />}<Text localize style={[styles.actionLabel, { color: accent }]}>{label}</Text>
   </Pressable>
 }
 
 function errorMessage(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
 const GOAL_STATUSES: CodexGoalStatus[] = ['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete']
 const styles = StyleSheet.create({
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, paddingHorizontal: 9, paddingVertical: 5, gap: 4, marginBottom: 7 },
+  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 9, paddingVertical: 5, gap: 4, marginBottom: 7 },
   grow: { flex: 1, minWidth: 0 },
   summary: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  summaryTitle: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: 'center' },
+  summaryObjective: { fontSize: 12, fontWeight: '700' },
+  summaryToggle: { width: 36, height: 36, flexShrink: 0, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   status: { fontSize: 12, fontWeight: '900' },
   objective: { fontSize: 12, lineHeight: 17 },
   progress: { fontSize: 10.5, lineHeight: 15, fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  action: { minHeight: 44, minWidth: 44, flexGrow: 1, paddingHorizontal: 10, borderRadius: 7, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  action: { minHeight: 44, minWidth: 44, flexGrow: 1, paddingHorizontal: 10, borderRadius: radius.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   actionLabel: { fontSize: 12, fontWeight: '700' },
+  menu: { minWidth: 44, minHeight: 44 },
+  menuTrigger: { width: 44, height: 44, borderRadius: radius.md, alignItems: 'center', justifyContent: 'center' },
   details: { maxHeight: 130 },
   detailContent: { gap: 6, paddingVertical: 5 },
   help: { fontSize: 11.5, lineHeight: 17 },
@@ -314,9 +344,9 @@ const styles = StyleSheet.create({
   sheetContent: { padding: 14, paddingBottom: 40, width: '100%', maxWidth: 700, alignSelf: 'center' },
   editor: { gap: 9 },
   fieldLabel: { fontSize: 11.5, fontWeight: '700', marginBottom: 3 },
-  textarea: { minHeight: 100, maxHeight: 180, textAlignVertical: 'top', borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, padding: 10, fontSize: 14 },
-  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, fontSize: 13 },
-  choice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: 7, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
+  textarea: { minHeight: 100, maxHeight: 180, textAlignVertical: 'top', borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, padding: 10, fontSize: 14 },
+  input: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, fontSize: 13 },
+  choice: { minHeight: 46, borderWidth: StyleSheet.hairlineWidth, borderRadius: radius.md, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 6 },
   statusOptions: { gap: 3 },
   budgets: { flexDirection: 'row', gap: 9 },
 })

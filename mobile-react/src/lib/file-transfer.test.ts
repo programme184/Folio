@@ -20,6 +20,8 @@ function fixture(patch: Partial<FileTransferDependencies<string, TestFile>> = {}
   const dependencies: FileTransferDependencies<string, TestFile> = {
     pickDirectory: async () => { order.push('pick'); return 'chosen-folder' },
     sharingAvailable: async () => { order.push('sharing-available'); return true },
+    preparePhotoSave: async () => { order.push('permission') },
+    saveToPhotos: async () => { order.push('photos') },
     createTemporaryFile: async name => { order.push(`temporary:${name}`); return file },
     download: async (source, target, signal, progress) => {
       assert.equal(source.url, 'https://example.invalid/authenticated-file')
@@ -173,7 +175,47 @@ test('artifact and workspace requests resolve only their authenticated chat-scop
 })
 
 test('only actual transfer phases keep controls busy', () => {
-  for (const phase of ['choosing', 'downloading', 'saving', 'sharing'] as const) assert.equal(isFileTransferBusy({ phase, filename: 'report' }), true)
+  for (const phase of ['choosing', 'permission', 'downloading', 'saving', 'sharing'] as const) assert.equal(isFileTransferBusy({ phase, filename: 'report' }), true)
   for (const phase of ['done', 'cancelled', 'error'] as const) assert.equal(isFileTransferBusy({ phase, filename: 'report' }), false)
   assert.equal(isFileTransferBusy(null), false)
+})
+
+test('Photos uses permission-first authenticated download, integrity check, native save and cleanup', async () => {
+  const f = fixture()
+  await f.run({ ...f.request, action: 'save-photos', filename: 'result', contentType: 'image/png' })
+  assert.deepEqual(f.order, ['permission', 'source', 'temporary:result.png', 'download', 'photos', 'cleanup'])
+  assert.equal(f.states.at(-1)?.message, 'Saved to Photos.')
+})
+
+test('Photos rejects documents without locking subsequent transfers', async () => {
+  const f = fixture()
+  await assert.rejects(f.run({ ...f.request, action: 'save-photos' }), /Use Download/)
+  await f.run()
+  assert.ok(f.order.includes('save'))
+})
+
+test('Photos denial and stale permission results never download or save', async () => {
+  const denied = fixture({ preparePhotoSave: async () => { throw new Error('Permission denied') } })
+  await assert.rejects(denied.run({ ...denied.request, action: 'save-photos', filename: 'clip.mp4' }), /Permission denied/)
+  assert.deepEqual(denied.order, [])
+  const permission = deferred<void>()
+  const f = fixture({ preparePhotoSave: () => permission.promise })
+  let current = true
+  const pending = f.run({ ...f.request, action: 'save-photos', filename: 'clip.mp4', isCurrent: () => current })
+  current = false
+  permission.resolve()
+  await pending
+  assert.deepEqual(f.order, [])
+})
+
+test('Photos never saves partial bytes and reports native save failures without claiming success', async () => {
+  const f = fixture()
+  f.file.size = 9
+  await assert.rejects(f.run({ ...f.request, action: 'save-photos', filename: 'clip.mp4' }), /incomplete/)
+  assert.ok(!f.order.includes('photos'))
+  assert.equal(f.order.at(-1), 'cleanup')
+  const failed = fixture({ saveToPhotos: async () => { throw new Error('Photos storage unavailable') } })
+  await assert.rejects(failed.run({ ...failed.request, action: 'save-photos', filename: 'clip.mp4' }), /storage unavailable/)
+  assert.equal(failed.order.at(-1), 'cleanup')
+  assert.ok(!failed.states.some(state => state.phase === 'done'))
 })

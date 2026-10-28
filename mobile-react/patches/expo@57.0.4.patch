@@ -1,0 +1,20 @@
+diff --git a/src/async-require/hmr.ts b/src/async-require/hmr.ts
+index bd226af36bb1c813b1f028fd6203e4b2cb2f5e63..467e7760f710d5e743f37bea490a17537f0e219b 100644
+--- a/src/async-require/hmr.ts
++++ b/src/async-require/hmr.ts
+@@ -16,6 +16,7 @@ import {
+   getFullBundlerUrl,
+   handleCompileError,
+   hideLoading,
++  reload,
+   resetErrorOverlay,
+   showLoading,
+ } from './hmrUtils';
+@@ -317,6 +318,6 @@ function setHMRUnavailableReason(reason: string) {
+ function registerBundleEntryPoints(client: MetroHMRClient | null) {
+   if (hmrUnavailableReason != null) {
+     // "Bundle Splitting – Metro disconnected"
+-    window.location.reload();
++    reload();
+     return;
+   }

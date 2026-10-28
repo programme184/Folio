@@ -18,6 +18,7 @@ const fixture = {
 globalThis.__crossChatCardFixture = fixture
 
 const mocks = {
+  './store/useAppearanceStore': `export const useAppearanceStore = selector => selector({ preference: 'system' });`,
   'react-native': `import { createElement } from 'react'; export const ActivityIndicator = 'ActivityIndicator', View = 'View'; export const Pressable = props => createElement('Pressable', props, typeof props.children === 'function' ? props.children({ pressed: false }) : props.children); export const StyleSheet = { create: value => value, absoluteFill: {} }; export const useColorScheme = () => 'dark';`,
   '@shopify/flash-list': `import { useEffect, useState } from 'react'; export function useRecyclingState(initial, deps) { const [value, setValue] = useState(initial); useEffect(() => setValue(initial), deps); return [value, setValue]; }`,
   'lucide-react-native': `export const AlertTriangle = 'AlertTriangle', ChevronDown = 'ChevronDown', ChevronRight = 'ChevronRight', MessageSquareShare = 'MessageSquareShare';`,

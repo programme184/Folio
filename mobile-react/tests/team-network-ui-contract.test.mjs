@@ -8,8 +8,9 @@ const sidebar = fs.readFileSync(path.resolve('src/components/Sidebar.tsx'), 'utf
 const network = fs.readFileSync(path.resolve('src/components/TeamNetwork.tsx'), 'utf8')
 const routes = fs.readFileSync(path.resolve('src/lib/team-network.ts'), 'utf8')
 
-test('mobile exposes the desktop Team Network sections from the chat workspace', () => {
-  assert.match(sidebar, /testID="sidebar-team-network"/)
+test('mobile keeps Team Network workspace available without a first-page entry', () => {
+  assert.doesNotMatch(sidebar, /testID="sidebar-team-network"/)
+  assert.doesNotMatch(sidebar, /accessibilityLabel="Open Team Network"/)
   assert.match(shell, /<TeamNetwork/)
   assert.match(network, /useState<TeamSection>\('mail'\)/)
   const navigation = network.slice(network.indexOf('<ScrollView style={[styles.tabScroller'), network.indexOf('</ScrollView>', network.indexOf('<ScrollView style={[styles.tabScroller')))

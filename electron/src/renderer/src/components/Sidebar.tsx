@@ -1,6 +1,7 @@
 // Localized display strings use semantic catalog keys.
 import { t, getLocale } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
+import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPanes } from '../lib/chat-panes'
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import {
@@ -18,7 +19,7 @@ import { trackEvent } from '../lib/analytics'
 import { activeEmergencyAlert } from '../lib/emergency-alert'
 import { backendLabel, runtimeLabel } from '../lib/format'
 import { openSessionHistoryResult } from '../lib/session-history-search'
-import { rankSessionsForSearch } from '../lib/sessions'
+import { rankSessionsForSearch, sidebarSessionGroups, type SidebarGroupingOptions } from '../lib/sessions'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import { handleMenuCommand, selectMailHintPending, selectBulletinHintPending, sessionUnread, useAppStore } from '../store/app-store'
 import folioMark from '../assets/folio-icon.png'
@@ -26,7 +27,7 @@ import { BackendMark } from './BackendMark'
 import { ServerSelector } from './ServerSelector'
 import { ShortcutTooltip } from './ShortcutTooltip'
 
-interface Section { id: string; title: string; sessions: Session[]; kind: 'pinned' | 'folder' | 'archived' | 'search' }
+interface Section { id: string; title: string; sessions: Session[]; kind: 'pinned' | 'folder' | 'archived' | 'search' | 'unread' | 'running' }
 interface DropIndicator { id: string; placement: 'before' | 'after' | 'inside' }
 interface DragItemData { type: 'session' | 'folder'; label?: string; section?: string }
 
@@ -57,6 +58,9 @@ const sidebarCollisionDetection: CollisionDetection = (args) => {
 export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   useLocale()
   const sessions = useAppStore(state => state.sessions)
+  const jobs = useAppStore(state => state.jobs)
+  const jobSessionIds = useMemo(() => new Set(jobs.map(job => job.session_id)), [jobs])
+  const activeSessionIds = useAppStore(state => state.activeSessionIds)
   const selectedId = useAppStore(state => state.selectedSessionId)
   const chatPanes = useAppStore(state => state.chatPanes)
   const activeProfileId = useAppStore(state => state.activeProfileId)
@@ -69,6 +73,11 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const newBulletinUpdates = useAppStore(selectBulletinHintPending)
   const folderOrder = useAppStore(state => state.folderOrder)
   const collapsed = useAppStore(state => state.collapsedFolders)
+  const collapsedStatuses = useAppStore(state => state.collapsedStatusGroups)
+  const groupUnreadChats = useAppStore(state => state.groupUnreadChats)
+  const includeCronInUnread = useAppStore(state => state.includeCronInUnread)
+  const groupRunningChats = useAppStore(state => state.groupRunningChats)
+  const pinnedCollapsed = useAppStore(state => state.pinnedCollapsed)
   const archivedCollapsed = useAppStore(state => state.archivedCollapsed)
   const catalog = useAppStore(state => state.runtimeCatalog)
   const chatCount = sessions.filter(session => !session.archived).length
@@ -82,7 +91,9 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarScrollingUntil = useRef(0)
   const sidebarScrollTimer = useRef<number | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: SIDEBAR_LONG_PRESS }))
-  const sections = useMemo(() => buildSections(sessions, folderOrder, ''), [sessions, folderOrder, getLocale()])
+  const sections = useMemo(() => buildSections(sessions, folderOrder, '', new Set(), activeSessionIds, {
+    groupUnreadChats, includeCronInUnread, groupRunningChats, jobSessionIds
+  }), [sessions, folderOrder, activeSessionIds, groupUnreadChats, includeCronInUnread, groupRunningChats, jobSessionIds, getLocale()])
   const computedFolders = useMemo(() => orderedFolders(
     [...new Set([...folderOrder, ...sessions.filter(session => !session.archived && !session.pinned).map(session => session.folder?.trim() || 'General')])],
     folderOrder
@@ -264,7 +275,7 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
               section={section}
               selectedId={selectedId}
               chatPanes={chatPanes}
-              collapsed={section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)}
+              collapsed={section.kind === 'unread' || section.kind === 'running' ? collapsedStatuses.has(section.kind) : section.kind === 'pinned' ? pinnedCollapsed : section.kind === 'archived' ? archivedCollapsed : section.kind === 'folder' && collapsed.has(section.title)}
               drop={drop}
               runtime={(session) => runtimeLabel(session, catalog)}
               suppressClick={suppressClick}
@@ -284,11 +295,11 @@ export function Sidebar({ hidden = false }: { hidden?: boolean }) {
 }
 
 function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, runtime, suppressClick, folders, isSidebarScrolling }: {
-  section: Section; selectedId: string | null; chatPanes: { primary: string | null; secondary: string | null }; collapsed: boolean; drop: DropIndicator | null; runtime: (session: Session) => string; suppressClick: (id: string) => boolean
+  section: Section; selectedId: string | null; chatPanes: ChatPanes; collapsed: boolean; drop: DropIndicator | null; runtime: (session: Session) => string; suppressClick: (id: string) => boolean
   folders: string[]; isSidebarScrolling: () => boolean
 }) {
   useLocale()
-  const splitOpen = Boolean(chatPanes.primary && chatPanes.secondary && chatPanes.primary !== chatPanes.secondary)
+  const splitOpen = Object.values(chatPanes).filter(Boolean).length > 1
   const droppable = useDroppable({
     id: section.id,
     disabled: section.kind !== 'folder',
@@ -298,14 +309,16 @@ function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, runti
     ? `drop-${drop.placement}`
     : ''
   const toggle = () => {
-    if (section.kind === 'archived') useAppStore.getState().setArchivedCollapsed(!collapsed)
+    if (section.kind === 'unread' || section.kind === 'running') useAppStore.getState().toggleStatusGroup(section.kind)
+    else if (section.kind === 'pinned') useAppStore.getState().setPinnedCollapsed(!collapsed)
+    else if (section.kind === 'archived') useAppStore.getState().setArchivedCollapsed(!collapsed)
     else if (section.kind === 'folder') useAppStore.getState().toggleFolder(section.title)
   }
   return (
-    <section ref={droppable.setNodeRef} className={`sidebar-section ${boundaryIndicator}`}>
+    <section ref={droppable.setNodeRef} data-section-id={section.id} className={`sidebar-section ${boundaryIndicator}`}>
       <FolderHeader section={section} collapsed={collapsed} drop={drop} onToggle={toggle} suppressClick={suppressClick} />
       {!collapsed && section.sessions.map(session => (
-        <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? chatPanes.primary === session.id ? 'primary' : chatPanes.secondary === session.id ? 'secondary' : null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} runtime={runtime(session)} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
+        <SessionRow key={session.id} session={session} selected={session.id === selectedId} visiblePane={splitOpen ? CHAT_PANE_IDS.find(pane => chatPanes[pane] === session.id) ?? null : null} sectionId={section.id} dropIndicator={drop?.id === `session:${session.id}` ? `drop-${drop.placement}` : ''} runtime={runtime(session)} suppressClick={suppressClick} folders={folders} isSidebarScrolling={isSidebarScrolling} />
       ))}
     </section>
   )
@@ -313,9 +326,11 @@ function SidebarSection({ section, selectedId, chatPanes, collapsed, drop, runti
 
 function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { section: Section; collapsed: boolean; drop: DropIndicator | null; onToggle: () => void; suppressClick: (id: string) => boolean }) {
   useLocale()
-  const id = `folder:${section.title}`
+  const id = section.id
   const draggable = useDraggable({ id, disabled: section.kind !== 'folder', data: { type: 'folder', label: section.title } })
   const indicator = drop?.id === id && drop.placement === 'inside' ? 'drop-inside' : ''
+  const status = section.kind === 'unread' || section.kind === 'running' ? section.kind : null
+  const collapsible = Boolean(status) || section.kind === 'pinned' || section.kind === 'folder' || section.kind === 'archived'
   const selectedFolder = useAppStore(state => state.selectedFolder)
   const creatingChat = useAppStore(state => state.creatingChat)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
@@ -347,10 +362,10 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
     </div>
   ) : (
     <div ref={draggable.setNodeRef} className={`section-header ${indicator} ${draggable.isDragging ? 'dragging' : ''}`}>
-      <button onClick={() => { if (!suppressClick(id)) onToggle() }} {...draggable.listeners} {...draggable.attributes}>
-        {section.kind !== 'search' && (collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />)}
-        {section.kind === 'pinned' ? <Pin size={11} /> : section.kind === 'archived' ? <Archive size={11} /> : section.kind === 'search' ? <Search size={11} /> : <Folder size={11} />}
+      <button onClick={() => { if (!suppressClick(id)) onToggle() }} aria-label={section.title} aria-expanded={collapsible ? !collapsed : undefined}>
+        {status ? <span className={`status-dot section-status-dot ${status}`} aria-hidden="true" /> : section.kind === 'pinned' ? <Pin size={11} /> : section.kind === 'archived' ? <Archive size={11} /> : section.kind === 'search' ? <Search size={11} /> : <Folder size={11} />}
         <span>{section.title}</span><small>{section.sessions.length}</small>
+        {collapsible && (collapsed ? <ChevronRight className="section-chevron" size={12} aria-hidden="true" /> : <ChevronDown className="section-chevron" size={12} aria-hidden="true" />)}
       </button>
     </div>
   )
@@ -372,7 +387,7 @@ function FolderHeader({ section, collapsed, drop, onToggle, suppressClick }: { s
 interface SessionRowProps {
   session: Session
   selected: boolean
-  visiblePane: 'primary' | 'secondary' | null
+  visiblePane: ChatPaneId | null
   sectionId: string
   dropIndicator: string
   runtime: string
@@ -386,7 +401,7 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
   const id = `session:${session.id}`
   const searchResult = sectionId === 'search'
   const draggable = useDraggable({ id, disabled: searchResult, data: { type: 'session', label: session.title, section: sectionId } })
-  const droppable = useDroppable({ id, disabled: searchResult, data: { type: 'session', section: sectionId } })
+  const droppable = useDroppable({ id, disabled: searchResult || isStatusSection(sectionId), data: { type: 'session', section: sectionId } })
   const ref = (node: HTMLElement | null) => { draggable.setNodeRef(node); droppable.setNodeRef(node) }
   const unread = sessionUnread(session)
   const emergency = activeEmergencyAlert(session)
@@ -418,7 +433,7 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
       <ContextMenu.Trigger asChild>
         <div
           ref={ref}
-          className={`session-row ${selected ? 'selected' : visiblePane ? 'visible-in-split' : ''} ${unread ? 'unread' : ''} ${needsUserAction ? 'action-needed' : ''} ${emergency ? 'emergency' : ''} ${dropIndicator} ${draggable.isDragging ? 'dragging' : ''}`}
+          className={`session-row ${session.archived ? 'is-archived' : ''} ${selected ? 'selected' : visiblePane ? 'visible-in-split' : ''} ${unread ? 'unread' : ''} ${needsUserAction ? 'action-needed' : ''} ${emergency ? 'emergency' : ''} ${dropIndicator} ${draggable.isDragging ? 'dragging' : ''}`}
           title={emergency ? t("ui.Sidebar.SessionRow.emergency_9202f3c", { "chat": String(session.title), "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(session.title) }) : undefined}
           aria-label={emergency ? t("ui.Sidebar.SessionRow.emergency_9e48fd2", { "chat": String(session.title), "message": String(emergency.message) }) : undefined}
           onClick={select}
@@ -428,10 +443,11 @@ const SessionRow = memo(function SessionRow({ session, selected, visiblePane, se
           {...draggable.listeners}
           {...draggable.attributes}
         >
-          <BackendMark backend={session.backend} size={18} />
+          {session.archived ? <Archive size={18} aria-label={t('chat.archived')} /> : <BackendMark backend={session.backend} size={18} />}
           <span className="session-copy"><strong>{session.title}</strong><small title={emergency?.message || (needsUserAction ? t("ui.Sidebar.SessionRow.this_agent_is_paused_until_you_respond_82dc6e8") : undefined)}>{emergency ? t("ui.Sidebar.SessionRow.emergency_89e4490", { "message": String(emergency.message) }) : needsUserAction ? t("ui.Sidebar.SessionRow.action_needed_c2d066a", { "chat": String(backendLabel(session.backend)) }) : `${backendLabel(session.backend)} · ${runtime}${running ? ' · running' : unread ? ' · new' : ''}`}</small></span>
+          {session.archived && <span className="session-archive-badge">{t('chat.archived')}</span>}
           {emergency && <span key={emergency.id} className="sr-only" role="alert">{t('ui.sidebar.emergency', { title: session.title, message: emergency.message })}</span>}
-          {visiblePane && <span className="sr-only">{t(visiblePane === 'primary' ? 'ui.sidebar.firstPane' : 'ui.sidebar.secondPane')}</span>}
+          {visiblePane && <span className="sr-only">{visiblePane === 'primary' ? t('ui.sidebar.firstPane') : visiblePane === 'secondary' ? t('ui.sidebar.secondPane') : t('chatWorkspace.paneNumber', { number: CHAT_PANE_IDS.indexOf(visiblePane) + 1 })}</span>}
           {(emergency || needsUserAction || running || unread) && <span className={`status-dot ${emergency ? 'emergency' : needsUserAction ? 'attention' : running ? 'running' : 'unread'}`} aria-hidden="true" />}
         </div>
       </ContextMenu.Trigger>
@@ -481,18 +497,21 @@ function MenuItem({ icon: Icon, label, onSelect, danger, disabled, title }: { ic
   return <ContextMenu.Item className={`menu-item ${danger ? 'danger' : ''}`} disabled={disabled} title={title} onSelect={onSelect}><Icon size={14} />{label}</ContextMenu.Item>
 }
 
-export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set()): Section[] {
+export function buildSections(sessions: Session[], folderOrder: string[], query: string, historySessionIds: Set<string> = new Set(), activeSessionIds: ReadonlySet<string> = new Set(), options: SidebarGroupingOptions = {}): Section[] {
   const filtered = rankSessionsForSearch(sessions, query, historySessionIds)
   if (query.trim()) return filtered.length ? [{ id: 'search', title: t("ui.Sidebar.buildSections.matches_98abff2"), sessions: filtered, kind: 'search' }] : []
-  const pinned = filtered.filter(session => session.pinned && !session.archived)
+  const { running, unread, ordinary } = sidebarSessionGroups(filtered, activeSessionIds, options)
+  const pinned = ordinary.filter(session => session.pinned && !session.archived)
   const archived = filtered.filter(session => session.archived)
   const byFolder = new Map<string, Session[]>()
-  for (const session of filtered.filter(session => !session.archived && !session.pinned)) {
+  for (const session of ordinary.filter(session => !session.pinned && !session.archived)) {
     const folder = session.folder?.trim() || 'General'
     byFolder.set(folder, [...(byFolder.get(folder) ?? []), session])
   }
   const folders = orderedFolders(query.trim() ? [...byFolder.keys()] : [...new Set([...folderOrder, ...byFolder.keys()])], folderOrder)
   return [
+    ...(unread.length ? [{ id: 'status:unread', title: t('ui.sidebar.unreadGroup'), sessions: unread, kind: 'unread' as const }] : []),
+    ...(running.length ? [{ id: 'status:running', title: t('ui.sidebar.runningGroup'), sessions: running, kind: 'running' as const }] : []),
     ...(pinned.length ? [{ id: 'pinned', title: t("ui.Sidebar.buildSections.pinned_f20c879"), sessions: pinned, kind: 'pinned' as const }] : []),
     ...folders.map(folder => ({ id: `folder:${folder}`, title: folder, sessions: byFolder.get(folder) ?? [], kind: 'folder' as const })),
     ...(archived.length ? [{ id: 'archived', title: t("ui.Sidebar.buildSections.archived_bdb8650"), sessions: archived, kind: 'archived' as const }] : [])
@@ -545,6 +564,10 @@ function folderFromSection(section: string | undefined): string | null {
   return section.slice('folder:'.length).trim() || 'General'
 }
 
+function isStatusSection(section: string | undefined): boolean {
+  return section === 'status:unread' || section === 'status:running'
+}
+
 export function reorderFolderList(folders: string[], active: string, target: string, placement: 'before' | 'after'): string[] {
   if (active === target || !folders.includes(active) || !folders.includes(target)) return folders
   const reordered = folders.filter(folder => folder !== active)
@@ -563,6 +586,7 @@ export function resolveSidebarDrop(
   folders: string[]
 ): SidebarDropOperation | null {
   if (!overId || !drop || activeId === overId) return null
+  if (isStatusSection(overId) || isStatusSection(overData?.section)) return null
   if (activeData?.type === 'folder' && drop.id.startsWith('folder:') && drop.placement !== 'inside') {
     const active = activeId.replace('folder:', '')
     const target = drop.id.replace('folder:', '')
@@ -578,7 +602,7 @@ export function resolveSidebarDrop(
       ? undefined
       : folderFromSection(overData.section)
     if (activeData.section !== overData.section && !targetFolder) return null
-    if (activeData.section === 'pinned' && targetFolder) {
+    if ((activeData.section === 'pinned' || isStatusSection(activeData.section)) && targetFolder) {
       return { kind: 'move-session', sessionId: activeId.replace('session:', ''), folder: targetFolder }
     }
     return {

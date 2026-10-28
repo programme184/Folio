@@ -177,6 +177,9 @@ export function TeamNetwork({
   const [inviteOpen, setInviteOpen] = useState(false)
   const [bindingManagerOpen, setBindingManagerOpen] = useState(false)
   const [confirmForgetBinding, setConfirmForgetBinding] = useState(false)
+  const [confirmStopHosting, setConfirmStopHosting] = useState(false)
+  const [stopHostingError, setStopHostingError] = useState<NetworkCopy | null>(null)
+  const [hostingStoppedForProfile, setHostingStoppedForProfile] = useState<string | null>(null)
   const [pendingApprovals, setPendingApprovals] = useState(0)
   const [busy, setBusy] = useState<string | null>('opening')
   const [errorCopy, setError] = useState<NetworkCopy | null>(null)
@@ -195,6 +198,7 @@ export function TeamNetwork({
   const serverRemovalRequest = useRef(0)
   const serverRemovalInFlight = useRef(false)
   const hostRenameInFlight = useRef(false)
+  const stopHostingInFlight = useRef(false)
   const memberRenameInFlight = useRef(false)
   const connectAttempt = useRef<string | null>(null)
   const bindingManagerTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -870,6 +874,7 @@ export function TeamNetwork({
     reconnectMode: 'background' | 'surface' = 'background'
   ) => {
     const request = ++lifecycleEpoch.current
+    setHostingStoppedForProfile(null)
     setBusy('connect')
     setError(null)
     try {
@@ -921,6 +926,7 @@ export function TeamNetwork({
   const disconnectLocalBinding = useCallback(async () => {
     if (!status?.authenticated || !status.canForgetBinding || status.transport === 'secure_peer') return
     const request = ++lifecycleEpoch.current
+    setHostingStoppedForProfile(null)
     setBusy('disconnect-network')
     setError(null)
     setNotice(null)
@@ -947,6 +953,7 @@ export function TeamNetwork({
   const forgetLocalBinding = useCallback(async () => {
     if (!status?.serverIdentity || !status.savedHubIdentity || !status.canForgetBinding || status.transport === 'secure_peer') return
     const request = ++lifecycleEpoch.current
+    setHostingStoppedForProfile(null)
     let bindingIdentity = forgetBindingInputFromStatus(status)
     setBusy('forget-network')
     setError(null)
@@ -1356,6 +1363,83 @@ export function TeamNetwork({
     }
   }
 
+  const stopHosting = async () => {
+    if (!status?.designatedHost || !status.serverIdentity || busy || stopHostingInFlight.current) return
+    const currentProfile = teamHubProfileKey(status)
+    const activeProfile = () => {
+      const app = useAppStore.getState()
+      return app.activeProfileId === status.profileId && app.profileGeneration === status.profileGeneration
+        && !app.switchingProfileId
+        && app.profiles.find(profile => profile.id === app.activeProfileId)?.serverIdentity === status.serverIdentity
+    }
+    if (!activeProfile()) {
+      setStopHostingError(copy('teamNetwork.shell.renameServerChanged'))
+      return
+    }
+    const request = ++lifecycleEpoch.current
+    dataEpoch.current += 1
+    stopHostingInFlight.current = true
+    setBusy('stop-hosting')
+    setStopHostingError(null)
+    const applyStopped = async (next: TeamHubStatus, warning: NetworkCopy | null = null): Promise<boolean> => {
+      if (lifecycleEpoch.current !== request || !activeProfile()
+        || teamHubProfileKey(next) !== currentProfile || next.designatedHost) return false
+      // Apply the authoritative role-change receipt immediately. An old Hub
+      // workspace or an in-flight directory read must not strand this server
+      // in the host view after it has become eligible to join another team.
+      invalidateTeamNetworkSnapshot(status)
+      invalidateTeamNetworkSnapshot(next)
+      suppressAutoConnectForProfile.current = currentProfile
+      setHostingStoppedForProfile(currentProfile)
+      setStatus(next)
+      setWorkspace(null)
+      setSelectedTeamId(null)
+      clearTeamData()
+      setInviteOpen(false)
+      setBindingManagerOpen(false)
+      setConfirmStopHosting(false)
+      setError(null)
+      setNotice(warning)
+      if (next.authenticated) {
+        // Stopping hosting may restore a previously joined remote Team Space.
+        // Keep that valid membership usable, including its existing Disconnect
+        // and Forget controls, rather than treating it as an empty workspace.
+        setBusy('opening')
+        try {
+          const nextWorkspace = await loadTeamNetworkWorkspace(next, { force: true })
+          if (lifecycleEpoch.current !== request || !activeProfile()) return true
+          setWorkspace(nextWorkspace)
+          const teamId = nextWorkspace.teams[0]?.id
+          if (teamId) await loadTeamData(next, nextWorkspace, teamId)
+          if (lifecycleEpoch.current === request && activeProfile()) setNotice(warning)
+        } catch (cause) {
+          if (lifecycleEpoch.current === request && activeProfile()) setError(errorMessage(cause))
+        }
+      }
+      return true
+    }
+    try {
+      const next = await window.agentsDock.teamHub.configureServerRole(profileScope(status), {
+        role: 'member', serverName: status.serverName?.trim() || 'AgentsServer'
+      })
+      if (lifecycleEpoch.current !== request || !activeProfile()) return
+      if (!await applyStopped(next)) throw new NetworkError(copy('teamNetwork.shell.stopHostingUnconfirmed'))
+    } catch (cause) {
+      if (lifecycleEpoch.current !== request || !activeProfile()) return
+      // The role change can commit before a reply or connection refresh fails.
+      // Reconcile that one result without submitting the mutation again, so a
+      // stopped host remains usable even when its confirmation was lost.
+      try {
+        const fresh = await window.agentsDock.teamHub.status()
+        if (await applyStopped(fresh, copy('teamNetwork.shell.stopHostingRecovered', { error: stopHostingErrorMessage(cause) }))) return
+      } catch { /* Retain the original actionable failure. */ }
+      if (lifecycleEpoch.current === request && activeProfile()) setStopHostingError(stopHostingErrorMessage(cause))
+    } finally {
+      stopHostingInFlight.current = false
+      if (lifecycleEpoch.current === request && activeProfile()) setBusy(null)
+    }
+  }
+
   const openBindingManager = () => {
     setConfirmForgetBinding(false)
     setError(null)
@@ -1418,7 +1502,21 @@ export function TeamNetwork({
       ? <button type="button" className="quiet-button network-manage-binding-action" aria-label={t('teamNetwork.shell.connectNetwork')} disabled={Boolean(busy)} onClick={() => void reconnectNetwork()}><RefreshCw size={14} />{t('teamNetwork.shell.connectNetwork')}</button>
       : null
   const bindingLifecycleBusy = busy === 'connect' || busy === 'disconnect-network' || busy === 'forget-network'
-  const connectionActions = <>{localBindingAction}{status?.transport === 'secure_peer' && status.connectionId && !status.designatedHost && <TeamNetworkHostAddressAction status={status} onUpdated={loadStatus} />}</>
+  const stopHostingAction = status?.designatedHost && <Dialog.Root open={confirmStopHosting} onOpenChange={open => {
+    if (stopHostingInFlight.current) return
+    setStopHostingError(null)
+    setConfirmStopHosting(open)
+  }}>
+    <Dialog.Trigger asChild><button type="button" className="quiet-button danger" disabled={Boolean(busy)}><Unplug size={14} />{t('teamNetwork.shell.stopHostingEllipsis')}</button></Dialog.Trigger>
+    <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="form-dialog" aria-busy={busy === 'stop-hosting'}>
+      <header><div><Dialog.Title>{t('teamNetwork.shell.stopHosting')}</Dialog.Title><Dialog.Description>{t('teamNetwork.shell.stopHostingConfirm')}</Dialog.Description></div><Dialog.Close asChild><button type="button" className="icon-button" disabled={stopHostingInFlight.current} aria-label={t('teamNetwork.shell.cancel')}><X size={16} /></button></Dialog.Close></header>
+      <div className="dialog-form">
+        {stopHostingError !== null && <div className="teamspace-error" role="alert">{displayCopy(stopHostingError)}</div>}
+        <footer><Dialog.Close asChild><button type="button" className="quiet-button" disabled={stopHostingInFlight.current}>{t('teamNetwork.shell.keepHosting')}</button></Dialog.Close><button type="button" className="danger-button" disabled={stopHostingInFlight.current} onClick={() => void stopHosting()}>{busy === 'stop-hosting' && <LoaderCircle className="spin" size={14} />}{t('teamNetwork.shell.stopHosting')}</button></footer>
+      </div>
+    </Dialog.Content></Dialog.Portal>
+  </Dialog.Root>
+  const connectionActions = <>{localBindingAction}{stopHostingAction}{status?.transport === 'secure_peer' && status.connectionId && !status.designatedHost && <TeamNetworkHostAddressAction status={status} onUpdated={loadStatus} />}</>
   const localBindingManager = status && bindingManagerOpen && status.transport !== 'secure_peer'
     ? <LocalBindingManager
         status={status}
@@ -1443,6 +1541,11 @@ export function TeamNetwork({
       : {
           title: t('teamNetwork.shell.connectingTeamspace', { server: status.serverName || t('teamNetwork.shell.thisServerLower') }),
           description: t('teamNetwork.shell.teamspaceRetryDescription')
+        }
+    : status && hostingStoppedForProfile === teamHubProfileKey(status)
+      ? {
+          title: t('teamNetwork.shell.hostingStopped'),
+          description: t('teamNetwork.shell.hostingStoppedDescription')
         }
     : localBindingWasStopped && !status?.canForgetBinding
       ? {
@@ -1530,7 +1633,7 @@ export function TeamNetwork({
     </div>
   </NetworkShell>
 
-  if (!status.authenticated || !workspace) return <NetworkShell status={status} onClose={onClose} actions={localBindingAction}>
+  if (!status.authenticated || !workspace) return <NetworkShell status={status} onClose={onClose} actions={<>{localBindingAction}{stopHostingAction}</>}>
     <div className="teamspace-onboarding">
       <div className="teamspace-onboarding-card network-onboarding-card">
         <div className="network-onboarding-hero">
@@ -1540,6 +1643,7 @@ export function TeamNetwork({
         </div>
         <ServerIdentity status={status} />
         {pendingInviteNotice}
+        {notice && <div className="teamspace-notice" role="status">{notice}<button type="button" className="quiet-button" onClick={() => setNotice(null)}>{t('teamNetwork.shell.dismiss')}</button></div>}
         {!status.serverManaged && status.designatedHost && status.connectionState === 'needs-bootstrap' && <CreateNetworkForm busy={busy} onSubmit={createNetwork} />}
         {!status.serverManaged && status.designatedHost && status.connectionState === 'signed-out' && <><button type="button" className="primary-button" disabled={Boolean(busy)} onClick={() => void reconnectNetwork()}>{t('teamNetwork.shell.reconnectServer')}</button><details className="network-more"><summary>{t('teamNetwork.shell.legacyAccount')}</summary><UseInvitationForm busy={busy} onSubmit={useInvitation} /><RecoverDeviceForm busy={busy} onSubmit={recoverDevice} /></details></>}
         {!status.serverManaged && !status.designatedHost && <><button type="button" className="network-create-host" disabled={Boolean(busy) || !status.serverIdentity} onClick={startHostSetup}>
@@ -2441,4 +2545,11 @@ function formValue(form: FormData, name: string): string { return String(form.ge
 function bodyBytes(body: string): number { return new TextEncoder().encode(body).byteLength }
 function errorMessage(cause: unknown): NetworkCopy {
   return cause instanceof NetworkError ? cause.copy : cause instanceof Error ? cause.message : copy('teamNetwork.shell.requestFailed')
+}
+function stopHostingErrorMessage(cause: unknown): NetworkCopy {
+  const message = errorMessage(cause)
+  return typeof message === 'string' ? message
+    .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, '')
+    .replace(/^(?:(?:Error|TeamHubStoppedHostingError):\s*)+/i, '')
+    .trim() : message
 }

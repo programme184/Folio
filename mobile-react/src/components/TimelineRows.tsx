@@ -24,7 +24,7 @@ import {
 import { formatDateTime, messageText } from '../lib/format'
 import { canQueryScheduledJobHistory } from '../lib/job-history'
 import { registerCodeReviewFallback, reviewFallbackForEvents, summarizeStructuredToolDiff } from '../lib/code-review'
-import { foldMarkdownSource } from '../lib/math'
+import { foldMarkdownSource, visibleMarkdownPreview } from '../lib/math'
 import {
   inlineRoutePresentation,
   timelineChatReferenceIsRemote,
@@ -40,7 +40,7 @@ import {
   toolTraceHeadline,
 } from '../lib/trace-detail'
 import { useAppStore } from '../store/useAppStore'
-import { usePalette } from '../theme'
+import { radius, spacing, typography, usePalette } from '../theme'
 import { Text } from './AppText'
 import { ChatReferenceChips, CrossChatExchangeCard, CrossChatHandoffCard, CrossChatMessageCard } from './CrossChatTimelineCards'
 import { ImportedCrossChatDeliveryCard } from './ImportedCrossChatDeliveryCard'
@@ -92,7 +92,7 @@ function EmergencyAlertView({ event, sessionId }: { event: Event; sessionId: str
   }
   return <View style={[styles.system, { backgroundColor: `${colors.red}18`, borderColor: colors.red }]}>
     <Siren size={16} color={colors.red} />
-    <View style={{ flex: 1, gap: 5 }}><Text style={[styles.systemTitle, { color: colors.red }]}>Emergency alert raised</Text><Text selectable style={[styles.systemText, { color: colors.text }]}>{event.message || event.emergency_alert?.message || 'The agent requested immediate attention.'}</Text>{failed ? <Text accessibilityRole="alert" style={{ color: colors.red, fontSize: 11 }}>Couldn’t acknowledge. Try again.</Text> : null}{acknowledgeable ? <Pressable accessibilityRole="button" accessibilityLabel={`Acknowledge emergency${session?.title ? ` in ${session.title}` : ''}`} disabled={busy} onPress={() => void acknowledge()} style={[styles.emergencyAcknowledge, { backgroundColor: colors.red, opacity: busy ? 0.5 : 1 }]}>{busy ? <ActivityIndicator size="small" color="white" /> : <Text style={{ color: 'white', fontWeight: '800', fontSize: 11 }}>Acknowledge</Text>}</Pressable> : null}</View>
+    <View style={{ flex: 1, gap: 5 }}><Text style={[styles.systemTitle, { color: colors.red }]} localize>Emergency alert raised</Text><Text selectable style={[styles.systemText, { color: colors.text }]}>{event.message || event.emergency_alert?.message || 'The agent requested immediate attention.'}</Text>{failed ? <Text accessibilityRole="alert" style={{ color: colors.red, fontSize: 11 }} localize>Couldn’t acknowledge. Try again.</Text> : null}{acknowledgeable ? <Pressable accessibilityRole="button" accessibilityLabel={`Acknowledge emergency${session?.title ? ` in ${session.title}` : ''}`} disabled={busy} onPress={() => void acknowledge()} style={[styles.emergencyAcknowledge, { backgroundColor: colors.red, opacity: busy ? 0.5 : 1 }]}>{busy ? <ActivityIndicator size="small" color="white" /> : <Text style={{ color: 'white', fontWeight: '800', fontSize: 11 }} localize>Acknowledge</Text>}</Pressable> : null}</View>
   </View>
 }
 
@@ -124,7 +124,7 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   const [expanded, setExpanded] = useRecyclingState(false, [row.key])
   const [feedback, setFeedback] = useRecyclingState<'Copied' | 'Pinned' | 'Unpinned' | 'Copy failed' | 'Pin failed' | null>(null, [row.key])
   const folded = fold.folded && !expanded
-  const visible = folded ? `${fold.visible.trimEnd()}\n\n…` : full
+  const visible = folded ? visibleMarkdownPreview(full, fold, MESSAGE_PREVIEW_CHARACTER_LIMIT) : full
   const visibleInlineRoutes = useMemo(
     () => inlineRoutes
       ? timelineInlineReferencesForText(visible, inlineRoutes.references, sessionId)
@@ -186,9 +186,9 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
   }
   return (
     <View style={[styles.messageWrap, row.role === 'user' && styles.userAlign]}>
-      <View style={[styles.message, row.role === 'user' ? { backgroundColor: colors.user, borderColor: colors.green } : { backgroundColor: colors.surface, borderColor: colors.border }]}>
+      <View style={[styles.message, { backgroundColor: row.role === 'user' ? colors.user : colors.surface, borderColor: colors.border }]}>
         <View style={styles.metaRow}>
-          <Text style={[styles.author, { color: colors.muted }]} numberOfLines={1}>{row.role === 'user' ? 'You' : 'Assistant'}</Text>
+          <Text style={[styles.author, { color: colors.muted }]} numberOfLines={1} localize>{row.role === 'user' ? 'You' : 'Assistant'}</Text>
           <Text style={[styles.time, { color: colors.muted }]} numberOfLines={1}>{formatDateTime(event.ts)}</Text>
           <View style={styles.metaSpacer} />
           {feedback ? <Text testID={`message-action-feedback-${event.id}`} style={[styles.feedback, { color: feedback.includes('failed') ? colors.red : colors.green }]} numberOfLines={1}>{feedback}</Text> : null}
@@ -204,10 +204,10 @@ function MessageRowView({ row, sessionId, fontScale }: { row: Extract<TimelineRo
         />
         {folded ? (
           <Pressable accessibilityRole="button" accessibilityLabel="Show full message" onPress={() => setExpanded(true)} style={[styles.fold, { borderColor: colors.blue, backgroundColor: colors.raised }]}>
-            <Text style={{ color: colors.blue, fontSize: 12, fontWeight: '700' }}>{full.length - fold.cutIndex} characters hidden · Show full text</Text>
+            <Text style={{ color: colors.blue, fontSize: 12, fontWeight: '700' }} localize>{full.length - fold.cutIndex} characters hidden · Show full text</Text>
           </Pressable>
         ) : fold.folded ? (
-          <Pressable accessibilityRole="button" accessibilityLabel="Collapse message" onPress={() => setExpanded(false)} style={styles.collapse}><Text style={{ color: colors.muted, fontSize: 12 }}>Collapse</Text></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Collapse message" onPress={() => setExpanded(false)} style={styles.collapse}><Text style={{ color: colors.muted, fontSize: 12 }} localize>Collapse</Text></Pressable>
         ) : null}
         {displayedChatReferences.length ? <ChatReferenceChips references={displayedChatReferences} sessionId={sessionId} readOnlyReferenceKeys={readOnlyReferenceKeys} /> : null}
         {row.files.length ? <MediaGrid files={row.files} sessionId={sessionId} ownerKey={row.key} /> : null}
@@ -393,7 +393,7 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
         <Code2 size={14} color={colors.muted} />
         <View style={styles.traceHeading}>
           <View style={styles.traceHeadingMeta}>
-            <Text style={[styles.traceTitle, { color: colors.text }]}>Reasoning trace</Text>
+            <Text style={[styles.traceTitle, { color: colors.text }]} localize>Reasoning trace</Text>
             {metadata ? <Text style={[styles.traceMeta, { color: colors.muted }]} numberOfLines={1}>{metadata}</Text> : null}
           </View>
           {!open && preview ? <Text style={[styles.traceHeadline, { color: colors.muted }]} numberOfLines={4}>{preview}</Text> : null}
@@ -409,10 +409,10 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
             onReview(runId)
           }}
           style={[styles.review, { backgroundColor: colors.surface }]}
-        ><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }}>Review</Text></Pressable> : null}
+        ><Text style={{ color: colors.blue, fontSize: 11, fontWeight: '700' }} localize>Review</Text></Pressable> : null}
       </Pressable>
       {open ? <View style={[styles.traceBody, { borderColor: colors.border }]}>
-        {hiddenTraceEvents ? <Text style={[styles.traceHidden, { color: colors.muted }]}>{hiddenTraceEvents} older trace updates hidden</Text> : null}
+        {hiddenTraceEvents ? <Text style={[styles.traceHidden, { color: colors.muted }]} localize>{hiddenTraceEvents} older trace updates hidden</Text> : null}
         {visibleTraceEvents.map(event => {
           const text = boundedTraceText(event)
           return <View key={event.id} style={styles.traceEvent}>
@@ -445,7 +445,7 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
               style={[styles.traceDetailAction, { borderColor: colors.border, backgroundColor: colors.raised }]}
             >
               {loadingMore ? <ActivityIndicator size="small" color={colors.blue} /> : null}
-              <Text style={[styles.traceDetailActionText, { color: colors.blue }]}>{hasMore ? 'Load more activity' : 'Check for newer activity'}</Text>
+              <Text style={[styles.traceDetailActionText, { color: colors.blue }]} localize>{hasMore ? 'Load more activity' : 'Check for newer activity'}</Text>
             </Pressable> : null}
             {loadedEvents.length || detailLimited ? <Pressable
                 testID={`trace-show-less-${row.key}`}
@@ -454,7 +454,7 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
                 onPress={showLess}
                 style={[styles.traceDetailAction, { borderColor: colors.border, backgroundColor: colors.raised }]}
               >
-                <Text style={[styles.traceDetailActionText, { color: colors.blue }]}>Use compact trace</Text>
+                <Text style={[styles.traceDetailActionText, { color: colors.blue }]} localize>Use compact trace</Text>
               </Pressable> : null}
           </> : <Pressable
                 testID={`trace-show-more-${row.key}`}
@@ -466,11 +466,11 @@ function TraceRowView({ row, sessionId, onReview, fontScale, anchorSeq, includeC
                 style={[styles.traceDetailAction, { borderColor: colors.border, backgroundColor: colors.raised }]}
               >
                 {loadingMore ? <ActivityIndicator size="small" color={colors.blue} /> : null}
-                <Text style={[styles.traceDetailActionText, { color: colors.blue }]}>Load available activity</Text>
+                <Text style={[styles.traceDetailActionText, { color: colors.blue }]} localize>Load available activity</Text>
               </Pressable>}
           {loadError ? <View accessibilityRole="alert" style={styles.traceDetailError}><AlertTriangle size={13} color={colors.red} /><Text style={[styles.traceDetailErrorText, { color: colors.red }]}>{loadError}</Text></View> : null}
           {detailLimited || (detailWindow?.limited && loadedEvents != null)
-            ? <Text style={[styles.traceDetailLimitText, { color: colors.muted }]}>Trace detail is bounded to keep this chat responsive.</Text>
+            ? <Text style={[styles.traceDetailLimitText, { color: colors.muted }]} localize>Trace detail is bounded to keep this chat responsive.</Text>
             : null}
         </View> : null}
       </View> : null}
@@ -493,7 +493,7 @@ function ProgressRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind:
     accessibilityLiveRegion="polite"
     style={[styles.progressWrap, { borderColor: colors.border, backgroundColor: colors.raised }]}
   >
-    {row.hiddenCount > 0 ? <Text style={[styles.progressMeta, { color: colors.muted }]}>
+    {row.hiddenCount > 0 ? <Text style={[styles.progressMeta, { color: colors.muted }]} localize>
       {row.hiddenCount} earlier live {row.hiddenCount === 1 ? 'update' : 'updates'} hidden while this turn is active
     </Text> : null}
     {commentary.map((event, index) => <ProgressLineView
@@ -517,7 +517,7 @@ const ProgressLineView = memo(function ProgressLineView({ event, first, fontScal
 
 function MediaRowView({ row, sessionId }: { row: Extract<TimelineRow, { kind: 'media' }>; sessionId: string }) {
   const colors = usePalette()
-  return <View style={[styles.mediaRow, { borderColor: colors.border, backgroundColor: colors.surface }]}><Text style={[styles.mediaTitle, { color: colors.text }]}>Files & media <Text style={{ color: colors.muted }}>{row.files.length}</Text></Text><MediaGrid files={row.files} sessionId={sessionId} ownerKey={row.key} /></View>
+  return <View style={[styles.mediaRow, { borderColor: colors.border, backgroundColor: colors.surface }]}><Text style={[styles.mediaTitle, { color: colors.text }]} localize>Files & media <Text style={{ color: colors.muted }}>{row.files.length}</Text></Text><MediaGrid files={row.files} sessionId={sessionId} ownerKey={row.key} /></View>
 }
 
 function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<TimelineRow, { kind: 'job' }>; sessionId: string; onReview: (runId: string) => void; fontScale: number }) {
@@ -675,7 +675,7 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
     >
       <View style={styles.jobHeader}>
         <Clock3 size={16} color={colors.orange} />
-        <View style={styles.jobHeading}><Text style={[styles.jobTitle, { color: colors.text }]}>Latest Job Status</Text><Text style={[styles.jobMeta, { color: colors.muted }]} numberOfLines={1}>{row.title} · {displayRunCount} {displayRunCount === 1 ? 'run' : 'runs'} · {formatDateTime(latestStatusSource.ts || latest.ts)}</Text></View>
+        <View style={styles.jobHeading}><Text style={[styles.jobTitle, { color: colors.text }]} localize>Latest Job Status</Text><Text style={[styles.jobMeta, { color: colors.muted }]} numberOfLines={1} localize>{row.title} · {displayRunCount} {displayRunCount === 1 ? 'run' : 'runs'} · {formatDateTime(latestStatusSource.ts || latest.ts)}</Text></View>
         <JobStatusPill status={latestStatus} />
         {open ? <ChevronDown size={15} color={colors.muted} /> : <ChevronRight size={15} color={colors.muted} />}
       </View>
@@ -697,16 +697,16 @@ function JobRowView({ row, sessionId, onReview, fontScale }: { row: Extract<Time
         style={styles.jobHistoryToggle}
       >
         {showHistory ? <ChevronDown size={14} color={colors.muted} /> : <ChevronRight size={14} color={colors.muted} />}
-        <Text style={[styles.jobHistoryTitle, { color: colors.text }]}>Previous runs</Text>
+        <Text style={[styles.jobHistoryTitle, { color: colors.text }]} localize>Previous runs</Text>
         {previousRunCount > 0 ? <Text style={[styles.jobHistoryCount, { color: colors.muted }]}>{previousRunCount.toLocaleString()}</Text> : null}
       </Pressable>
       {showHistory ? <View style={styles.jobHistoryBody}>
         {history.map(event => <JobHistoryRun key={jobRunIdentity(event) ?? event.id} event={event} sessionId={sessionId} onReview={onReview} fontScale={fontScale} />)}
-        {historyLoading ? <View style={styles.jobHistoryStatus}><ActivityIndicator size="small" color={colors.orange} /><Text style={[styles.jobHistoryStatusText, { color: colors.muted }]}>Loading run history…</Text></View> : null}
-        {!historyLoading && historyError ? <View style={styles.jobHistoryStatus}><AlertTriangle size={13} color={colors.red} /><Text style={[styles.jobHistoryStatusText, { color: colors.red }]}>{historyError}</Text><Pressable accessibilityRole="button" accessibilityLabel="Retry loading previous runs" onPress={() => void loadHistory(historyNextBefore, loadedHistory.length === 0)} style={styles.jobHistoryRetry}><Text style={[styles.jobHistoryAction, { color: colors.blue }]}>Retry</Text></Pressable></View> : null}
-        {!historyLoading && historySupported === false && previousRunCount > history.length ? <Text style={[styles.jobHistoryStatusText, { color: colors.muted }]}>Showing {history.length} recent {history.length === 1 ? 'run' : 'runs'} saved with this chat. Update the server to load all {previousRunCount.toLocaleString()} previous runs.</Text> : null}
-        {!historyLoading && historySupported !== false && historyHasMore && historyNextBefore != null ? <Pressable testID={`job-load-older-runs-${loadableJobId}`} accessibilityRole="button" accessibilityLabel="Load older scheduled runs" onPress={() => void loadHistory(historyNextBefore, false)} style={[styles.jobHistoryMore, { borderColor: colors.border, backgroundColor: colors.raised }]}><Text style={[styles.jobHistoryAction, { color: colors.blue }]}>Load older runs</Text></Pressable> : null}
-        {!historyLoading && !historyError && history.length === 0 ? <Text style={[styles.jobHistoryStatusText, { color: colors.muted }]}>No prior run output was returned.</Text> : null}
+        {historyLoading ? <View style={styles.jobHistoryStatus}><ActivityIndicator size="small" color={colors.orange} /><Text style={[styles.jobHistoryStatusText, { color: colors.muted }]} localize>Loading run history…</Text></View> : null}
+        {!historyLoading && historyError ? <View style={styles.jobHistoryStatus}><AlertTriangle size={13} color={colors.red} /><Text style={[styles.jobHistoryStatusText, { color: colors.red }]}>{historyError}</Text><Pressable accessibilityRole="button" accessibilityLabel="Retry loading previous runs" onPress={() => void loadHistory(historyNextBefore, loadedHistory.length === 0)} style={styles.jobHistoryRetry}><Text style={[styles.jobHistoryAction, { color: colors.blue }]} localize>Retry</Text></Pressable></View> : null}
+        {!historyLoading && historySupported === false && previousRunCount > history.length ? <Text style={[styles.jobHistoryStatusText, { color: colors.muted }]} localize>Showing {history.length} recent {history.length === 1 ? 'run' : 'runs'} saved with this chat. Update the server to load all {previousRunCount.toLocaleString()} previous runs.</Text> : null}
+        {!historyLoading && historySupported !== false && historyHasMore && historyNextBefore != null ? <Pressable testID={`job-load-older-runs-${loadableJobId}`} accessibilityRole="button" accessibilityLabel="Load older scheduled runs" onPress={() => void loadHistory(historyNextBefore, false)} style={[styles.jobHistoryMore, { borderColor: colors.border, backgroundColor: colors.raised }]}><Text style={[styles.jobHistoryAction, { color: colors.blue }]} localize>Load older runs</Text></Pressable> : null}
+        {!historyLoading && !historyError && history.length === 0 ? <Text style={[styles.jobHistoryStatusText, { color: colors.muted }]} localize>No prior run output was returned.</Text> : null}
       </View> : null}
     </View> : null}
   </View>
@@ -773,15 +773,18 @@ function SystemRowView({ row, fontScale }: { row: Extract<TimelineRow, { kind: '
   const colors = usePalette()
   const error = isTimelineError(row.event)
   const digest = isHandoffDigestEvent(row.event)
+  const notificationLevel = row.event.type === 'agent_notification' ? row.event.notification_level : null
   const generating = digest && !['handoff_digest_received', 'handoff_digest_sent', 'handoff_digest_error'].includes(row.event.type)
-  const title = digest ? digestStatusTitle(row.event) : row.event.type.replaceAll('_', ' ')
+  const title = notificationLevel
+    ? notificationLevel === 'emergency' ? 'Emergency' : notificationLevel === 'important' ? 'Important' : 'Notification'
+    : digest ? digestStatusTitle(row.event) : row.event.type.replaceAll('_', ' ')
   const text = digest ? digestStatusText(row.event) : messageText(row.event) || title
   const digestBody = row.event.type === 'handoff_digest_received' ? row.event.digest?.trim() : ''
   const [showDigest, setShowDigest] = useRecyclingState(false, [row.key])
-  const accent = error ? colors.red : digest ? colors.orange : colors.blue
-  return <View style={[styles.system, { backgroundColor: error ? `${colors.red}18` : digest ? `${colors.orange}18` : colors.surface, borderColor: accent }]}>
+  const accent = error || notificationLevel === 'emergency' ? colors.red : notificationLevel === 'important' ? colors.pink : digest ? colors.orange : colors.blue
+  return <View style={[styles.system, { backgroundColor: error || notificationLevel ? `${accent}18` : digest ? `${colors.orange}18` : colors.surface, borderColor: accent }]}>
     {error ? <AlertTriangle size={16} color={accent} /> : generating ? <ActivityIndicator size="small" color={accent} style={styles.digestSpinner} /> : digest ? <Sparkles size={16} color={accent} /> : <Check size={16} color={accent} />}
-    <View style={{ flex: 1 }}><Text style={[styles.systemTitle, { color: error ? colors.red : colors.muted }]}>{title}</Text><Text selectable style={[styles.systemText, { color: error ? colors.red : colors.text }]}>{text}</Text>{digestBody ? <><Pressable accessibilityRole="button" accessibilityLabel={showDigest ? 'Hide digest' : 'View digest'} accessibilityState={{ expanded: showDigest }} onPress={() => setShowDigest(value => !value)} style={styles.digestToggle}><Text style={{ color: colors.blue, fontSize: 12, fontWeight: '700' }}>{showDigest ? 'Hide digest' : 'View digest'}</Text></Pressable>{showDigest ? <MarkdownContent value={digestBody} fontScale={fontScale} /> : null}</> : null}</View>
+    <View style={{ flex: 1 }}><Text style={[styles.systemTitle, { color: error ? colors.red : colors.muted }]} localize={Boolean(notificationLevel)}>{title}</Text><Text selectable style={[styles.systemText, { color: error ? colors.red : colors.text }]}>{text}</Text>{digestBody ? <><Pressable accessibilityRole="button" accessibilityLabel={showDigest ? 'Hide digest' : 'View digest'} accessibilityState={{ expanded: showDigest }} onPress={() => setShowDigest(value => !value)} style={styles.digestToggle}><Text style={{ color: colors.blue, fontSize: 12, fontWeight: '700' }} localize>{showDigest ? 'Hide digest' : 'View digest'}</Text></Pressable>{showDigest ? <MarkdownContent value={digestBody} fontScale={fontScale} /> : null}</> : null}</View>
   </View>
 }
 
@@ -808,14 +811,14 @@ function ProviderInteractionAuditView({ row }: { row: Extract<TimelineRow, { kin
     >
       <History size={15} color={colors.blue} />
       <View style={styles.interactionAuditHeading}>
-        <Text style={[styles.interactionAuditTitle, { color: colors.text }]}>{providerName} request history</Text>
+        <Text style={[styles.interactionAuditTitle, { color: colors.text }]} localize>{providerName} request history</Text>
         <Text style={[styles.interactionAuditCount, { color: colors.muted }]}>{countLabel}</Text>
       </View>
       <Text style={[styles.interactionAuditTime, { color: colors.muted }]}>{formatDateTime(row.event.ts)}</Text>
       {open ? <ChevronDown size={14} color={colors.muted} /> : <ChevronRight size={14} color={colors.muted} />}
     </Pressable>
     {open ? <View style={[styles.interactionAuditBody, { borderTopColor: colors.border }]}>
-      <Text style={[styles.interactionAuditHelp, { color: colors.muted }]}>Current requests stay actionable in the approval panel. This is the compact audit history.</Text>
+      <Text style={[styles.interactionAuditHelp, { color: colors.muted }]} localize>Current requests stay actionable in the approval panel. This is the compact audit history.</Text>
       {audit.entries.map(entry => <View key={entry.id} style={[styles.interactionAuditEntry, { borderTopColor: colors.border }]}>
         <View style={styles.interactionAuditEntryText}>
           <Text selectable style={[styles.interactionAuditEntryLabel, { color: colors.text }]}>{entry.label}</Text>
@@ -880,25 +883,25 @@ function digestStatusText(event: Extract<TimelineRow, { kind: 'system' }>['event
 }
 
 const styles = StyleSheet.create({
-  messageWrap: { width: '100%', paddingHorizontal: 14 }, userAlign: { alignItems: 'flex-end' },
-  message: { width: '100%', maxWidth: 940, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 14, paddingTop: 9, paddingBottom: 12 },
-  metaRow: { minWidth: 0, minHeight: 40, flexDirection: 'row', alignItems: 'center', gap: 4 }, metaSpacer: { flex: 1, minWidth: 0 }, author: { flexShrink: 0, fontSize: 10, fontWeight: '700' }, time: { minWidth: 0, flexShrink: 1, fontSize: 10 }, feedback: { minWidth: 0, flexShrink: 1, fontSize: 10, fontWeight: '800' },
-  fold: { alignSelf: 'flex-start', minHeight: 44, paddingHorizontal: 10, paddingVertical: 7, borderRadius: 5, borderWidth: StyleSheet.hairlineWidth, justifyContent: 'center' }, collapse: { alignSelf: 'flex-start', minHeight: 44, paddingVertical: 5, justifyContent: 'center' },
-  traceWrap: { paddingHorizontal: 14 }, traceHeader: { minHeight: 52, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 7 },
-  traceHeading: { flex: 1, minWidth: 0, gap: 3 }, traceHeadingMeta: { flexDirection: 'row', alignItems: 'baseline', gap: 7 }, traceTitle: { flexShrink: 0, fontSize: 12, fontWeight: '700' }, traceMeta: { flex: 1, minWidth: 0, fontSize: 10.5 }, traceHeadline: { fontSize: 10.5, lineHeight: 15 }, traceAction: { flexShrink: 0, fontSize: 10.5, fontWeight: '800' }, review: { minHeight: 44, borderRadius: 5, paddingHorizontal: 8, paddingVertical: 5, justifyContent: 'center' },
+  messageWrap: { width: '100%', paddingHorizontal: spacing.lg }, userAlign: { alignItems: 'flex-end' },
+  message: { width: '100%', maxWidth: 940, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: spacing.md },
+  metaRow: { minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: spacing.xs }, metaSpacer: { flex: 1, minWidth: 0 }, author: { ...typography.caption, flexShrink: 0, fontWeight: '600' }, time: { minWidth: 0, flexShrink: 1, ...typography.caption }, feedback: { ...typography.caption, minWidth: 0, flexShrink: 1, fontWeight: '600' },
+  fold: { alignSelf: 'flex-start', minHeight: 44, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, justifyContent: 'center' }, collapse: { alignSelf: 'flex-start', minHeight: 44, paddingVertical: spacing.xs, justifyContent: 'center' },
+  traceWrap: { paddingHorizontal: spacing.lg }, traceHeader: { minHeight: 52, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  traceHeading: { flex: 1, minWidth: 0, gap: spacing.xs }, traceHeadingMeta: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm }, traceTitle: { ...typography.label, flexShrink: 1, fontWeight: '600' }, traceMeta: { ...typography.caption, flex: 1, minWidth: 0 }, traceHeadline: { ...typography.caption }, traceAction: { ...typography.caption, flexShrink: 0, fontWeight: '600' }, review: { minHeight: 44, borderRadius: radius.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, justifyContent: 'center' },
   traceBody: { marginHorizontal: 8, borderLeftWidth: StyleSheet.hairlineWidth, paddingVertical: 8, paddingLeft: 11, gap: 9 }, traceHidden: { fontSize: 10, fontWeight: '700' }, traceEvent: { flexDirection: 'row', gap: 8 }, traceEventBody: { flex: 1, minWidth: 0 }, traceEventType: { fontSize: 10, fontWeight: '700', textTransform: 'capitalize' }, traceText: { fontSize: 12, fontFamily: 'Menlo', lineHeight: 17, marginTop: 3 },
   traceDetailActions: { gap: 7, paddingTop: 3 },
-  traceDetailAction: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
+  traceDetailAction: { minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
   traceDetailActionText: { fontSize: 11, fontWeight: '800' },
   traceDetailError: { minHeight: 32, flexDirection: 'row', alignItems: 'center', gap: 7 },
   traceDetailErrorText: { flex: 1, fontSize: 11, lineHeight: 15 },
   traceDetailLimitText: { fontSize: 10.5, lineHeight: 15 },
-  progressWrap: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingTop: 5, paddingBottom: 3, overflow: 'hidden' },
+  progressWrap: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingTop: 5, paddingBottom: 3, overflow: 'hidden' },
   progressMeta: { paddingTop: 5, paddingBottom: 3, fontSize: 10, fontWeight: '700' },
   progressItem: { paddingTop: 4, paddingBottom: 5 }, progressActivity: { fontSize: 11, lineHeight: 16, fontWeight: '600' },
-  mediaRow: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 10, gap: 10 }, mediaTitle: { fontSize: 12, fontWeight: '800' },
-  job: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 9 },
-  emergencyAcknowledge: { minHeight: 38, alignSelf: 'flex-start', borderRadius: 6, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
+  mediaRow: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 10, gap: 10 }, mediaTitle: { fontSize: 12, fontWeight: '800' },
+  job: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 9 },
+  emergencyAcknowledge: { minHeight: 38, alignSelf: 'flex-start', borderRadius: radius.md, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
   jobDisclosure: { gap: 9 },
   jobHeader: { minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 8 },
   jobHeading: { flex: 1, minWidth: 0 },
@@ -906,8 +909,8 @@ const styles = StyleSheet.create({
   jobMeta: { fontSize: 10, marginTop: 2 },
   jobText: { fontSize: 14, lineHeight: 20 },
   jobStructuredText: { fontSize: 12, lineHeight: 17, fontFamily: 'Menlo' },
-  jobStatusPill: { flexShrink: 0, minHeight: 24, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
-  jobStatusPillCompact: { minHeight: 21, borderRadius: 11, paddingHorizontal: 6 },
+  jobStatusPill: { flexShrink: 0, minHeight: 24, borderRadius: radius.sm, borderWidth: StyleSheet.hairlineWidth, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
+  jobStatusPillCompact: { minHeight: 21, borderRadius: radius.sm, paddingHorizontal: 6 },
   jobStatusPillText: { fontSize: 10, fontWeight: '800' },
   jobStatusPillTextCompact: { fontSize: 9 },
   jobHistory: { borderTopWidth: StyleSheet.hairlineWidth, paddingTop: 7 },
@@ -915,7 +918,7 @@ const styles = StyleSheet.create({
   jobHistoryTitle: { flex: 1, fontSize: 12, fontWeight: '800' },
   jobHistoryCount: { fontSize: 11, fontWeight: '700' },
   jobHistoryBody: { gap: 7, paddingBottom: 2 },
-  jobHistoryRun: { borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
+  jobHistoryRun: { borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   jobHistoryRunHeader: { minHeight: 54, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 7 },
   jobHistoryRunText: { minWidth: 0, flex: 1, gap: 2 },
   jobHistoryRunBody: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 10, paddingVertical: 9 },
@@ -925,9 +928,9 @@ const styles = StyleSheet.create({
   jobHistoryStatusText: { flex: 1, fontSize: 11, lineHeight: 15 },
   jobHistoryAction: { fontSize: 11, fontWeight: '800' },
   jobHistoryRetry: { minWidth: 52, minHeight: 44, alignItems: 'center', justifyContent: 'center' },
-  jobHistoryMore: { minHeight: 44, borderRadius: 6, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
-  system: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, padding: 12, flexDirection: 'row', gap: 10 }, systemTitle: { fontSize: 10, fontWeight: '800', textTransform: 'capitalize' }, systemText: { fontSize: 13.5, lineHeight: 19, marginTop: 4 },
-  interactionAudit: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
+  jobHistoryMore: { minHeight: 44, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
+  system: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 12, flexDirection: 'row', gap: 10 }, systemTitle: { fontSize: 10, fontWeight: '800', textTransform: 'capitalize' }, systemText: { fontSize: 13.5, lineHeight: 19, marginTop: 4 },
+  interactionAudit: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   interactionAuditHeader: { minHeight: 52, paddingHorizontal: 11, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 7 },
   interactionAuditHeading: { flex: 1, minWidth: 0, gap: 2 },
   interactionAuditTitle: { fontSize: 11.5, fontWeight: '800' },
@@ -940,7 +943,7 @@ const styles = StyleSheet.create({
   interactionAuditEntryLabel: { fontSize: 11.5, fontWeight: '700' },
   interactionAuditEntryStatus: { fontSize: 10.5, fontWeight: '700' },
   interactionAuditEntryTime: { flexShrink: 0, fontSize: 9.5 },
-  lifecycle: { marginHorizontal: 14, borderRadius: 7, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
+  lifecycle: { marginHorizontal: 14, borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden' },
   lifecycleSummary: { minHeight: 44, paddingHorizontal: 11, flexDirection: 'row', alignItems: 'center', gap: 7 },
   lifecycleTitle: { flex: 1, minWidth: 0, fontSize: 11.5, fontWeight: '800' }, lifecycleTime: { fontSize: 9.5 },
   lifecycleDetail: { borderTopWidth: StyleSheet.hairlineWidth, paddingHorizontal: 12, paddingVertical: 9 },
