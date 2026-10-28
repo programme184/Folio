@@ -1,5 +1,207 @@
 # Public development log
 
+## 2026-10-28 — Create a project chat with the saved Cursor API key
+
+- The project + button opened the new-chat dialog on General when the saved
+  runtime was Cursor CLI login and that login was not ready. Creating from
+  that dialog also failed in the built app, which still rejected a Cursor API
+  key. The + button now creates the chat in the project's working folder and
+  uses the key saved in Folio. The desktop build accepts that key.
+
+```text
+Change and expected user behavior: the + beside a project creates a chat in
+that project's working folder. When Cursor CLI login is not ready and a
+Cursor API key is connected, the chat uses that key and the new-chat dialog
+stays closed.
+Source commit / app build / server version: uncommitted desktop source.
+The previous production bundle still rejected Cursor API key chats.
+Test surface: store fixture, then production compile.
+Actions exercised and observed outcomes: a saved Cursor CLI default plus a
+project folder creates one chat with that folder, its working directory, and
+provider_connection custom. The new-chat dialog stays closed. Stale Cursor
+defaults with no saved key still open the dialog.
+Real boundaries exercised; any mocked/stubbed boundaries: store test. The
+open Folio window loaded the 17:00 bundle and keeps it until restart.
+Focused regression / typecheck / production build: three store tests passed.
+electron-vite production build passed and the main bundle allow-list includes
+cursor. The open window was not restarted.
+Remaining limitations or blocked acceptance: quit and reopen Folio to load
+this bundle. A live key was not submitted.
+Availability: rebuilt desktop bundle; the open window is still the previous one
+```
+
+## 2026-10-28 — Cursor API keys come from the Grok dashboard
+
+- The Cursor API key form still sent people to the old Cursor dashboard.
+  Current user keys are created at the Grok dashboard and start with `grok_`.
+  Folio now links there and says so. The key is still passed to Cursor CLI;
+  the agent name stays Cursor.
+
+```text
+Change and expected user behavior: My Agents → Cursor API key → Configure API
+explains that the key comes from the Grok dashboard → API Keys and opens
+https://grok.com/dashboard/api-keys. A grok_ key is saved the same way as
+before.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: the Cursor configure form shows the
+grok_ help and the Grok API Keys link.
+Real boundaries exercised; any mocked/stubbed boundaries: component test.
+The open Folio window was not reloaded.
+Focused regression / typecheck / production build: Cursor connection
+settings tests passed (12). Locale catalog checks passed except the
+existing papers.resize terminology failure, which this change does not touch.
+Production build was not rerun.
+Remaining limitations or blocked acceptance: reload the open window to see
+the new help. A live grok_ key was not submitted.
+Availability: source only
+```
+
+## 2026-10-28 — Use a Folio Cursor API key when CLI login fails
+
+- Saving a Cursor API key in Folio did not create a chat that uses it. New
+  chats were rejected before they reached the server, so an existing Cursor
+  chat kept checking `cursor-agent` login and showed that failure. A saved,
+  verified key can now start a Cursor API key chat. The failure notice points
+  at that chat instead of asking to recheck the CLI.
+
+```text
+Change and expected user behavior: after a Cursor API key is connected in
+Folio, a new chat uses that key when Cursor CLI login is not ready. An
+existing CLI chat that failed the login check offers Cursor API key rather
+than Recheck.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: creating a Cursor API key chat
+sends provider_connection custom. A failed CLI authentication notice no
+longer offers Recheck and opens a new chat for a session that already
+started.
+Real boundaries exercised; any mocked/stubbed boundaries: desktop client
+and component tests. The open Folio window was not reloaded.
+Focused regression / typecheck / production build: Cursor API key session,
+new-chat, composer notice, and locale tests passed (4). Electron typecheck
+passed. Production build was not rerun.
+Remaining limitations or blocked acceptance: a chat that already started
+with CLI login stays on that login. Reload the open window to load this
+client. The open Folio window was not exercised.
+Availability: source only
+```
+
+## 2026-10-28 — Paper marks start in green
+
+- The highlight swatch and underline A on a PDF file header start on green
+  (`#5fb236`). New highlights and underlines use that color until another
+  color is chosen. Marks already saved in yellow keep that color. The menu
+  still lists the same eight colors, yellow first.
+
+```text
+Change and expected user behavior: opening a paper shows a green swatch and
+a green A. Highlight or underline on the passage under the pointer is green.
+Choosing another color from the menu changes that passage.
+Source commit / app build / server version: uncommitted desktop source;
+electron-vite production build. The paper shelf does not use AgentsServer.
+Test surface: component fixture
+Actions exercised and observed outcomes: highlighting a passage stores
+#5fb236. With yellow selected, the menu checks Yellow. Choosing Red stores
+#ff6666.
+Real boundaries exercised; any mocked/stubbed boundaries: component tests
+and the production bundle. The open desktop window was not reloaded.
+Focused regression / typecheck / production build: paper passage, selection,
+header-bar, and mark-store tests passed (33). Electron typecheck passed.
+electron-vite production build verified; the built highlight fallback is
+#5fb236.
+Remaining limitations or blocked acceptance: reload the open window before
+the green swatch appears. Hover stays the lighter green wash.
+Availability: local package
+```
+
+## 2026-10-28 — Open Cursor API key settings on a local no-token server
+
+- A local AgentsServer started without an access token still allowed CLI login
+  on loopback, but My Agents → Cursor API key returned a generic read/save
+  failure and kept Configure API disabled. Loopback without a token can now
+  read and save custom API endpoint settings the same way, while Codex CLI
+  API-key login and remote/browser clients stay closed. Cursor is included in
+  the privileged admin route list with Claude and OpenCode.
+- Desktop maps that authenticated-mode block to administrator guidance instead
+  of a generic connection failure.
+
+```text
+Change and expected user behavior: on a local no-token AgentsServer, open
+My Agents → Cursor → Configure API, paste a Cursor-issued key, and Connect.
+Source commit / app build / server version: uncommitted desktop + server
+source; local AgentsServer restarted on 127.0.0.1:7850.
+Test surface: local HTTP against the restarted server; focused unit/client
+fixtures.
+Actions exercised and observed outcomes: GET
+/api/admin/provider-connections/cursor returned 200 with an empty
+configuration after restart. Focused loopback auth and provider-connection
+client tests passed.
+Real boundaries exercised; any mocked/stubbed boundaries: live local GET
+against the restarted AgentsServer. Saving a real Cursor-issued key and a
+provider catalog check were not completed in this change.
+Focused regression / typecheck / production build: server
+test_loopback_without_operator_token_can_replace_file_login and
+test_codex_subagents_admin_isolated passed; electron
+provider-connections.test.ts passed (7).
+Remaining limitations or blocked acceptance: reload My Agents / the desktop
+connection after the server restart, then paste the Cursor API key in
+Configure API. A live key verification depends on Cursor CLI and Cursor's
+service.
+Availability: local package / local server
+```
+
+## 2026-10-28 — Copy paper text on select
+
+- The paper selection bar no longer has a Copy button. Dragging to select
+  text or double-clicking a word copies that passage immediately. Hovering a
+  paragraph still opens the bar without writing the clipboard.
+
+```text
+Change and expected user behavior: select or double-click paper text to
+copy it; the floating bar keeps Explain, Translate, Ask, Highlight, and
+Underline.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: mouse-up selection copies the
+normalized passage; hover alone does not copy; Copy is absent from the
+toolbar.
+Real boundaries exercised; any mocked/stubbed boundaries: clipboard writes
+are stubbed in the fixture. The open Folio window was not used for this
+check. Reload it to load the new bundle.
+Focused regression / typecheck / production build: paper selection tests
+passed (11). electron tsc --noEmit passed. electron-vite production build
+verified.
+Remaining limitations or blocked acceptance: hover still does not copy.
+Reload the open Folio window to exercise clipboard writes in the live app.
+Availability: local package
+```
+
+## 2026-10-28 — Turn paper pages from the keyboard
+
+- Space and Page Down move to the next paper page. Page Up moves to the
+  previous page. Home returns to the top. Click the paper first so it can
+  receive keys. Typing fields and the answer panel keep their own Space.
+
+```text
+Change and expected user behavior: with the paper focused, Space or Page
+Down jumps to the next page, Page Up to the previous page, and Home to the
+start. Shift+Space also moves up.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: key mapping and page-top scroll
+math cover Space, PageDown, PageUp, Home, and a viewport fallback when
+page tops are missing.
+Real boundaries exercised; any mocked/stubbed boundaries: the open Folio
+window was not used for this check. Reload it to load the new bundle.
+Focused regression / typecheck / production build: paper document tests
+passed (9). electron tsc --noEmit passed. electron-vite production build
+verified.
+Remaining limitations or blocked acceptance: keys only apply while the
+paper scroller is focused. End is not bound.
+Availability: local package
+```
+
 ## 2026-10-28 — Open Folio from the application menu
 
 - The application menu was still starting the Electron binary directly, so

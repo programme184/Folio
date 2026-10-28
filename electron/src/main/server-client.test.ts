@@ -307,6 +307,35 @@ describe('AgentServerClient Cursor session policy', () => {
     }))
   })
 
+  it('creates a Cursor API key chat instead of rejecting the saved Folio connection', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        session: {
+          id: 'cursor-key-chat', title: 'Cursor', folder: 'General', cwd: '/work', backend: 'cursor',
+          provider_connection: 'custom'
+        }
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    }))
+    const client = new AgentServerClient('http://example.test:7850', 'token')
+
+    await client.createSession({
+      title: 'Cursor',
+      folder: 'General',
+      cwd: '/work',
+      backend: 'cursor',
+      provider_connection: 'custom',
+      cursor_permission_mode: 'default'
+    })
+
+    expect(JSON.parse(String(calls[0].init.body))).toEqual(expect.objectContaining({
+      backend: 'cursor',
+      provider_connection: 'custom',
+      cursor_permission_mode: 'default'
+    }))
+  })
+
   it('resumes Cursor provider context without claiming to import its transcript', async () => {
     const calls: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {

@@ -326,6 +326,7 @@ describe('paper marks', () => {
     const hits = [{ page: 1, glyphIndexes: page.paragraphs[0].glyphIndexes }]
     const marked = togglePaperMark([], { type: 'highlight', hits, pages: [page], id: 'mark-1' })
     expect(marked).toHaveLength(1)
+    expect(PAPER_HIGHLIGHT_COLOR).toBe('#5fb236')
     expect(marked[0].color).toBe(PAPER_HIGHLIGHT_COLOR)
     expect(marked[0].text).toBe(locatePassages([page], hits)?.text)
     expect(marked[0].text).toBe(textForHits([page], hits))

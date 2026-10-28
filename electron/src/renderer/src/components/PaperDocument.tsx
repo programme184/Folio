@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { ZoomIn, ZoomOut } from 'lucide-react'
 import { getDocument, GlobalWorkerOptions, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
@@ -57,6 +57,56 @@ export function paperAnswerConsumesWheel(
   return element.scrollTop > 1
 }
 
+export type PaperPageKey = 'down' | 'up' | 'home'
+
+/** Space, PageDown, PageUp, and Home turn the paper when no modifier blocks them. */
+export function paperPageKeyAction(event: {
+  key: string
+  code: string
+  altKey: boolean
+  ctrlKey: boolean
+  metaKey: boolean
+  shiftKey: boolean
+}): PaperPageKey | null {
+  if (event.altKey || event.ctrlKey || event.metaKey) return null
+  if (event.key === 'Home' || event.code === 'Home') return event.shiftKey ? null : 'home'
+  if (event.key === 'PageDown' || event.code === 'PageDown') return event.shiftKey ? null : 'down'
+  if (event.key === 'PageUp' || event.code === 'PageUp') return event.shiftKey ? null : 'up'
+  if (event.key === ' ' || event.code === 'Space') return event.shiftKey ? 'up' : 'down'
+  return null
+}
+
+export function paperKeyTargetBlocksPaging(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  return Boolean(target.closest('input, textarea, select, button, [contenteditable="true"], .paper-answer'))
+}
+
+/** Jump to the next or previous paper page, or the top. Falls back to one viewport. */
+export function paperPageScrollTop(
+  action: PaperPageKey,
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number,
+  pageTops: readonly number[] = []
+): number {
+  const max = Math.max(0, scrollHeight - clientHeight)
+  if (action === 'home') return 0
+  const tops = pageTops.filter(top => Number.isFinite(top)).slice().sort((a, b) => a - b)
+  if (tops.length) {
+    if (action === 'down') {
+      const next = tops.find(top => top > scrollTop + 1)
+      if (next !== undefined) return Math.min(max, next)
+    } else {
+      const previous = tops.slice().reverse().find(top => top < scrollTop - 1)
+      if (previous !== undefined) return Math.max(0, previous)
+      return 0
+    }
+  }
+  const step = Math.max(1, clientHeight)
+  if (action === 'down') return Math.min(max, scrollTop + step)
+  return Math.max(0, scrollTop - step)
+}
+
 export function tintPaperCanvas(canvas: HTMLCanvasElement, color: string): void {
   if (canvas.width < 1 || canvas.height < 1) return
   const context = canvas.getContext('2d')
@@ -107,6 +157,21 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
     if (!element) return
     element.scrollTop += paperWheelPixels(event.deltaY, event.deltaMode, element.clientHeight)
     element.scrollLeft += paperWheelPixels(event.deltaX, event.deltaMode, element.clientWidth)
+  }
+  const turnPageFromKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (paperKeyTargetBlocksPaging(event.target)) return
+    const action = paperPageKeyAction(event)
+    if (!action) return
+    const element = scroller.current
+    if (!element) return
+    const pageTops = [...element.querySelectorAll<HTMLElement>('.paper-page')].map(page => page.offsetTop)
+    const next = paperPageScrollTop(action, element.scrollTop, element.clientHeight, element.scrollHeight, pageTops)
+    if (next === element.scrollTop) return
+    event.preventDefault()
+    element.scrollTop = next
+  }
+  const focusScroller = () => {
+    scroller.current?.focus({ preventScroll: true })
   }
   useEffect(() => {
     const toolbar = scroller.current?.closest('.workspace-editor-editor')?.querySelector('.workspace-editor-editor-toolbar')
@@ -218,7 +283,16 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
       <button type="button" aria-label={t('papers.zoomIn')} onClick={() => setZoom(value => Math.min(2.5, Math.round((value + 0.2) * 10) / 10))}><ZoomIn size={15} /></button>
     </div>
     {message && <p className="paper-document-status" role="status">{message}</p>}
-    <div className="paper-document-scroll" ref={scroller} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave} onMouseUp={onMouseUp} />
+    <div
+      className="paper-document-scroll"
+      ref={scroller}
+      tabIndex={0}
+      onMouseDown={event => { focusScroller(); onMouseDown(event) }}
+      onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
+      onMouseUp={onMouseUp}
+      onKeyDown={turnPageFromKey}
+    />
     {selection && <PaperToolbar
       selection={selection}
       canAsk={canAsk}

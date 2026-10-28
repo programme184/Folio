@@ -18,7 +18,7 @@ trust; it and its upstream provider receive the requests you submit.
 | Codex | `https://openrouter.ai/api/v1` | Responses; OpenRouter API key |
 | Claude Code | `https://openrouter.ai/api` | Anthropic Messages; Bearer; OpenRouter API key |
 | OpenCode | `https://openrouter.ai/api/v1` | Chat Completions; Bearer; OpenRouter API key |
-| Cursor | Not a generic OpenRouter endpoint | Native Cursor login / Cursor-issued CLI key |
+| Cursor | Not a generic OpenRouter endpoint | Native Cursor login, or a CLI key from the [Grok dashboard](https://grok.com/dashboard/api-keys). Current keys start with `grok_`. |
 
 Claude Code and OpenCode custom APIs can now be selected **per chat**. Select the
 intended server, open **Settings → My Agents → Configure API**, enter the

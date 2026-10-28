@@ -5961,6 +5961,36 @@ def request_exact_native_token_header_authorized(request: Request) -> bool:
     return candidate is not None and token_matches(candidate)
 
 
+def loopback_unauthenticated_credential_admin(path: str, method: str) -> bool:
+    """Local My Agents credential controls when this server has no operator token.
+
+    Chat and CLI file-login are already open on loopback without a token. Custom
+    API endpoint settings belong to the same local operator surface. Codex CLI
+    API-key login stays authenticated-only. Browsers and remote clients stay closed.
+    """
+
+    path = path.rstrip("/")
+    method = method.upper()
+    if method == "GET" and path == "/api/admin/codex/auth":
+        return True
+    if method == "POST" and path in {
+        "/api/admin/codex/auth/import",
+        "/api/admin/cursor/auth/import",
+    }:
+        return True
+    if path.startswith("/api/admin/provider-connections/"):
+        return True
+    if path.startswith("/api/admin/provider-accounts/"):
+        return True
+    if path.startswith("/api/admin/provider-models/"):
+        return True
+    return path in {
+        "/api/admin/codex/provider",
+        "/api/admin/codex/provider/test",
+        "/api/admin/codex/provider/models",
+    }
+
+
 def request_exact_restart_header_authorized(request: Request) -> bool:
     """Accept one, and only one, of the restart control's documented headers."""
 
@@ -79251,6 +79281,11 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/provider/models",
         "/api/admin/provider-connections/claude", "/api/admin/provider-connections/claude/check",
         "/api/admin/provider-connections/opencode", "/api/admin/provider-connections/opencode/check",
+        "/api/admin/provider-connections/cursor", "/api/admin/provider-connections/cursor/check",
+        "/api/admin/provider-accounts/claude", "/api/admin/provider-accounts/cursor",
+        "/api/admin/provider-accounts/opencode",
+        "/api/admin/provider-models/claude", "/api/admin/provider-models/opencode",
+        "/api/admin/provider-models/cursor", "/api/admin/provider-models/codex",
     }
     public_chat_shares_admin_route = (
         request.url.path == "/api/admin/chat-shares"
@@ -79384,24 +79419,18 @@ async def require_agent_token(request: Request, call_next):
         if privileged_native_browser_request_forbidden(request):
             return JSONResponse({"detail": "forbidden"}, status_code=403)
         # Chat is already open when this server has no operator token. The
-        # desktop on this machine may still read and replace the Codex file
-        # login. Browser framing was rejected above. Remote clients and every
-        # other administrative route stay closed. The endpoint repeats this
-        # check.
+        # desktop on this machine may still manage local credential settings
+        # and CLI file login. Browser framing was rejected above. Remote
+        # clients and every other administrative route stay closed. The
+        # endpoint repeats this check.
         client = request.client
         host = client.host if client is not None else ""
-        loopback_file_login = False
+        loopback_credential_admin = False
         if not AGENT_TOKEN and host in {"127.0.0.1", "::1"}:
-            path = request.url.path.rstrip("/")
-            method = request.method.upper()
-            loopback_file_login = (
-                method == "GET" and path == "/api/admin/codex/auth"
-                or method == "POST" and path in {
-                    "/api/admin/codex/auth/import",
-                    "/api/admin/cursor/auth/import",
-                }
+            loopback_credential_admin = loopback_unauthenticated_credential_admin(
+                request.url.path, request.method
             )
-        if not AGENT_TOKEN and not loopback_file_login:
+        if not AGENT_TOKEN and not loopback_credential_admin:
             return JSONResponse(
                 {
                     "detail": (
@@ -79411,7 +79440,7 @@ async def require_agent_token(request: Request, call_next):
                 },
                 status_code=503,
             )
-        if not loopback_file_login and not request_exact_native_token_header_authorized(request):
+        if not loopback_credential_admin and not request_exact_native_token_header_authorized(request):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
         if team_hub_host_admin_route and request.method.upper() == "POST":
             declared_size, transport_error = privileged_native_json_transport(
@@ -79500,8 +79529,10 @@ async def require_agent_token(request: Request, call_next):
                 status_code, detail = body_error
                 return JSONResponse({"detail": detail}, status_code=status_code)
         elif (request.url.path in {"/api/admin/codex/provider", "/api/admin/codex/provider/test", "/api/admin/codex/provider/models"}
-              and request.method.upper() in {"PUT", "POST"}) or (request.url.path.startswith("/api/admin/provider-connections/")
-              and request.method.upper() in {"PUT", "POST", "DELETE"}):
+              and request.method.upper() in {"PUT", "POST"}) or (
+                  (request.url.path.startswith("/api/admin/provider-connections/")
+                   or request.url.path.startswith("/api/admin/provider-models/"))
+                  and request.method.upper() in {"PUT", "POST", "DELETE"}):
             declared_size, transport_error = privileged_native_json_transport(
                 request, max_body_bytes=codex_provider.MAX_BODY_BYTES,
                 label="Provider endpoint", require_content_length=True,
@@ -83151,11 +83182,11 @@ def require_native_admin_control(request: Request) -> None:
 
     if privileged_native_browser_request_forbidden(request):
         raise HTTPException(status_code=403, detail="forbidden")
-    # Same loopback file-login exception as require_agent_token. A request
+    # Same loopback credential-admin exception as require_agent_token. A request
     # that skipped the middleware still cannot change any other control.
     client = request.client
     host = client.host if client is not None else ""
-    loopback_file_login = False
+    loopback_credential_admin = False
     # Side chat is a session action, not a credential control. On a server
     # with no operator token the desktop on this machine may use it. Browsers
     # were rejected above. Remote clients and every other control stay closed.
@@ -83163,13 +83194,7 @@ def require_native_admin_control(request: Request) -> None:
     if not AGENT_TOKEN and host in {"127.0.0.1", "::1"}:
         path = request.url.path.rstrip("/")
         method = request.method.upper()
-        loopback_file_login = (
-            method == "GET" and path == "/api/admin/codex/auth"
-            or method == "POST" and path in {
-                "/api/admin/codex/auth/import",
-                "/api/admin/cursor/auth/import",
-            }
-        )
+        loopback_credential_admin = loopback_unauthenticated_credential_admin(path, method)
         parts = path.split("/")
         session_id = parts[3] if len(parts) > 3 else ""
         tail = parts[4:]
@@ -83185,7 +83210,7 @@ def require_native_admin_control(request: Request) -> None:
             or method == "DELETE" and len(tail) == 2 and tail[0] == "side-chat" and side_id(tail[1])
             or method == "DELETE" and len(tail) == 2 and tail[0] == "side-chats" and side_id(tail[1])
         )
-    if not AGENT_TOKEN and not loopback_file_login and not loopback_side_chat:
+    if not AGENT_TOKEN and not loopback_credential_admin and not loopback_side_chat:
         raise HTTPException(
             status_code=503,
             detail=(
@@ -83193,7 +83218,7 @@ def require_native_admin_control(request: Request) -> None:
                 "AgentsServer mode"
             ),
         )
-    if not loopback_file_login and not loopback_side_chat and not request_exact_native_token_header_authorized(request):
+    if not loopback_credential_admin and not loopback_side_chat and not request_exact_native_token_header_authorized(request):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 

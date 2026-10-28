@@ -2142,13 +2142,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       let defaults = storedDefaults
         ?? (seed ? sessionNewChatDefaults(seed, defaultCwd) : null)
       // Cursor is the default runtime until the user saves a different one.
-      if (!storedDefaults && selectableChatBackendChoices(current.health, current.runtimeCatalog).includes('cursor')
-        && cursorBackendAvailable(current.health, current.runtimeCatalog)) {
+      // A saved Folio API key is a separate connection from CLI login. When
+      // CLI login is not ready, start on that key instead of a chat that
+      // will fail the CLI authentication check.
+      const chatChoices = selectableChatBackendChoices(current.health, current.runtimeCatalog)
+      const cursorReady = cursorBackendAvailable(current.health, current.runtimeCatalog)
+      if (!storedDefaults && chatChoices.includes('cursor') && cursorReady) {
         defaults = {
           version: 1,
           folder: defaults?.folder || 'General',
           cwd: defaults?.cwd || defaultCwd,
           backend: 'cursor',
+          model: null,
+          effort: null
+        }
+      } else if (!storedDefaults && chatChoices.includes('cursor-custom') && !cursorReady) {
+        defaults = {
+          version: 1,
+          folder: defaults?.folder || 'General',
+          cwd: defaults?.cwd || defaultCwd,
+          backend: 'cursor',
+          provider_connection: 'custom',
           model: null,
           effort: null
         }
@@ -2170,13 +2184,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         folder,
         cwd: inheritedCwd || directories[0] || lastOpenedCwd || defaults.cwd || defaultCwd
       }
+      const choices = selectableChatBackendChoices(current.health, current.runtimeCatalog)
+      const connection = defaults.provider_connection === 'custom' ? 'custom' : defaults.codex_provider
       if (
-        !selectableChatBackendChoices(current.health, current.runtimeCatalog).includes(chatBackendChoice(defaults))
-        || runtimeSelectionError(current.health, current.runtimeCatalog, defaults.backend, defaults.model, defaults.provider_connection === 'custom' ? 'custom' : defaults.codex_provider)
+        !choices.includes(chatBackendChoice(defaults))
+        || runtimeSelectionError(current.health, current.runtimeCatalog, defaults.backend, defaults.model, connection)
       ) {
-        set({ creatingChat: false })
-        current.setModal('newChat', true)
-        return
+        // A saved Cursor CLI default cannot run while login is down. The
+        // project + button still creates the chat in that project's folder,
+        // using the API key already saved in Folio.
+        if (defaults.backend === 'cursor' && defaults.provider_connection !== 'custom' && choices.includes('cursor-custom')) {
+          defaults = { ...defaults, provider_connection: 'custom', model: null, effort: null }
+        } else {
+          set({ creatingChat: false })
+          current.setModal('newChat', true)
+          return
+        }
       }
       if (requestedFolder && get().collapsedFolders.has(requestedFolder)) get().toggleFolder(requestedFolder)
       const input: CreateSessionInput = {

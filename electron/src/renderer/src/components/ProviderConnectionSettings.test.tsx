@@ -153,6 +153,8 @@ it('connects Cursor with a key only, verifies before showing connected, and forg
   render(<ProviderConnectionSettings {...props} backend="cursor" />)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Configure API' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Configure API' }))
+  expect(screen.getByRole('link', { name: 'Read more' })).toHaveAttribute('href', 'https://grok.com/dashboard/api-keys')
+  expect(screen.getByText(/Current keys start with grok_/)).toBeVisible()
   expect(screen.queryByLabelText('API base URL')).not.toBeInTheDocument()
   expect(screen.queryByLabelText('Model ID')).not.toBeInTheDocument()
   fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'synthetic-cursor-key' } })

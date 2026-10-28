@@ -1016,6 +1016,85 @@ describe('instant new chat defaults', () => {
     )
   })
 
+  it('starts a Cursor API key chat when CLI login failed and Folio has a saved key', async () => {
+    const create = vi.fn().mockResolvedValue({
+      id: 'created', title: 'New chat', folder: 'Research', cwd: '/work/research', backend: 'cursor', provider_connection: 'custom'
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(null), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Cursor chat', folder: 'Research', cwd: '/work/research', backend: 'cursor' }],
+      selectedSessionId: 'selected', folderOrder: ['Research'], creatingChat: false, modals: closedModals,
+      health: { ok: true, capabilities: {
+        cursor_backend: { available: true, required: false, message: 'Cursor CLI login failed.', action: null, version: 2 },
+        provider_connections_v1: { per_chat: true, available: true }
+      } },
+      runtimeCatalog: { backends: { cursor: {
+        native_credentials_present: false,
+        available: false,
+        models: [],
+        efforts: [],
+        diagnostic: { backend: 'cursor', status: 'error', available: false, installed: true, authenticated: null, message: 'authentication check failed' },
+        custom_provider: { configured: true, available: true, model: 'auto', default_model: 'auto', base_url: 'https://api2.cursor.sh' }
+      } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined)
+    })
+
+    await useAppStore.getState().requestNewChat()
+
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      backend: 'cursor', provider_connection: 'custom', model: null, effort: null
+    }))
+  })
+
+  it('creates a project chat with the saved Cursor API key when CLI login is not ready', async () => {
+    const stored = { version: 1, folder: 'General', cwd: '/work/general', backend: 'cursor', model: 'auto', effort: null }
+    const create = vi.fn().mockResolvedValue({ id: 'created', title: 'New chat', folder: 'Dexterous Hand', cwd: '/home/ubuntu/Alicia', backend: 'cursor', provider_connection: 'custom' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(stored), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'hand', title: 'Hand', folder: 'Dexterous Hand', cwd: '/home/ubuntu/Alicia', backend: 'cursor' }],
+      selectedSessionId: 'hand', folderOrder: ['Dexterous Hand'], creatingChat: false, modals: closedModals,
+      projectWorkspaces: { 'Dexterous Hand': { directories: ['/home/ubuntu/Alicia'] } },
+      health: { ok: true, capabilities: {
+        cursor_backend: { available: true, required: false, message: 'Cursor CLI login failed.', action: null, version: 2 },
+        provider_connections_v1: { per_chat: true, available: true }
+      } },
+      runtimeCatalog: { backends: { cursor: {
+        native_credentials_present: false,
+        available: false,
+        models: [],
+        efforts: [],
+        diagnostic: { backend: 'cursor', status: 'error', available: false, installed: true, authenticated: null, message: 'authentication check failed' },
+        custom_provider: { configured: true, available: true, model: 'auto', default_model: 'auto', base_url: 'https://api2.cursor.sh' }
+      } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined)
+    })
+
+    await useAppStore.getState().requestNewChat('Dexterous Hand')
+
+    expect(useAppStore.getState().modals.newChat).toBe(false)
+    expect(create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      folder: 'Dexterous Hand', cwd: '/home/ubuntu/Alicia', backend: 'cursor', provider_connection: 'custom', model: null
+    }))
+  })
+
   it('starts a new chat in a project inside one of that project’s local folders', async () => {
     const create = vi.fn().mockResolvedValue({ id: 'created', title: 'New chat', folder: 'Humanoid', cwd: '/work/hand', backend: 'cursor' })
     Object.defineProperty(window, 'agentsDock', {

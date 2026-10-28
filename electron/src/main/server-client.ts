@@ -866,7 +866,8 @@ export class AgentServerClient {
       }, 35_000, 200, 8192))
     } catch (error) {
       if (error instanceof ServerError) {
-        const code = [401, 403].includes(error.status) ? 'ADMIN' : [404, 405, 501].includes(error.status) ? 'UPDATE'
+        const authenticatedMode = error.status === 503 && /authenticated AgentsServer mode/i.test(error.message)
+        const code = [401, 403].includes(error.status) || authenticatedMode ? 'ADMIN' : [404, 405, 501].includes(error.status) ? 'UPDATE'
           : error.status === 409 ? 'STALE' : [400, 413, 415, 422].includes(error.status) ? 'INVALID' : 'FAILED'
         throw new Error(`PROVIDER_CONNECTION_${code}`)
       }
@@ -918,7 +919,8 @@ export class AgentServerClient {
       return parse(await this.privilegedNativeRequest(path, init, timeoutMs, 200, responseLimit))
     } catch (error) {
       if (error instanceof ServerError) {
-        const code = [401, 403].includes(error.status) ? 'ADMIN'
+        const authenticatedMode = error.status === 503 && /authenticated AgentsServer mode/i.test(error.message)
+        const code = [401, 403].includes(error.status) || authenticatedMode ? 'ADMIN'
           : [404, 405, 501].includes(error.status) ? 'UPDATE'
             : error.status === 409 ? 'BUSY'
               : [400, 413, 422].includes(error.status) ? 'INVALID' : 'FAILED'
@@ -999,7 +1001,7 @@ export class AgentServerClient {
 
   async createSession(input: CreateSessionInput | ResumeSessionInput): Promise<Session> {
     const connection = validateCodexProviderSelection(input.provider_connection)
-    if (connection === 'custom' && !['claude', 'opencode'].includes(input.backend)) throw new Error('Unsupported custom API backend.')
+    if (connection === 'custom' && !['claude', 'opencode', 'cursor'].includes(input.backend)) throw new Error('Unsupported custom API backend.')
     const codexProvider = validateCodexProviderSelection(input.codex_provider)
     if (codexProvider === 'custom' && input.backend !== 'codex') throw new Error('Custom endpoints require Codex.')
     const providerId = 'providerId' in input ? input.providerId : undefined

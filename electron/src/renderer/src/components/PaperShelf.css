@@ -226,6 +226,15 @@
   background: #2b2b2b;
 }
 
+.paper-document-scroll:focus {
+  outline: none;
+}
+
+.paper-document-scroll:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #5fb236) 70%, transparent);
+  outline-offset: -2px;
+}
+
 :root[data-theme="light"] .paper-document-scroll,
 :root[data-theme="light"] .paper-passage-view {
   background: #ebdbb2;
@@ -321,7 +330,7 @@
 }
 
 .paper-mark-bridge.paper-mark-highlight {
-  background: color-mix(in srgb, var(--paper-highlight, #ffd400) 45%, transparent);
+  background: color-mix(in srgb, var(--paper-highlight, #5fb236) 45%, transparent);
 }
 
 .paper-mark-bridge.paper-mark-underline {

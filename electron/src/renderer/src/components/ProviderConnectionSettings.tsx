@@ -124,7 +124,7 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
             try { setAuthHeader(new URL(e.target.value).hostname === 'api.anthropic.com' ? 'x-api-key' : 'bearer') } catch { /* incomplete URL */ }
           }
         }} autoComplete="off" spellCheck={false} /></>}
-        {backend === 'cursor' && <small>{t('connections.cursorHelp')}{' '}<a href="https://cursor.com/dashboard" onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal('https://cursor.com/dashboard') }}>{t('connections.readMore')}</a></small>}
+        {backend === 'cursor' && <small>{t('connections.cursorHelp')}{' '}<a href="https://grok.com/dashboard/api-keys" onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal('https://grok.com/dashboard/api-keys') }}>{t('connections.readMore')}</a></small>}
         {backend === 'opencode' && <small>{t('connections.openCodeEndpointHelp')}{' '}<a href="https://opencode.ai/docs/zen/" onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal('https://opencode.ai/docs/zen/') }}>{t('connections.readMore')}</a></small>}
         <label htmlFor={`${id}-key`}>{t('connections.key')}</label>
         <input id={`${id}-key`} type="password" ref={attachKey} maxLength={4096} disabled={busy} onChange={e => setHasKey(Boolean(e.target.value.trim()))} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-1p-ignore data-lpignore="true" />

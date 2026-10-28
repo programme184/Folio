@@ -8,6 +8,7 @@ import {
   opencodeBackendUnavailableReason,
   cursorBackendAvailable,
   cursorBackendUnavailableReason,
+  customProviderAvailable,
   runtimeDiagnosticCurrentError,
   runtimeDiagnosticFor,
   runtimeDiagnosticLabel,
@@ -143,7 +144,17 @@ function RuntimeStatus({
     compact && sessionId ? latestChatRunError(state.snapshots[sessionId]?.events, backend) : ''
   ))
   const customCatalog = useAppStore(state => { const session = state.sessions.find(item => item.id === sessionId); return session?.provider_connection_catalog ?? session?.codex_provider_catalog })
+  const cursorChatLocked = useAppStore(state => {
+    if (!sessionId) return true
+    const session = state.sessions.find(item => item.id === sessionId)
+    if (!session) return true
+    return Boolean(session.backend_locked || session.session_id || session.claude_session_id || session.codex_thread_id || session.cursor_session_id || session.opencode_session_id)
+  })
   const diagnostic = runtimeDiagnosticFor(health, catalog, backend, codexProvider, customCatalog)
+  const savedCursorKey = backend === 'cursor'
+    && codexProvider !== 'custom'
+    && customProviderAvailable(health, catalog, 'cursor', customCatalog)
+  const offerCursorKey = compact && savedCursorKey && Boolean(admissionError && /authentication check failed/i.test(admissionError))
   const cursorUnavailable = codexProvider !== 'custom' && (backend === 'cursor' && !cursorBackendAvailable(health, catalog) || backend === 'opencode' && !opencodeBackendAvailable(health, catalog))
   // Provider last_error is backend-wide, not session-scoped. Keep it in the
   // full Settings panel so a failure from one chat cannot leak into another
@@ -168,7 +179,9 @@ function RuntimeStatus({
   const cursorUnavailableDetail = cursorUnavailable
     ? (backend === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorBackendUnavailableReason(health, catalog)) || ''
     : ''
-  const detail = admissionError
+  const detail = offerCursorKey
+    ? t('connections.cursorKeyChat')
+    : admissionError
     || chatError
     || cursorUnavailableDetail
     || (!compact ? runtimeDiagnosticCurrentError(diagnostic) : '')
@@ -179,9 +192,25 @@ function RuntimeStatus({
       ? tone === 'ready' ? t('connections.signedIn') : diagnostic?.authenticated === false ? t('codexAuth.signedOut') : t('connections.loginUnknown')
       : compact && admissionError ? t('connections.checkFailed') : compact && chatError ? 'Latest chat error' : cursorUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
   const cursorAction = diagnostic?.action?.trim() || cursorCapability?.action?.trim()
-  const action = cursorUnavailable
+  const action = offerCursorKey
+    ? undefined
+    : cursorUnavailable
     ? cursorAction && !cursorUnavailableDetail.includes(cursorAction) ? cursorAction : undefined
     : diagnostic?.action
+  const useSavedCursorKey = () => {
+    const session = sessionId ? useAppStore.getState().sessions.find(item => item.id === sessionId) : undefined
+    if (session && !cursorChatLocked) {
+      void useAppStore.getState().updateSession(session.id, {
+        backend: 'cursor',
+        codex_provider: 'default',
+        provider_connection: 'custom',
+        model: null,
+        effort: null
+      }).catch(() => { useAppStore.getState().setModal('newChat', true) })
+      return
+    }
+    useAppStore.getState().setModal('newChat', true)
+  }
   return <div className={`runtime-health-row ${tone} ${compact ? 'compact' : ''}`} role={tone === 'error' ? 'alert' : 'status'}>
     <Icon size={compact ? 15 : 17} />
     <div>
@@ -190,8 +219,9 @@ function RuntimeStatus({
       {action ? <small className="runtime-action">{action}</small> : null}
       {!compact && tone !== 'ready' && <NativeProviderSignIn key={`${backend}:${profileId}:${profileGeneration}`} backend={backend} disabled={!connected} />}
     </div>
+    {compact && offerCursorKey && <button type="button" className="quiet-button runtime-recheck-button" onClick={useSavedCursorKey}>{t('connections.cursorKey')}</button>}
     {compact && codexProvider === 'custom' && <button type="button" className="quiet-button runtime-recheck-button" onClick={() => openAIProviderSettings(backend)}>{t('connections.configure')}</button>}
-    {compact && codexProvider !== 'custom' && providerNeedsAttention && onRecheck
+    {compact && !offerCursorKey && codexProvider !== 'custom' && providerNeedsAttention && onRecheck
       ? <button
           type="button"
           className="quiet-button runtime-recheck-button"

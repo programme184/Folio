@@ -756,14 +756,16 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const currentCustomConnection = session && catalog?.backends[session.backend]?.custom_provider
   const connectionIdentity = JSON.stringify([currentCustomConnection?.configured ?? null,
     currentCustomConnection?.base_url ?? null, currentCustomConnection?.available ?? null])
+  const connectionMode = session?.provider_connection === 'custom' ? 'custom' : session?.codex_provider
   useEffect(() => {
     // A successful reconnect dismisses only this composer's last send error.
     // Equivalent catalog refreshes must not erase a real failed-send notice.
+    // Switching this chat onto a saved API key does replace a CLI-login failure.
     const state = useAppStore.getState()
     if (currentCustomConnection?.configured && sendFailure?.context === sendContext
       && state.error === sendFailure.message) state.setError(null)
     setSendFailure(null)
-  }, [sendContext, connectionIdentity])
+  }, [sendContext, connectionIdentity, connectionMode])
   const canSend = !writeDisabled && !selectedRuntimeError && !admitting && uploadPaths.length === 0 && referencesSupported && (Boolean(draft.trim()) || uploads.length > 0)
   const codexControls = health?.capabilities?.codex_controls
   const claudeControls = health?.capabilities?.claude_controls

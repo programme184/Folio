@@ -2930,8 +2930,10 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
     }
     if (preferredCursor.current || mode !== 'newChat' || backendOptions.length === 0) return
     preferredCursor.current = true
-    if (!backendOptions.includes('cursor') || !cursorBackendAvailable(health, catalog)) return
-    setBackendChoice('cursor')
+    const cursorReady = backendOptions.includes('cursor') && cursorBackendAvailable(health, catalog)
+    const cursorKey = !cursorReady && backendOptions.includes('cursor-custom')
+    if (!cursorReady && !cursorKey) return
+    setBackendChoice(cursorKey ? 'cursor-custom' : 'cursor')
     setModel('')
     setEffort('')
     setManualModel(false)

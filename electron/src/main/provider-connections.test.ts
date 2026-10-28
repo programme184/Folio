@@ -114,6 +114,19 @@ describe('settings-only provider connection native transport', () => {
     } finally { client.dispose(); fetch.mockRestore(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
   })
 
+  it('maps unauthenticated-server credential blocks to administrator guidance', async () => {
+    const server = createServer((_req, res) => {
+      res.statusCode = 503
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ detail: 'This administrative control requires authenticated AgentsServer mode' }))
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const client = new AgentServerClient(`http://127.0.0.1:${(server.address() as AddressInfo).port}`, '')
+    try {
+      await expect(client.providerConnectionRequest('cursor', 'get')).rejects.toThrow('PROVIDER_CONNECTION_ADMIN')
+    } finally { client.dispose(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+  })
+
   it('rejects malformed and cross-provider selections before transport', () => {
     const cursor = { ...input, base_url: 'https://api2.cursor.sh', protocol: 'cursor', auth_header: 'bearer', model: null }
     expect(connectionRequest('cursor', 'save', cursor)).toEqual(cursor)

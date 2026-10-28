@@ -17,7 +17,7 @@ const twoParagraphs = [
 describe('paper selection toolbar', () => {
   afterEach(() => cleanup())
 
-  it('copies the normalized passage and hides when the blank page is clicked', () => {
+  it('copies the normalized passage on selection and hides when the blank page is clicked', () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
@@ -35,9 +35,9 @@ describe('paper selection toolbar', () => {
     fireEvent.mouseUp(view.container.querySelector('.paper-passage-view')!)
 
     expect(screen.getByRole('toolbar', { name: 'Paper selection' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Explain' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Translate' })).toBeEnabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     expect(writeClipboard).toHaveBeenCalledWith('Their rich kinematic structure enables robots to reproduce.')
 
     const page = view.container.querySelector('.paper-page')!
@@ -46,7 +46,7 @@ describe('paper selection toolbar', () => {
     expect(screen.queryByRole('toolbar', { name: 'Paper selection' })).not.toBeInTheDocument()
   })
 
-  it('replaces the hovered paragraph with the text dragged by the left button', () => {
+  it('replaces the hovered paragraph with the text dragged by the left button and copies it', () => {
     const writeClipboard = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
@@ -57,6 +57,7 @@ describe('paper selection toolbar', () => {
     const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!
     fireEvent.mouseMove(first)
     expect(second).toHaveClass('paper-paragraph-hot')
+    expect(writeClipboard).not.toHaveBeenCalled()
 
     const range = document.createRange()
     range.setStart(first.firstChild ?? first, 0)
@@ -68,17 +69,46 @@ describe('paper selection toolbar', () => {
 
     expect(first).toHaveClass('paper-paragraph-hot')
     expect(second).not.toHaveClass('paper-paragraph-hot')
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
     expect(writeClipboard).toHaveBeenCalledWith('Their rich kinematic structure en-')
   })
 
-  it('offers the paragraph under the pointer without a manual selection', () => {
+  it('offers the paragraph under the pointer without a manual selection or copy', () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { native: { writeClipboard } } as unknown as AgentsDockAPI
+    })
     const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
     const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
     fireEvent.mouseMove(first)
     expect(screen.getByRole('toolbar', { name: 'Paper selection' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
     expect(first).toHaveClass('paper-paragraph-hot')
     expect(view.container.querySelector('[data-paper-item="1"]')).toHaveClass('paper-paragraph-hot')
+    expect(writeClipboard).not.toHaveBeenCalled()
+  })
+
+  it('copies the double-clicked glyph without a Copy button', () => {
+    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { native: { writeClipboard } } as unknown as AgentsDockAPI
+    })
+    const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
+    const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
+    const root = view.container.querySelector('.paper-passage-view')!
+    fireEvent.mouseDown(first)
+    fireEvent.mouseUp(root)
+    const range = document.createRange()
+    range.setStart(first.firstChild ?? first, 0)
+    range.setEnd(first.firstChild ?? first, first.textContent?.length ?? 0)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    fireEvent.mouseDown(first)
+    fireEvent.mouseUp(root)
+    expect(writeClipboard).toHaveBeenCalledWith('Their rich kinematic structure en-')
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument()
   })
 
   it('keeps the current paragraph while the pointer crosses into the next one', () => {
@@ -132,7 +162,7 @@ describe('paper selection toolbar', () => {
       fireEvent.mouseMove(first)
       fireEvent.click(screen.getByRole('button', { name: 'Highlight' }))
       expect(first).toHaveClass('paper-mark-highlight')
-      expect(first.style.getPropertyValue('--paper-highlight')).toBe('#ffd400')
+      expect(first.style.getPropertyValue('--paper-highlight')).toBe('#5fb236')
       expect(first).toHaveClass('paper-paragraph-hot')
       expect(screen.getByRole('button', { name: 'Highlight' })).toHaveAttribute('aria-pressed', 'true')
 
@@ -171,6 +201,10 @@ describe('paper selection toolbar', () => {
   })
 
   it('replaces the hovered line when a word inside it is selected', () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { native: { writeClipboard: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
     const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
     const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
     const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!
@@ -210,6 +244,10 @@ describe('paper selection toolbar', () => {
   })
 
   it('underlines only the dragged glyphs and accepts the underline shortcut', () => {
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { native: { writeClipboard: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
     const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
     const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
     const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!

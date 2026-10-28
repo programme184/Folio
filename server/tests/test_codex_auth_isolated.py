@@ -205,6 +205,13 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.status_code, 200, status.text)
         self.assertEqual(status.json()["auth_mode"], "chatgpt")
         self.assertEqual(status.json()["email"], "test@example.invalid")
+        # Custom API settings are local credential admin; Codex API-key login is not.
+        allow = self.ns["loopback_unauthenticated_credential_admin"]
+        self.assertTrue(allow("/api/admin/provider-connections/cursor", "GET"))
+        self.assertTrue(allow("/api/admin/provider-connections/cursor", "PUT"))
+        self.assertTrue(allow("/api/admin/codex/provider", "GET"))
+        self.assertFalse(allow("/api/admin/codex/auth/api-key", "POST"))
+        self.assertFalse(allow("/api/admin/codex/goals", "GET"))
         self.ns["AGENT_TOKEN"] = "synthetic-native-token"
         still_closed = local.post("/api/admin/codex/auth/import", json=synthetic_auth())
         self.assertEqual(still_closed.status_code, 401, still_closed.text)

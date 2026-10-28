@@ -232,6 +232,43 @@ describe('RuntimeHealthPanel tmux prerequisite', () => {
     )
   })
 
+  it('points a failed Cursor CLI login at the API key saved in Folio', async () => {
+    useAppStore.setState({
+      health: {
+        ok: true,
+        capabilities: {
+          cursor_backend: { available: true, version: 2, required: false, message: '', action: null },
+          provider_connections_v1: { per_chat: true, available: true }
+        }
+      },
+      runtimeCatalog: {
+        backends: {
+          cursor: {
+            models: [],
+            efforts: [],
+            native_credentials_present: false,
+            custom_provider: {
+              configured: true,
+              available: true,
+              model: 'auto',
+              default_model: 'auto',
+              base_url: 'https://api2.cursor.sh'
+            }
+          }
+        }
+      },
+      sessions: [{ id: 'cursor-chat', title: 'Paper', backend: 'cursor', cursor_session_id: 'already-started' }],
+      modals: { ...useAppStore.getState().modals, newChat: false }
+    })
+
+    render(<RuntimeHealthNotice backend="cursor" sessionId="cursor-chat" admissionError="cursor-agent authentication check failed; its output was omitted because it may contain account details." />)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('The API key saved in Folio is separate')
+    expect(screen.queryByRole('button', { name: 'Recheck Cursor CLI status' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Cursor API key' }))
+    expect(useAppStore.getState().modals.newChat).toBe(true)
+  })
+
   it('shows catalog loading instead of contradictory setup guidance for ready Cursor health', () => {
     useAppStore.setState({
       health: {

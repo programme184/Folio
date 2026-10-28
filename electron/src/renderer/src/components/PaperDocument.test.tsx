@@ -4,6 +4,9 @@ import {
   nextPaperWidth,
   paperAnswerConsumesWheel,
   paperOutputScale,
+  paperKeyTargetBlocksPaging,
+  paperPageKeyAction,
+  paperPageScrollTop,
   paperScrollAnchor,
   paperScrollTopForAnchor,
   paperWheelPixels,
@@ -203,6 +206,26 @@ describe('paper scroll math', () => {
     expect(paperAnswerConsumesWheel({ scrollTop: 0, scrollHeight: 80, clientHeight: 40 }, 4)).toBe(true)
     expect(paperAnswerConsumesWheel({ scrollTop: 40, scrollHeight: 80, clientHeight: 40 }, 4)).toBe(false)
     expect(paperAnswerConsumesWheel({ scrollTop: 0, scrollHeight: 40, clientHeight: 40 }, 4)).toBe(false)
+  })
+
+  it('turns Space, PageDown, PageUp, and Home into paper page jumps', () => {
+    const key = (patch: Partial<Parameters<typeof paperPageKeyAction>[0]>) => ({
+      key: '', code: '', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, ...patch
+    })
+    expect(paperPageKeyAction(key({ key: ' ', code: 'Space' }))).toBe('down')
+    expect(paperPageKeyAction(key({ key: ' ', code: 'Space', shiftKey: true }))).toBe('up')
+    expect(paperPageKeyAction(key({ key: 'PageDown', code: 'PageDown' }))).toBe('down')
+    expect(paperPageKeyAction(key({ key: 'PageUp', code: 'PageUp' }))).toBe('up')
+    expect(paperPageKeyAction(key({ key: 'Home', code: 'Home' }))).toBe('home')
+    expect(paperPageKeyAction(key({ key: 'PageDown', code: 'PageDown', ctrlKey: true }))).toBeNull()
+    expect(paperPageScrollTop('home', 1200, 500, 3000, [0, 900, 1800])).toBe(0)
+    expect(paperPageScrollTop('down', 0, 500, 3000, [0, 900, 1800])).toBe(900)
+    expect(paperPageScrollTop('down', 900, 500, 3000, [0, 900, 1800])).toBe(1800)
+    expect(paperPageScrollTop('up', 1800, 500, 3000, [0, 900, 1800])).toBe(900)
+    expect(paperPageScrollTop('down', 0, 400, 2000)).toBe(400)
+    const input = document.createElement('input')
+    expect(paperKeyTargetBlocksPaging(input)).toBe(true)
+    expect(paperKeyTargetBlocksPaging(document.createElement('div'))).toBe(false)
   })
 
   it('darkens white canvas pixels to the paper color once', () => {

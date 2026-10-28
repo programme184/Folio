@@ -38,8 +38,8 @@ export interface PaperHit {
 
 export type PaperMarkType = 'highlight' | 'underline'
 
-/** Zotero's default annotation yellow, kept distinct from the ephemeral hover green. */
-export const PAPER_HIGHLIGHT_COLOR = '#ffd400'
+/** Starting mark color. Hover stays the lighter green wash. */
+export const PAPER_HIGHLIGHT_COLOR = '#5fb236'
 /** Earlier underline marks used this gold before the shared color list. */
 export const PAPER_UNDERLINE_COLOR = '#e6a817'
 

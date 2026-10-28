@@ -1,4 +1,6 @@
-"""Cursor-issued keys, not OpenAI-compatible endpoints or a machine login.
+"""Cursor CLI keys from the Grok dashboard, not an OpenAI-compatible model endpoint.
+
+Current user keys start with grok_ and are created at grok.com/dashboard/api-keys.
 
 Cursor exchanges API keys for tokens and normally persists those tokens in the
 user's credential store. Use its in-memory store for every key-bound process;

@@ -29,7 +29,8 @@ FUNCTIONS = {
     "get_codex_subagents_admin_endpoint", "put_codex_subagents_admin_endpoint",
     "put_codex_goals_admin", "codex_goals_admin_status",
     "require_native_admin_control", "token_matches", "decoded_exact_header_secret",
-    "request_exact_native_token_header_authorized", "privileged_native_browser_request_forbidden",
+    "request_exact_native_token_header_authorized", "loopback_unauthenticated_credential_admin",
+    "privileged_native_browser_request_forbidden",
     "privileged_native_json_transport", "bounded_request_content_length",
     "prebuffer_bounded_request_body", "require_agent_token",
 }

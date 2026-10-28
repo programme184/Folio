@@ -159,6 +159,8 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
     const spans = hits.flatMap(hit => spansFor(element, hit.page, hit.glyphIndexes))
     mark(spans)
     showPassage(passage, hits, spanRects(spans))
+    const writeClipboard = window.agentsDock?.native?.writeClipboard
+    if (writeClipboard) void writeClipboard(passage.text).catch(() => undefined)
     return true
   }
   useEffect(() => {
@@ -315,14 +317,11 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
   onWheel?: (event: ReactWheelEvent<HTMLDivElement>) => void
 }) {
   useLocale()
-  const [copied, setCopied] = useState(false)
   const [answer, setAnswer] = useState<{ status: 'pending' | 'done' | 'error' | 'cancelled'; text?: string; kind?: 'explain' | 'translate' } | null>(null)
   const abort = useRef<AbortController | null>(null)
   const token = useRef(0)
-  const copiedTimer = useRef<number | null>(null)
   useEffect(() => () => {
     abort.current?.abort()
-    if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current)
   }, [])
   useEffect(() => {
     abort.current?.abort()
@@ -342,14 +341,6 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
       if (controller.signal.aborted) setAnswer({ status: 'cancelled' })
       else setAnswer({ status: 'error', text: sideQuestionError(error) })
     })
-  }
-  const copy = () => {
-    const text = selection.passage.text
-    void window.agentsDock.native.writeClipboard(text).then(() => {
-      setCopied(true)
-      if (copiedTimer.current !== null) window.clearTimeout(copiedTimer.current)
-      copiedTimer.current = window.setTimeout(() => setCopied(false), 1200)
-    }).catch(() => setAnswer({ status: 'error', text: t('papers.copyFailed') }))
   }
   const translate = () => {
     const source = selection.passage.text
@@ -390,7 +381,6 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
     <div className="paper-toolbar-actions">
       <button type="button" disabled={!canAsk || !askPassage} title={canAsk ? t('papers.explain') : unavailable} onClick={() => run('explain')}>{t('papers.explain')}</button>
       <button type="button" title={t('papers.translateHint')} onClick={translate}>{t('papers.translate')}</button>
-      <button type="button" onClick={copy}>{copied ? t('papers.copied') : t('papers.copy')}</button>
       <button type="button" disabled={!canAsk || !onAsk} title={canAsk ? t('papers.ask') : unavailable} onClick={() => onAsk?.(paperAskDraft(selection.passage))}>{t('papers.ask')}</button>
       <button type="button" aria-pressed={highlightActive} title={highlightActive ? t('papers.removeHighlight') : t('papers.highlightHint')} onClick={() => onToggleMark('highlight')}>{t('papers.highlight')}</button>
       <button type="button" aria-pressed={underlineActive} title={underlineActive ? t('papers.removeUnderline') : t('papers.underlineHint')} onClick={() => onToggleMark('underline')}>{t('papers.underline')}</button>
