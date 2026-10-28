@@ -570,7 +570,11 @@ function normalizeMathDelimiters(text: string): string {
     if (inlineTicks === 0 && text.startsWith('\\(', index)) {
       const closing = text.indexOf('\\)', index + 2)
       if (closing >= 0) {
-        output += `$${text.slice(index + 2, closing).trim()}$`
+        const body = text.slice(index + 2, closing).trim()
+        // A matrix row break cannot stay inside an inline line box.
+        output += /\\begin\{|\\\\/.test(body)
+          ? `\n\n$$\n${body}\n$$\n\n`
+          : `$${body}$`
         index = closing + 2
         lineStart = text[index - 1] === '\n'
         continue

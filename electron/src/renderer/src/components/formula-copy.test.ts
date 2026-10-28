@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { formulaSelectionText } from './formula-copy'
+import { formulaSelectionText, normalizeFormulaTex } from './formula-copy'
 
 function mount(html: string): HTMLElement {
   const host = document.createElement('div')
@@ -27,15 +27,27 @@ describe('formula copy', () => {
     const host = mount(`<div class="markdown"><p>Torque <span class="katex"><span class="katex-mathml"><annotation encoding="application/x-tex">\\tau_{t}^{\\mathrm{cmd}}</annotation></span><span class="katex-html">τ\ncmd\nt</span></span> holds.</p></div>`)
     const visual = host.querySelector('.katex-html')!
     expect(visual.textContent).toBe('τ\ncmd\nt')
-    expect(formulaSelectionText(select(visual))).toBe('\\(\\tau_{t}^{\\mathrm{cmd}}\\)')
+    expect(formulaSelectionText(select(visual))).toBe('$\\tau_{t}^{\\mathrm{cmd}}$')
     const paragraph = document.createRange()
     paragraph.selectNodeContents(host.querySelector('p')!)
-    expect(formulaSelectionText(paragraph)).toBe('Torque \\(\\tau_{t}^{\\mathrm{cmd}}\\) holds.')
+    expect(formulaSelectionText(paragraph)).toBe('Torque $\\tau_{t}^{\\mathrm{cmd}}$ holds.')
   })
 
-  it('uses display delimiters for a display formula', () => {
+  it('uses dollar delimiters for a display formula', () => {
     const host = mount(`<div class="markdown"><span class="katex-display"><span class="katex"><annotation encoding="application/x-tex">E = mc^2</annotation></span></span></div>`)
-    expect(formulaSelectionText(select(host.querySelector('.katex-html') ?? host.querySelector('.katex')!))).toBe('\\(E = mc^2\\)')
+    expect(formulaSelectionText(select(host.querySelector('.katex-html') ?? host.querySelector('.katex')!))).toBe('$E=mc^{2}$')
+  })
+
+  it('normalizes a bracket matrix, keeps bold vectors, and drops an equation tag', () => {
+    const source = String.raw`\tag{8} G_t B_t \xi_t = \sum_{k=1}^{N}
+\begin{bmatrix}
+\mathbf{f}_{t,k} \\
+\mathbf{c}_{t,k} \times \mathbf{f}_{t,k}
+\end{bmatrix}`
+    expect(normalizeFormulaTex(source)).toBe(String.raw`G_{t} B_{t} \xi_{t}=\sum_{k=1}^{N}\left[\begin{array}{c}
+\mathbf{f}_{t, k} \\
+\mathbf{c}_{t, k} \times \mathbf{f}_{t, k}
+\end{array}\right]`)
   })
 
   it('leaves a selection without a formula unchanged', () => {

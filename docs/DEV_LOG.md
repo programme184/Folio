@@ -1,5 +1,103 @@
 # Public development log
 
+## 2026-10-28 — Open Folio from the application menu
+
+- The application menu was still starting the Electron binary directly, so
+  Folio aborted before a window appeared. A launcher at that same path now
+  starts Electron when the sandbox helper cannot run. A working sandbox
+  helper is left unchanged.
+
+```text
+Change and expected user behavior: Super+A, then Folio, opens the window.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: isolated native app
+Actions exercised and observed outcomes: the menu's command, without a
+sandbox flag, reached application ready under an isolated profile and was
+then closed. The earlier menu launch aborted in the sandbox helper.
+Real boundaries exercised; any mocked/stubbed boundaries: the user's open
+Folio window was not restarted. Shim placement was also unit tested.
+Focused regression / typecheck / production build: folio launcher tests
+passed (4). electron tsc --noEmit passed. electron-vite production build
+verified.
+Remaining limitations or blocked acceptance: replacing the Electron package
+removes the launcher until Folio writes it again.
+Availability: local package
+```
+
+## 2026-10-28 — Thicken a paper underline
+
+- An underline on a paper passage is drawn at 4px, twice the previous 2px line.
+  Highlight bands are unchanged.
+
+```text
+Change and expected user behavior: a paper underline is twice as thick.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: the underline bridge rule is 4px.
+The open Folio window was not relaunched.
+Real boundaries exercised; any mocked/stubbed boundaries: production CSS
+bundle contains the 4px rule. A live PDF page was not repainted.
+Focused regression / typecheck / production build: electron-vite production
+build verified. Reload the open window to load this bundle.
+Remaining limitations or blocked acceptance: the installed window still shows
+the old line until it is reloaded.
+Availability: local package
+```
+
+## 2026-10-28 — Start Folio from the application menu
+
+- Clicking Folio in the application menu now starts the app when the setuid
+  sandbox helper is not installed and the kernel blocks user namespaces.
+  The menu command adds `--no-sandbox` only in that case. A working sandbox
+  helper is left unchanged.
+
+```text
+Change and expected user behavior: Super+A, then Folio, opens the window.
+The previous menu command aborted before a window existed.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: isolated native app
+Actions exercised and observed outcomes: the same command that the menu
+uses stayed running with an isolated profile. The previous command aborted
+because chrome-sandbox was not a root setuid helper.
+Real boundaries exercised; any mocked/stubbed boundaries: the user's open
+Folio profile was not launched. The sandbox decision was also unit tested.
+Focused regression / typecheck / production build: folio launcher tests
+passed (3). electron tsc --noEmit passed. electron-vite production build
+verified.
+Remaining limitations or blocked acceptance: the menu still launches the
+checkout that last wrote the desktop entry. A published AppImage with a
+working sandbox helper does not gain --no-sandbox.
+Availability: local package
+```
+
+## 2026-10-27 — Highlight a paper phrase as one continuous band
+
+- A highlight, underline, or green selection on a paper line now covers the
+  spaces between the chosen words. Each line is one band from the first word
+  to the last. A word left out of the selection, or a wide column gap, still
+  splits the band.
+
+```text
+Change and expected user behavior: a multi-word highlight is one continuous
+band per line, including the spaces, the same way a selection looks in
+Doubao. The color stays yellow, green, or the chosen palette color.
+Source commit / app build / server version: uncommitted desktop source.
+The paper shelf does not use AgentsServer.
+Test surface: component fixture
+Actions exercised and observed outcomes: boxes on one line with a normal
+word gap join into one run. A word sitting in the gap, a different line,
+or a different color stays a separate run.
+Real boundaries exercised; any mocked/stubbed boundaries: the open Folio
+window was not used for this check. Reload it to load the new bundle.
+Focused regression / typecheck / production build: passage and selection
+tests passed (29). electron tsc --noEmit passed. electron-vite production
+build verified.
+Remaining limitations or blocked acceptance: live paint in the installed
+window is unverified. A drag still completes the word it starts or ends
+inside. Hover still offers the whole paragraph until words are selected.
+Availability: local package
+```
+
 ## 2026-10-27 — Keep PDF scrolling attached to the wheel
 
 - Opening a PDF no longer restarts the render when the scrollbar appears, so
@@ -38,33 +136,59 @@ Availability: source only
 ## 2026-10-27 — Copy a rendered formula as LaTeX
 
 - Selecting a formula in a chat answer and copying it, including the answer
-  Copy button, puts the LaTeX source on the clipboard. Every formula,
-  including a display equation, is wrapped in `\(...\)`. The surrounding sentence stays
-  in place. The rendered formula and its MathML text are not part of the
-  selection, so a system copy cannot paste both layers.
+  Copy button, puts LaTeX on the clipboard in the delimiters a document
+  recognizes. A simple formula is wrapped in `$...$`. A matrix keeps its
+  bold vectors and is wrapped in `$$...$$`, with one row per line, so the
+  document renders it as a display formula instead of literal source. An
+  equation number is left off. A parenthesized matrix in the message is
+  shown as display math. The surrounding sentence stays in place. The
+  rendered formula and its MathML text are not part of the selection, so a
+  system copy cannot paste both layers.
 
 ```text
-Change and expected user behavior: copying a rendered formula from an
-answer no longer pastes the broken KaTeX characters. The clipboard receives
-the formula source wrapped in \(\,\), including display equations.
+Change and expected user behavior: pasting a copied matrix into a document
+that understands `$` and `$$` produces a display formula. Bold vectors stay
+bold, each row is on its own line, and the summation limits sit above and
+below the symbol.
 Source commit / app build / server version: uncommitted desktop source
 Test surface: component fixture
-Actions exercised and observed outcomes: selecting the visual formula
-copied the Doubao-style source, including a multiline inline formula and a
-paragraph of inline symbols; display math copied with display delimiters;
-a sentence around a formula kept its words; fenced TeX and prose without a
-formula were left to the normal copy path; the answer Copy button wrote
-the same LaTeX. The selectable text inside each formula is that source.
+Actions exercised and observed outcomes: the bracket-matrix fixture copied
+with a line break between the two rows, and the same parenthesized source
+rendered as display math. A sentence around an inline formula kept its words.
 Real boundaries exercised; any mocked/stubbed boundaries: jsdom rendered
 KaTeX and dispatched the copy event. The clipboard write was the test
-double. The installed Folio window was not clicked.
-Focused regression / typecheck / production build: formula, markdown, and
-answer follow-up tests passed; electron typecheck passed. Production build
-was not run.
-Remaining limitations or blocked acceptance: live Ctrl+C in the installed
-app is unverified. Copying the whole message from its header still copies
-the stored answer text.
-Availability: source only
+double. The open Folio window was not reloaded onto this renderer.
+Focused regression / typecheck / production build: formula and markdown
+tests passed; electron typecheck passed; the Electron renderer was rebuilt.
+Remaining limitations or blocked acceptance: the open window still needs a
+reload before this renderer is the one on screen. The formula was not
+selected in that window. Copying the whole message from its header still
+copies the stored answer text.
+Availability: local package
+```
+
+## 2026-10-27 — Select a word or a short phrase in a paper
+
+- Dragging across a PDF line no longer takes the whole line. The selection
+  keeps the words the pointer covers, and Highlight, Underline, Copy, and
+  Ask use that phrase. Pointing at a passage still offers the paragraph.
+
+```text
+Change and expected user behavior: a drag can stop on one word or a short
+phrase. The green mark matches those words. Hover still offers the paragraph.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: component fixture
+Actions exercised and observed outcomes: a line item splits into words, and
+a drag covering "hands stay" does not include the rest of the line.
+Real boundaries exercised; any mocked/stubbed boundaries: the open Folio
+window was not used for this check. Production build follows the tests.
+Focused regression / typecheck / production build: passage and selection
+tests passed; electron typecheck passed; electron-vite production build
+verified. Reload the open window to load this bundle.
+Remaining limitations or blocked acceptance: a drag still completes the
+word it starts or ends inside. Hover remains the whole paragraph until the
+pointer selects words. The selection toolbar stays on one row.
+Availability: local package
 ```
 
 ## 2026-10-27 — Paper highlight bar on the file header

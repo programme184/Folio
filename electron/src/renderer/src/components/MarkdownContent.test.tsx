@@ -508,17 +508,20 @@ v_{\text{OBJ}}$$`
     const source = String.raw`\(\boldsymbol{\tau_{\text{ref}}} = \big[
 \;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*)
 \;\big]\)`
+    const copied = String.raw`$\boldsymbol{\tau_{\text{ref}}} = \big[
+\;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*)
+\;\big]$`
     const { container } = render(<MarkdownContent text={`The reference is ${source}.`} />)
     const visual = container.querySelector('.katex-html')
     expect(visual).not.toBeNull()
     expect(visual?.textContent).not.toContain('\\boldsymbol')
     selectNode(visual!)
     const formulaOnly = dispatchCopy()
-    expect(formulaOnly.plain).toBe(source)
+    expect(formulaOnly.plain).toBe(copied)
     expect(formulaOnly.html).toContain('\\boldsymbol{\\tau_{\\text{ref}}}')
     expect(formulaOnly.html).not.toContain('katex')
     selectNode(container.querySelector('p')!)
-    expect(dispatchCopy().plain).toBe(`The reference is ${source}.`)
+    expect(dispatchCopy().plain).toBe(`The reference is ${copied}.`)
   })
 
   it('keeps only the LaTeX source selectable in a paragraph of inline formulas', () => {
@@ -526,38 +529,78 @@ v_{\text{OBJ}}$$`
     const { container } = render(<MarkdownContent text={text} />)
     const sources = [...container.querySelectorAll('.formula-tex')].map(node => node.textContent)
     expect(sources).toEqual([
-      '\\(t\\)',
-      '\\(\\xi_t\\)',
-      '\\(B_t\\)',
-      '\\(G_t\\)',
-      '\\(w_t\\)',
-      '\\(\\|B_t\\xi_t\\|\\)',
-      '\\(w_t\\)',
-      '\\(\\chi_{t,k}=0\\)',
-      '\\(B_{t,k}\\xi_t=0\\)'
+      '$t$',
+      '$\\xi_{t}$',
+      '$B_{t}$',
+      '$G_{t}$',
+      '$w_{t}$',
+      '$\\| B_{t} \\xi_{t} \\|$',
+      '$w_{t}$',
+      '$\\chi_{t, k}=0$',
+      '$B_{t, k} \\xi_{t}=0$'
     ])
     expect(container.querySelector('.katex-html .formula-tex')).toBeNull()
     expect(container.querySelector('.katex-mathml .formula-tex')).toBeNull()
     selectNode(container.querySelector('p')!)
-    expect(dispatchCopy().plain).toBe('在时刻 \\(t\\)，从候选的力场系数 \\(\\xi_t\\) 里选一个，使得：经 \\(B_t\\)、再经 \\(G_t\\) 作用后，在物体上产生的 wrench 尽量接近目标 \\(w_t\\)；同时惩罚 \\(\\|B_t\\xi_t\\|\\)，避免为凑 \\(w_t\\) 用过大的力场。\\(\\chi_{t,k}=0\\) 时强制对应约束 \\(B_{t,k}\\xi_t=0\\)，关掉该通道上的力场分量。')
+    expect(dispatchCopy().plain).toBe('在时刻 $t$，从候选的力场系数 $\\xi_{t}$ 里选一个，使得：经 $B_{t}$、再经 $G_{t}$ 作用后，在物体上产生的 wrench 尽量接近目标 $w_{t}$；同时惩罚 $\\| B_{t} \\xi_{t} \\|$，避免为凑 $w_{t}$ 用过大的力场。$\\chi_{t, k}=0$ 时强制对应约束 $B_{t, k} \\xi_{t}=0$，关掉该通道上的力场分量。')
   })
 
-  it('copies a display equation inside the same delimiters as an inline formula', () => {
+  it('copies a display array with display delimiters', () => {
     const body = String.raw`\begin{array}{rl}
 \hat{\xi}_{t}=\arg \min_{\xi_{t}} & \frac{1}{2}\left\| G_{t}B_{t}\xi_{t}-w_{t}^{\text{cmd}} \right\| _{2}^{2} \\
 \text{s.t. } & B_{t,k}\xi_{t}=0
 \end{array}`
+    const normalized = String.raw`$$
+\begin{array}{rl}
+\hat{\xi}_{t}=\arg\min_{\xi_{t}} & \frac{1}{2}\left\|G_{t} B_{t} \xi_{t} - w_{t}^{\text{cmd}}\right\|_{2}^{2} \\
+\text{s.t. } & B_{t, k} \xi_{t}=0
+\end{array}
+$$`
     const { container } = render(<MarkdownContent text={`$$\n${body}\n$$`} />)
     selectNode(container.querySelector('.katex-display')!)
-    expect(dispatchCopy().plain).toBe(`\\(${body}\\)`)
-    expect(container.querySelector('.formula-tex')?.textContent).toBe(`\\(${body}\\)`)
+    expect(dispatchCopy().plain).toBe(normalized)
+    expect(container.querySelector('.formula-tex')?.textContent).toBe(normalized)
+  })
+
+  it('renders a parenthesized matrix as display math', () => {
+    const text = String.raw`\(G_t B_t \xi_t = \sum_{k=1}^{N}
+\begin{bmatrix}
+\mathbf{f}_{t,k} \\
+\mathbf{c}_{t,k} \times \mathbf{f}_{t,k}
+\end{bmatrix}\)`
+    const { container } = render(<MarkdownContent text={text} />)
+    expect(container.querySelector('.katex-display')).not.toBeNull()
+    expect(container.querySelector('.formula-tex')?.textContent).toBe(String.raw`$$
+G_{t} B_{t} \xi_{t}=\sum_{k=1}^{N}\left[\begin{array}{c}
+\mathbf{f}_{t, k} \\
+\mathbf{c}_{t, k} \times \mathbf{f}_{t, k}
+\end{array}\right]
+$$`)
+  })
+
+  it('copies the bracket matrix as a normalized array', () => {
+    const text = String.raw`$$G_t B_t \xi_t = \sum_{k=1}^{N}
+\begin{bmatrix}
+\mathbf{f}_{t,k} \\
+\mathbf{c}_{t,k} \times \mathbf{f}_{t,k}
+\end{bmatrix}$$`
+    const { container } = render(<MarkdownContent text={text} />)
+    const copied = String.raw`$$
+G_{t} B_{t} \xi_{t}=\sum_{k=1}^{N}\left[\begin{array}{c}
+\mathbf{f}_{t, k} \\
+\mathbf{c}_{t, k} \times \mathbf{f}_{t, k}
+\end{array}\right]
+$$`
+    expect(container.querySelector('.formula-tex')?.textContent).toBe(copied)
+    selectNode(container.querySelector('.katex-display')!)
+    expect(dispatchCopy().plain).toBe(copied)
   })
 
   it('copies display math with inline delimiters and leaves code copy alone', () => {
     const { container } = render(<MarkdownContent text={'\\[ h_t = \\mathrm{Fuse}(E_t) \\]\n\n```tex\n\\\\[ h_t = 1 \\\\]\n```'} />)
     selectNode(container.querySelector('.katex-display')!)
     const formula = dispatchCopy()
-    expect(formula.plain).toBe('\\(h_t = \\mathrm{Fuse}(E_t)\\)')
+    expect(formula.plain).toBe('$h_{t}=\\mathrm{Fuse}(E_{t})$')
     const code = container.querySelector('code')!
     selectNode(code)
     const literal = dispatchCopy()

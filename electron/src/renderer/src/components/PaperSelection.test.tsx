@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import { PAPER_PARAGRAPH_RETARGET_MS, PaperPassageView } from './PaperSelection'
+import { PAPER_PARAGRAPH_RETARGET_MS, PaperPassageView, readPaperHits } from './PaperSelection'
+import { tagPaperTextSpan } from './PaperDocument'
 
 const glyphs = [
   { text: 'Their rich kinematic structure en-', x: 50, y: 700, width: 200, height: 10 },
@@ -167,6 +168,45 @@ describe('paper selection toolbar', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('replaces the hovered line when a word inside it is selected', () => {
+    const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk={false} />)
+    const first = view.container.querySelector<HTMLElement>('[data-paper-item="0"]')!
+    const second = view.container.querySelector<HTMLElement>('[data-paper-item="1"]')!
+    fireEvent.mouseMove(first)
+    expect(second).toHaveClass('paper-paragraph-hot')
+    const range = document.createRange()
+    range.setStart(first.firstChild ?? first, 0)
+    range.setEnd(first.firstChild ?? first, 5)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    document.dispatchEvent(new Event('selectionchange'))
+    expect(first).toHaveClass('paper-paragraph-hot')
+    expect(second).not.toHaveClass('paper-paragraph-hot')
+    selection?.removeAllRanges()
+  })
+
+  it('reads a drag as the words it covers, not the rest of the line', () => {
+    const root = document.createElement('div')
+    const line = document.createElement('span')
+    line.textContent = 'bystander hands stay out'
+    tagPaperTextSpan(line, 'bystander hands stay out', 1, 0)
+    root.append(line)
+    document.body.append(root)
+    const hands = line.querySelector('[data-paper-item="1"]')!
+    const stay = line.querySelector('[data-paper-item="2"]')!
+    const range = document.createRange()
+    range.setStart(hands.firstChild ?? hands, 0)
+    range.setEnd(stay.firstChild ?? stay, stay.textContent?.length ?? 0)
+    const selection = window.getSelection()
+    selection?.removeAllRanges()
+    selection?.addRange(range)
+    expect(readPaperHits(root)).toEqual([{ page: 1, glyphIndexes: [1, 2] }])
+    expect(line.querySelector('[data-paper-item="0"]')?.textContent).toBe('bystander')
+    root.remove()
+    selection?.removeAllRanges()
   })
 
   it('underlines only the dragged glyphs and accepts the underline shortcut', () => {

@@ -945,13 +945,14 @@ html[data-platform="darwin"] .chat-header.empty { height: 52px; padding: 18px 12
 .markdown a:hover { text-decoration: underline; }
 .markdown .workspace-reference-link { display: inline; padding: 0; color: #4ea4ff; background: transparent; border: 0; border-radius: 0; font: inherit; text-align: inherit; cursor: pointer; }
 .markdown .workspace-reference-link:hover { text-decoration: underline; }
-.markdown .katex-display { max-width: 100%; margin: 14px 0; padding: 4px 0; overflow-x: auto; overflow-y: hidden; }
-.markdown .katex-display > .katex { min-width: max-content; text-align: left; }
-.markdown .katex { position: relative; color: inherit; font-size: 1.04em; }
+.markdown .katex-display { max-width: 100%; margin: 14px 0; padding: 0.35em 0; overflow-x: auto; overflow-y: visible; line-height: 1.2; }
+.markdown .katex-display > .katex { display: block; min-width: min-content; text-align: center; }
+.markdown .katex,
+.markdown .katex * { overflow-wrap: normal; word-break: normal; }
+.markdown .katex { position: relative; color: inherit; font-size: 1.04em; line-height: 1.2; }
 .markdown .katex-mathml,
 .markdown .katex-html { -webkit-user-select: none; user-select: none; }
-.markdown .formula-tex { position: absolute; z-index: 1; inset: 0; overflow: hidden; color: transparent; white-space: nowrap; -webkit-user-select: all; user-select: all; }
-.markdown .formula-tex-display { white-space: pre; }
+.markdown .formula-tex { position: absolute; z-index: 1; inset: 0; overflow: hidden; color: transparent; white-space: pre; -webkit-user-select: all; user-select: all; }
 .markdown .math-fallback { display: inline; padding: 2px 5px; color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; font: .9em/1.5 "SFMono-Regular", Menlo, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
 .markdown .katex-display .math-fallback { display: block; width: max-content; min-width: min(100%, 240px); max-width: 100%; padding: 9px 11px; overflow-x: auto; }
 .inline-code { padding: 1px 5px; color: #e7e7e5; background: #303030; border-radius: 4px; font: 12.5px "SFMono-Regular", Menlo, monospace; }

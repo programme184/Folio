@@ -25,6 +25,15 @@ import {
   installSecurePeerDeepLinkLifecycle,
   SecurePeerDeepLinkRouter
 } from './secure-peer-deep-link'
+import {
+  chromeSandboxHelperReady,
+  folioDesktopNeedsNoSandbox,
+  folioLinuxDesktopCommand,
+  folioLinuxDesktopEntry,
+  installElectronLaunchShim,
+  readSysctl,
+  unprivilegedNamespacesFromSysctl
+} from './folio-linux-identity'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } }
@@ -269,18 +278,19 @@ function installFolioLinuxIdentity(iconPath: string | undefined): void {
   try {
     const applications = join(app.getPath('home'), '.local', 'share', 'applications')
     mkdirSync(applications, { recursive: true })
-    const command = app.isPackaged ? `"${process.execPath}"` : `"${process.execPath}" "${app.getAppPath()}"`
-    writeFileSync(join(applications, 'folio.desktop'), `[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Folio
-Comment=Folio
-Exec=${command}
-Icon=${iconPath}
-StartupWMClass=folio
-Terminal=false
-Categories=Office;
-`)
+    const namespaces = unprivilegedNamespacesFromSysctl(
+      readSysctl('/proc/sys/kernel/apparmor_restrict_unprivileged_userns'),
+      readSysctl('/proc/sys/kernel/unprivileged_userns_clone')
+    )
+    const noSandbox = folioDesktopNeedsNoSandbox(chromeSandboxHelperReady(process.execPath), namespaces)
+    const execPath = noSandbox ? installElectronLaunchShim(process.execPath) : process.execPath
+    const command = folioLinuxDesktopCommand({
+      packaged: app.isPackaged,
+      execPath,
+      appPath: app.getAppPath(),
+      noSandbox
+    })
+    writeFileSync(join(applications, 'folio.desktop'), folioLinuxDesktopEntry(command, iconPath))
   } catch (error) {
     appLog('main', 'could not install the Folio desktop entry', errorDetails(error))
   }

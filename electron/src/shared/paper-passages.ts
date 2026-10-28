@@ -301,6 +301,74 @@ function parseMarkRects(value: unknown): PaperMarkRect[] | null {
   return rects
 }
 
+/** Pieces of one PDF text run. A run with several words becomes one piece per word. */
+export function paperWordPieces(text: string): Array<{ text: string; start: number; end: number }> {
+  const words = [...text.matchAll(/\S+/g)]
+  if (words.length <= 1) return [{ text, start: 0, end: text.length }]
+  return words.map(word => ({
+    text: word[0],
+    start: word.index ?? 0,
+    end: (word.index ?? 0) + word[0].length
+  }))
+}
+
+export interface MarkRunBox {
+  left: number
+  top: number
+  right: number
+  bottom: number
+  color: string
+}
+
+/**
+ * Join paint boxes that sit on one line with only whitespace between them,
+ * so a highlight reads as one band instead of a box around each word.
+ */
+export function continuousMarkRuns(
+  selected: readonly MarkRunBox[],
+  others: readonly MarkRunBox[] = []
+): MarkRunBox[][] {
+  const ordered = [...selected].sort((a, b) => a.top - b.top || a.left - b.left)
+  const runs: MarkRunBox[][] = []
+  for (const item of ordered) {
+    const run = runs[runs.length - 1]
+    const previous = run?.[run.length - 1]
+    if (run && previous && sameHighlightRun(previous, item, others)) run.push(item)
+    else runs.push([item])
+  }
+  return runs
+}
+
+function sameHighlightRun(previous: MarkRunBox, item: MarkRunBox, others: readonly MarkRunBox[]): boolean {
+  if (item.color !== previous.color) return false
+  const height = Math.max(previous.bottom - previous.top, item.bottom - item.top, 1)
+  const previousMid = (previous.top + previous.bottom) / 2
+  const itemMid = (item.top + item.bottom) / 2
+  if (Math.abs(itemMid - previousMid) > height * 0.6) return false
+  const gap = item.left - previous.right
+  if (gap < -height) return false
+  const limit = Math.max(height * 1.6, previous.right - previous.left, 4)
+  if (gap > limit) return false
+  return !others.some(other => {
+    const mid = (other.top + other.bottom) / 2
+    if (Math.abs(mid - previousMid) > height * 0.6) return false
+    return other.right > previous.right + 0.5 && other.left < item.left - 0.5
+  })
+}
+
+export function expandPaperTextRun(glyph: PaperGlyph): PaperGlyph[] {
+  const pieces = paperWordPieces(glyph.text)
+  if (pieces.length <= 1) return [glyph]
+  const unit = glyph.width / Math.max(glyph.text.length, 1)
+  return pieces.map(piece => ({
+    text: piece.text,
+    x: glyph.x + piece.start * unit,
+    y: glyph.y,
+    width: Math.max(piece.text.length * unit, 0),
+    height: glyph.height
+  }))
+}
+
 export function glyphsFromTextContent(items: readonly unknown[]): PaperGlyph[] {
   const glyphs: PaperGlyph[] = []
   for (const item of items) {
@@ -316,7 +384,7 @@ export function glyphsFromTextContent(items: readonly unknown[]): PaperGlyph[] {
     )
     const height = typeof record.height === 'number' && record.height > 0 ? record.height : rise || 1
     const width = typeof record.width === 'number' && record.width > 0 ? record.width : 0
-    glyphs.push({ text: record.str, x, y, width, height })
+    glyphs.push(...expandPaperTextRun({ text: record.str, x, y, width, height }))
   }
   return glyphs
 }

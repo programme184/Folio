@@ -272,6 +272,13 @@
   user-select: text;
 }
 
+.paper-page .textLayer span > span[data-paper-item] {
+  position: static;
+  display: inline;
+  transform: none;
+  white-space: pre;
+}
+
 .paper-page .textLayer > :not(.markedContent),
 .paper-page .textLayer .markedContent span:not(.markedContent) {
   z-index: 1;
@@ -297,19 +304,43 @@
 }
 
 .paper-page .textLayer span.paper-mark-highlight,
-.paper-passage-view .paper-page span.paper-mark-highlight {
+.paper-passage-view .paper-page span.paper-mark-highlight,
+.paper-page .textLayer span.paper-mark-underline,
+.paper-passage-view .paper-page span.paper-mark-underline,
+.paper-page .textLayer span.paper-paragraph-hot,
+.paper-passage-view .paper-page span.paper-paragraph-hot {
+  background: transparent;
+  box-shadow: none;
+}
+
+.paper-mark-bridge {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.paper-mark-bridge.paper-mark-highlight {
   background: color-mix(in srgb, var(--paper-highlight, #ffd400) 45%, transparent);
 }
 
-.paper-page .textLayer span.paper-mark-underline,
-.paper-passage-view .paper-page span.paper-mark-underline {
-  box-shadow: inset 0 -2px 0 var(--paper-underline, #e6a817);
+.paper-mark-bridge.paper-mark-underline {
+  background: transparent;
+  border-radius: 0;
+  box-shadow: inset 0 -4px 0 var(--paper-underline, #e6a817);
 }
 
-.paper-page .textLayer span.paper-paragraph-hot,
-.paper-passage-view .paper-page span.paper-paragraph-hot,
+.paper-mark-bridge.paper-paragraph-hot {
+  background: rgba(118, 176, 98, 0.42);
+}
+
 .paper-passage-view .paper-page span::selection {
   background: rgba(118, 176, 98, 0.42);
+}
+
+.paper-page .textLayer span.paper-paragraph-hot::selection,
+.paper-passage-view .paper-page span.paper-paragraph-hot::selection {
+  background: transparent;
 }
 
 .paper-toolbar {
@@ -345,9 +376,10 @@
 
 .paper-toolbar-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 2px;
-  max-width: min(440px, 80vw);
+  width: max-content;
+  max-width: calc(100vw - 24px);
   padding: 4px;
   border-radius: 10px;
 }
@@ -364,6 +396,7 @@
   padding: 6px 8px;
   border-radius: 7px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .paper-toolbar-actions button:disabled {

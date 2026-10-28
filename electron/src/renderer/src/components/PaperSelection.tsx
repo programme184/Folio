@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import { LoaderCircle, X } from 'lucide-react'
 import { t } from '@shared/i18n'
 import {
+  continuousMarkRuns,
   dragSelectionHits,
   locateDragPassage,
   indexPaperPage,
@@ -12,6 +13,7 @@ import {
   retargetPaperMarks,
   type LocatedPassage,
   type PaperGlyph,
+  type MarkRunBox,
   type PaperHit,
   type PaperMark,
   type PaperMarkType,
@@ -56,7 +58,7 @@ export function readPaperHits(root: HTMLElement): Array<{ page: number; glyphInd
   if (!root.contains(range.commonAncestorContainer)) return []
   const hits = new Map<number, number[]>()
   for (const span of root.querySelectorAll<HTMLElement>('[data-paper-item]')) {
-    if (!rangeIntersects(range, span)) continue
+    if (!spanOverlapsRange(range, span)) continue
     const page = Number(span.closest<HTMLElement>('[data-paper-page]')?.dataset.paperPage)
     const index = Number(span.dataset.paperItem)
     if (!Number.isInteger(page) || !Number.isInteger(index)) continue
@@ -76,10 +78,15 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
   const hideTimer = useRef<number | null>(null)
   const retargetTimer = useRef<number | null>(null)
   const pendingRetarget = useRef<string | null>(null)
+  const pointerDown = useRef(false)
+  const applyingSelection = useRef(false)
+  const dragPointer = useRef<{ page: number; index: number } | undefined>(undefined)
   const mark = (spans: HTMLElement[]) => {
     for (const span of marked.current) span.classList.remove('paper-paragraph-hot')
     for (const span of spans) span.classList.add('paper-paragraph-hot')
     marked.current = spans
+    const element = root.current
+    if (element) paintMarkBridges(element)
   }
   const cancelHide = () => {
     if (hideTimer.current === null) return
@@ -138,6 +145,30 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
       showParagraph(pageNumber, glyphIndex)
     }, PAPER_PARAGRAPH_RETARGET_MS)
   }
+  const commitTextSelection = () => {
+    const element = root.current
+    if (!element || applyingSelection.current) return false
+    const hits = dragSelectionHits(getPages(), readPaperHits(element), dragPointer.current)
+    const passage = locateDragPassage(getPages(), hits)
+    if (!passage) return false
+    applyingSelection.current = true
+    pinned.current = true
+    hovered.current = null
+    window.getSelection()?.removeAllRanges()
+    applyingSelection.current = false
+    const spans = hits.flatMap(hit => spansFor(element, hit.page, hit.glyphIndexes))
+    mark(spans)
+    showPassage(passage, hits, spanRects(spans))
+    return true
+  }
+  useEffect(() => {
+    const onSelectionChange = () => {
+      if (pointerDown.current || applyingSelection.current) return
+      commitTextSelection()
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => document.removeEventListener('selectionchange', onSelectionChange)
+  })
   useEffect(() => () => {
     if (hideTimer.current !== null) window.clearTimeout(hideTimer.current)
     if (retargetTimer.current !== null) window.clearTimeout(retargetTimer.current)
@@ -145,6 +176,7 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
   }, [])
   const onMouseDown = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) return
+    pointerDown.current = true
     const target = eventElement(event.target)
     if (!target || target.closest('.paper-toolbar')) return
     blankPress.current = !target.closest('[data-paper-item]')
@@ -190,25 +222,17 @@ export function usePaperSelection(root: RefObject<HTMLElement | null>, getPages:
   }
   const onMouseUp = (event: ReactMouseEvent<HTMLElement>) => {
     if (event.button !== 0) return
+    pointerDown.current = false
+    const target = eventElement(event.target)
+    dragPointer.current = target ? glyphHit(target) ?? undefined : undefined
     if (blankPress.current) {
       blankPress.current = false
       clearHover()
       return
     }
-    const target = eventElement(event.target)
     if (target?.closest('.paper-toolbar')) return
-    const element = root.current
-    if (!element) return
-    const pointer = target ? glyphHit(target) : null
-    const hits = dragSelectionHits(getPages(), readPaperHits(element), pointer ?? undefined)
-    const passage = locateDragPassage(getPages(), hits)
-    if (!passage) return
-    pinned.current = true
-    hovered.current = null
-    window.getSelection()?.removeAllRanges()
-    const spans = hits.flatMap(hit => spansFor(element, hit.page, hit.glyphIndexes))
-    mark(spans)
-    showPassage(passage, hits, spanRects(spans))
+    if (commitTextSelection()) return
+    window.requestAnimationFrame(() => { commitTextSelection() })
   }
   return {
     selection,
@@ -428,6 +452,56 @@ export function applyPaperMarkClasses(root: HTMLElement, pages: readonly PaperPa
       }
     }
   }
+  paintMarkBridges(root)
+}
+
+/** One band per line, covering the spaces between the marked words. */
+export function paintMarkBridges(root: HTMLElement): void {
+  root.querySelectorAll('.paper-mark-bridge').forEach(node => node.remove())
+  const hosts = [...root.querySelectorAll<HTMLElement>('.textLayer')]
+  if (!hosts.length) hosts.push(...root.querySelectorAll<HTMLElement>('.paper-page'))
+  for (const host of hosts) {
+    const spans = [...host.querySelectorAll<HTMLElement>('[data-paper-item]')]
+    paintBridgeRuns(host, spans, 'paper-mark-highlight', '--paper-highlight')
+    paintBridgeRuns(host, spans, 'paper-mark-underline', '--paper-underline')
+    paintBridgeRuns(host, spans, 'paper-paragraph-hot', '')
+  }
+}
+
+function paintBridgeRuns(host: HTMLElement, spans: HTMLElement[], className: string, variable: string): void {
+  const hostBox = host.getBoundingClientRect()
+  const boxes = spans.flatMap(span => {
+    const box = spanBox(hostBox, span)
+    if (!box) return []
+    const color = variable ? span.style.getPropertyValue(variable) : ''
+    return [{ span, ...box, color }]
+  })
+  const selected = boxes.filter(item => item.span.classList.contains(className) && (className !== 'paper-mark-highlight' || !item.span.classList.contains('paper-paragraph-hot')))
+  const others = boxes.filter(item => !item.span.classList.contains(className))
+  for (const run of continuousMarkRuns(selected, others)) {
+    const left = Math.min(...run.map(item => item.left))
+    const right = Math.max(...run.map(item => item.right))
+    const top = Math.min(...run.map(item => item.top))
+    const bottom = Math.max(...run.map(item => item.bottom))
+    const bar = document.createElement('div')
+    bar.className = `paper-mark-bridge ${className}`
+    bar.style.left = `${left}px`
+    bar.style.top = `${top}px`
+    bar.style.width = `${Math.max(right - left, 1)}px`
+    bar.style.height = `${Math.max(bottom - top, 1)}px`
+    if (variable && run[0].color) bar.style.setProperty(variable, run[0].color)
+    host.append(bar)
+  }
+}
+
+function spanBox(hostBox: DOMRect, span: HTMLElement): MarkRunBox | null {
+  const box = span.getBoundingClientRect()
+  const width = box.width || span.offsetWidth
+  const height = box.height || span.offsetHeight
+  if (width <= 0 || height <= 0) return null
+  const left = box.width > 0 ? box.left - hostBox.left : span.offsetLeft
+  const top = box.height > 0 ? box.top - hostBox.top : span.offsetTop
+  return { left, top, right: left + width, bottom: top + height, color: '' }
 }
 
 function spansFor(root: HTMLElement, pageNumber: number, indexes: readonly number[]): HTMLElement[] {
@@ -451,5 +525,19 @@ function rangeIntersects(range: Range, node: Node): boolean {
     return range.intersectsNode(node)
   } catch {
     return false
+  }
+}
+
+/** True when the drag covers this word, not merely the rest of its line. */
+function spanOverlapsRange(range: Range, span: HTMLElement): boolean {
+  if (!rangeIntersects(range, span)) return false
+  const probe = document.createRange()
+  try {
+    probe.selectNodeContents(span)
+    const startsBeforeEnd = range.compareBoundaryPoints(Range.END_TO_START, probe) < 0
+    const endsAfterStart = range.compareBoundaryPoints(Range.START_TO_END, probe) > 0
+    return startsBeforeEnd && endsAfterStart
+  } catch {
+    return true
   }
 }

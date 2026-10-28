@@ -3,7 +3,7 @@ import { ZoomIn, ZoomOut } from 'lucide-react'
 import { getDocument, GlobalWorkerOptions, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { t } from '@shared/i18n'
-import { glyphsFromTextContent, indexPaperPage, retargetPaperMarks, type PaperMark, type PaperPageIndex } from '@shared/paper-passages'
+import { glyphsFromTextContent, indexPaperPage, paperWordPieces, retargetPaperMarks, type PaperMark, type PaperPageIndex } from '@shared/paper-passages'
 import { useLocale } from '../lib/i18n'
 import { usePaperMarkController } from './paper-marks'
 import { usePublishPaperMarkBar } from './paper-mark-bar'
@@ -477,10 +477,35 @@ function tagTextDivs(divs: HTMLElement[], strings: string[], pageNumber: number)
   for (let index = 0; index < divs.length; index += 1) {
     const value = strings[index] ?? ''
     if (!value) continue
-    divs[index].dataset.paperItem = String(glyphIndex)
-    divs[index].dataset.paperPage = String(pageNumber)
-    glyphIndex += 1
+    glyphIndex = tagPaperTextSpan(divs[index], value, pageNumber, glyphIndex)
   }
+}
+
+/** Give each word in a line its own span so a drag can stop on a word or a short phrase. */
+export function tagPaperTextSpan(span: HTMLElement, text: string, pageNumber: number, glyphIndex: number): number {
+  const pieces = paperWordPieces(text)
+  span.dataset.paperPage = String(pageNumber)
+  if (pieces.length <= 1) {
+    span.dataset.paperItem = String(glyphIndex)
+    return glyphIndex + 1
+  }
+  delete span.dataset.paperItem
+  const end = [...span.childNodes].find(node => node instanceof HTMLBRElement)
+  span.replaceChildren()
+  let cursor = 0
+  for (const piece of pieces) {
+    if (piece.start > cursor) span.append(document.createTextNode(text.slice(cursor, piece.start)))
+    const word = document.createElement('span')
+    word.dataset.paperItem = String(glyphIndex)
+    word.dataset.paperPage = String(pageNumber)
+    word.textContent = piece.text
+    span.append(word)
+    glyphIndex += 1
+    cursor = piece.end
+  }
+  if (cursor < text.length) span.append(document.createTextNode(text.slice(cursor)))
+  if (end) span.append(end)
+  return glyphIndex
 }
 
 function isCancelled(error: unknown): boolean {

@@ -37,6 +37,7 @@ describe('answer follow-up', () => {
       value: { native: { writeClipboard } } as unknown as AgentsDockAPI
     })
     const source = String.raw`\(\boldsymbol{\tau_{\text{ref}}} = \big[\;(h_0^*,q_0^*)\;\big]\)`
+    const copied = String.raw`$\boldsymbol{\tau_{\text{ref}}} = \big[\;(h_0^*,q_0^*)\;\big]$`
     render(<div className="message-row assistant"><MarkdownContent text={source} /></div>)
     const visual = document.querySelector('.katex-html')
     expect(visual?.textContent).not.toContain('\\boldsymbol')
@@ -47,6 +48,6 @@ describe('answer follow-up', () => {
     selection?.addRange(range)
     render(<AnswerFollowUp />)
     fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
-    expect(writeClipboard).toHaveBeenCalledWith(source)
+    expect(writeClipboard).toHaveBeenCalledWith(copied)
   })
 })

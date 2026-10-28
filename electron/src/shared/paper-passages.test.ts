@@ -18,6 +18,7 @@ import {
   parsePaperMarks,
   retargetPaperMarks,
   textForHits,
+  continuousMarkRuns,
   togglePaperMark,
   recolorPaperMarks,
   PAPER_HIGHLIGHT_COLOR,
@@ -227,6 +228,37 @@ describe('paper passage index', () => {
       { str: '', transform: [1, 0, 0, 1, 0, 0], width: 0, height: 0 },
       { marked: true }
     ])).toEqual([{ text: 'Hands', x: 40, y: 700, width: 40, height: 12 }])
+  })
+
+  it('joins a highlight across the spaces between words on one line', () => {
+    const line = (left: number, width: number, color = '#ffd400') => ({
+      left, top: 20, right: left + width, bottom: 34, color
+    })
+    const words = [line(10, 40), line(54, 28), line(88, 36)]
+    const runs = continuousMarkRuns(words)
+    expect(runs).toHaveLength(1)
+    expect(runs[0]).toHaveLength(3)
+    const broken = continuousMarkRuns(
+      [line(10, 40), line(70, 30)],
+      [line(52, 14)]
+    )
+    expect(broken).toHaveLength(2)
+    const nextLine = continuousMarkRuns([line(10, 40), { ...line(10, 40), top: 50, bottom: 64 }])
+    expect(nextLine).toHaveLength(2)
+  })
+
+  it('splits one PDF line into words so a short phrase stays inside the line', () => {
+    const glyphs = glyphsFromTextContent([
+      { str: 'bystander hands stay out of the trajectory', transform: [10, 0, 0, 10, 48, 700], width: 360, height: 10 }
+    ])
+    expect(glyphs.map(glyph => glyph.text)).toEqual(['bystander', 'hands', 'stay', 'out', 'of', 'the', 'trajectory'])
+    expect(glyphs[1].x).toBeGreaterThan(glyphs[0].x)
+    const page = indexPaperPage(1, glyphs)
+    expect(page.paragraphs[0].text).toContain('bystander hands stay out of the trajectory')
+    const hands = glyphs.findIndex(glyph => glyph.text === 'hands')
+    const stay = glyphs.findIndex(glyph => glyph.text === 'stay')
+    const hits = dragSelectionHits([page], [{ page: 1, glyphIndexes: [hands, stay] }])
+    expect(locateDragPassage([page], hits)?.text).toBe('hands stay')
   })
 
   it('places the toolbar above a selection that is near the bottom', () => {
