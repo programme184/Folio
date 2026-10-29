@@ -530,9 +530,7 @@ v_{\text{OBJ}}$$`
     const source = String.raw`\(\boldsymbol{\tau_{\text{ref}}} = \big[
 \;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*)
 \;\big]\)`
-    const copied = String.raw`$\boldsymbol{\tau_{\text{ref}}} = \big[
-\;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*)
-\;\big]$`
+    const copied = String.raw`$\boldsymbol{\tau_{\text{ref}}} = \big[ \;(h_0^*,q_0^*),\;(h_1^*,q_1^*),\dots,(h_{T-1}^*,q_{T-1}^*) \;\big]$`
     const { container } = render(<MarkdownContent text={`The reference is ${source}.`} />)
     const visual = container.querySelector('.katex-html')
     expect(visual).not.toBeNull()
@@ -565,6 +563,24 @@ v_{\text{OBJ}}$$`
     expect(container.querySelector('.katex-mathml .formula-tex')).toBeNull()
     selectNode(container.querySelector('p')!)
     expect(dispatchCopy().plain).toBe('在时刻 $t$，从候选的力场系数 $\\xi_{t}$ 里选一个，使得：经 $B_{t}$、再经 $G_{t}$ 作用后，在物体上产生的 wrench 尽量接近目标 $w_{t}$；同时惩罚 $\\| B_{t} \\xi_{t} \\|$，避免为凑 $w_{t}$ 用过大的力场。$\\chi_{t, k}=0$ 时强制对应约束 $B_{t, k} \\xi_{t}=0$，关掉该通道上的力场分量。')
+  })
+
+  it('copies a multiline loss as one formula Feishu can paste', () => {
+    const text = String.raw`$$\mathcal{L}_{\mathrm{Stage2}}(\omega)
+=
+\mathbb{E}_{z,u,\tau}
+\left\|
+W_\omega([z_\tau, u_\tau], q, \tau)
+-
+\bigl([z_1, u_1] - [z_0, u_0]\bigr)
+\right\|_2^2$$`
+    const copied = String.raw`$\mathcal{L}_{\mathrm{Stage2}}(\omega)=\mathbb{E}_{z, u, \tau}\left\|W_{\omega}([z_{\tau}, u_{\tau}], q, \tau) - \bigl([z_{1}, u_{1}] - [z_{0}, u_{0}]\bigr)\right\|_{2}^{2}$`
+    const { container } = render(<MarkdownContent text={text} />)
+    expect(container.querySelector('.katex-error')).toBeNull()
+    expect(container.querySelector('.formula-tex')?.textContent).toBe(copied)
+    selectNode(container.querySelector('.katex-display')!)
+    expect(dispatchCopy().plain).toBe(copied)
+    expect(dispatchCopy().plain?.includes('\n')).toBe(false)
   })
 
   it('copies a display array with display delimiters', () => {

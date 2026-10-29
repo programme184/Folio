@@ -3694,6 +3694,7 @@ export function WorkspaceEditor({
       {file
         ? <>
           <header className="workspace-editor-editor-toolbar">
+            {file.viewerKind === 'pdf' && <div className="paper-outline-slot" />}
             <div
               className="workspace-editor-breadcrumb"
               aria-label={t('editor.currentFile', { name: file.name || fileName(file.path) })}

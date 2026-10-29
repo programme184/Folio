@@ -15,6 +15,9 @@ interface FormulaNode {
   hasBarLine?: boolean
   leftDelim?: string | null
   rightDelim?: string | null
+  delim?: string
+  size?: number
+  mclass?: string
   base?: FormulaNode
   body?: FormulaNode | FormulaNode[]
   sub?: FormulaNode
@@ -62,9 +65,12 @@ function parseFormula(tex: string): FormulaNode[] | null {
 }
 
 function copiedFormula(tex: string): string {
-  const body = normalizeFormulaTex(tex)
-  // A matrix has to stay display math. Inline `$` puts the rows on one line box.
-  if (/\\begin\{|\\\\/.test(body)) return `$$\n${body}\n$$`
+  let body = normalizeFormulaTex(tex)
+  // Feishu turns one `$...$` line into a formula. A line break inside it
+  // ends the formula, and the following `_` becomes italic text.
+  const display = /\\begin\{|\\\\/.test(body)
+  if (!display) body = body.replace(/\s+/g, ' ').trim()
+  if (display) return `$$\n${body}\n$$`
   return `$${body}$`
 }
 
@@ -111,6 +117,8 @@ function pieceOf(node: FormulaNode): Piece {
         tex: `\\left${node.left || '.'}${joinPieces(nodeList(node.body).flatMap(piecesOf)).tex}\\right${node.right || '.'}`,
         kind: 'inner'
       }
+    case 'delimsizing':
+      return sizedDelimiter(node)
     case 'array':
       return { tex: arrayTex(node), kind: 'ord' }
     case 'tag':
@@ -118,6 +126,15 @@ function pieceOf(node: FormulaNode): Piece {
     default:
       throw new UnsupportedFormula()
   }
+}
+
+function sizedDelimiter(node: FormulaNode): Piece {
+  const delim = node.delim
+  const scale = node.size === 1 ? 'big' : node.size === 2 ? 'Big' : node.size === 3 ? 'bigg' : node.size === 4 ? 'Bigg' : ''
+  const side = node.mclass === 'mopen' ? 'l' : node.mclass === 'mclose' ? 'r' : node.mclass === 'mrel' ? 'm' : ''
+  if (!delim || !scale || !side) throw new UnsupportedFormula()
+  const kind: Kind = side === 'l' ? 'open' : side === 'r' ? 'close' : 'rel'
+  return { tex: `\\${scale}${side}${delim === '{' || delim === '}' ? `\\${delim}` : delim}`, kind }
 }
 
 function arrayTex(node: FormulaNode): string {

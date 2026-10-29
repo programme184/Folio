@@ -50,6 +50,18 @@ describe('formula copy', () => {
 \end{array}\right]`)
   })
 
+  it('copies a multiline norm as one Feishu formula line', () => {
+    const source = String.raw`\mathcal{L}_{\mathrm{Stage2}}(\omega)
+=
+\mathbb{E}_{z,u,\tau}
+\left\|
+W_\omega([z_\tau, u_\tau], q, \tau)
+-
+\bigl([z_1, u_1] - [z_0, u_0]\bigr)
+\right\|_2^2`
+    expect(normalizeFormulaTex(source)).toBe(String.raw`\mathcal{L}_{\mathrm{Stage2}}(\omega)=\mathbb{E}_{z, u, \tau}\left\|W_{\omega}([z_{\tau}, u_{\tau}], q, \tau) - \bigl([z_{1}, u_{1}] - [z_{0}, u_{0}]\bigr)\right\|_{2}^{2}`)
+  })
+
   it('leaves a selection without a formula unchanged', () => {
     const host = mount('<div class="markdown"><p>No math here.</p></div>')
     expect(formulaSelectionText(select(host.querySelector('p')!))).toBeNull()

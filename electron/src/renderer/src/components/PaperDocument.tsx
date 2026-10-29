@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent } from 'react'
-import { ZoomIn, ZoomOut } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { ChevronDown, ChevronRight, ListTree, ZoomIn, ZoomOut } from 'lucide-react'
 import { getDocument, GlobalWorkerOptions, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { t } from '@shared/i18n'
@@ -118,6 +119,200 @@ export function tintPaperCanvas(canvas: HTMLCanvasElement, color: string): void 
   context.restore()
 }
 
+const OUTLINE_NODE_LIMIT = 400
+const OUTLINE_DEPTH_LIMIT = 8
+
+export interface PaperOutlineEntry {
+  id: string
+  title: string
+  page: number | null
+  /** Distance from the top of the page, as a fraction of the page height. */
+  fraction: number
+  bold: boolean
+  italic: boolean
+  children: PaperOutlineEntry[]
+}
+
+interface PdfOutlineNode {
+  title?: unknown
+  bold?: boolean
+  italic?: boolean
+  dest?: unknown
+  items?: unknown
+}
+
+interface OutlineDocument {
+  getOutline(): Promise<readonly PdfOutlineNode[] | null>
+  getDestination(id: string): Promise<readonly unknown[] | null>
+  getPageIndex(ref: { num: number; gen: number }): Promise<number>
+  getPage(pageNumber: number): Promise<{ getViewport(params: { scale: number }): { height: number } }>
+}
+
+/** How far down a page a PDF destination sits. 0 is the top of the page. */
+export function paperDestinationFraction(pageHeight: number, dest: readonly unknown[]): number {
+  if (!(pageHeight > 0)) return 0
+  const top = outlineDestTop(dest)
+  if (top === null) return 0
+  return Math.min(1, Math.max(0, (pageHeight - top) / pageHeight))
+}
+
+export function paperOutlineScrollTop(pageTop: number, pageHeight: number, fraction: number): number {
+  if (!(pageHeight > 0) || !(fraction > 0)) return pageTop
+  return pageTop + Math.min(1, fraction) * pageHeight
+}
+
+export async function readPaperOutline(pdf: OutlineDocument): Promise<PaperOutlineEntry[]> {
+  const listed = await pdf.getOutline()
+  if (!Array.isArray(listed) || listed.length === 0) return []
+  return walkOutline(pdf, outlineNodes(listed), '', 0, new Map(), { count: 0 })
+}
+
+function outlineDestKind(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object' && 'name' in value && typeof value.name === 'string') return value.name
+  return ''
+}
+
+function outlineDestTop(dest: readonly unknown[]): number | null {
+  const kind = outlineDestKind(dest[1])
+  const raw = kind === 'XYZ' ? dest[3] : kind === 'FitH' || kind === 'FitBH' ? dest[2] : kind === 'FitR' ? dest[5] : undefined
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null
+}
+
+function outlineRef(value: unknown): { num: number; gen: number } | null {
+  if (!value || typeof value !== 'object') return null
+  const ref = value as { num?: unknown; gen?: unknown }
+  if (typeof ref.num !== 'number' || !Number.isInteger(ref.num)) return null
+  const gen = typeof ref.gen === 'number' && Number.isInteger(ref.gen) ? ref.gen : 0
+  return { num: ref.num, gen }
+}
+
+function outlineTitle(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function outlineNodes(value: unknown): PdfOutlineNode[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is PdfOutlineNode => Boolean(item) && typeof item === 'object')
+}
+
+async function walkOutline(
+  pdf: OutlineDocument,
+  nodes: PdfOutlineNode[],
+  prefix: string,
+  depth: number,
+  heights: Map<number, number>,
+  state: { count: number }
+): Promise<PaperOutlineEntry[]> {
+  if (depth >= OUTLINE_DEPTH_LIMIT) return []
+  const entries: PaperOutlineEntry[] = []
+  for (let index = 0; index < nodes.length; index += 1) {
+    if (state.count >= OUTLINE_NODE_LIMIT) break
+    const node = nodes[index]
+    const title = outlineTitle(node?.title)
+    if (!title) {
+      entries.push(...await walkOutline(pdf, outlineNodes(node?.items), `${prefix}${index}.`, depth + 1, heights, state))
+      continue
+    }
+    state.count += 1
+    const children = await walkOutline(pdf, outlineNodes(node?.items), `${prefix}${index}.`, depth + 1, heights, state)
+    const located = await locateOutline(pdf, node?.dest, heights)
+    entries.push({
+      id: `${prefix}${index}`,
+      title,
+      page: located?.page ?? null,
+      fraction: located?.fraction ?? 0,
+      bold: node?.bold === true,
+      italic: node?.italic === true,
+      children
+    })
+  }
+  return entries
+}
+
+async function locateOutline(
+  pdf: OutlineDocument,
+  dest: unknown,
+  heights: Map<number, number>
+): Promise<{ page: number; fraction: number } | null> {
+  let explicit: unknown = dest
+  if (typeof dest === 'string') {
+    if (!dest) return null
+    try {
+      explicit = await pdf.getDestination(dest)
+    } catch {
+      return null
+    }
+  }
+  if (!Array.isArray(explicit) || explicit.length === 0) return null
+  const ref = outlineRef(explicit[0])
+  if (!ref) return null
+  let pageIndex: number
+  try {
+    pageIndex = await pdf.getPageIndex(ref)
+  } catch {
+    return null
+  }
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) return null
+  const page = pageIndex + 1
+  if (outlineDestTop(explicit) === null) return { page, fraction: 0 }
+  const height = await outlinePageHeight(pdf, page, heights)
+  return { page, fraction: paperDestinationFraction(height, explicit) }
+}
+
+async function outlinePageHeight(pdf: OutlineDocument, page: number, heights: Map<number, number>): Promise<number> {
+  const cached = heights.get(page)
+  if (cached !== undefined) return cached
+  try {
+    const proxy = await pdf.getPage(page)
+    const height = proxy.getViewport({ scale: 1 }).height
+    const safe = Number.isFinite(height) && height > 0 ? height : 0
+    heights.set(page, safe)
+    return safe
+  } catch {
+    heights.set(page, 0)
+    return 0
+  }
+}
+
+function PaperOutlineBranch({ entry, activeId, onOpen }: {
+  entry: PaperOutlineEntry
+  activeId: string | null
+  onOpen: (entry: PaperOutlineEntry) => void
+}) {
+  const [open, setOpen] = useState(entry.children.length > 0)
+  const nested = entry.children.length > 0
+  const className = `paper-outline-link${entry.bold ? ' is-bold' : ''}${entry.italic ? ' is-italic' : ''}`
+  return <li>
+    <div className="paper-outline-row">
+      {nested
+        ? <button
+          type="button"
+          className="paper-outline-disclosure"
+          aria-expanded={open}
+          aria-label={t(open ? 'papers.outlineCollapse' : 'papers.outlineExpand', { title: entry.title })}
+          onClick={() => setOpen(value => !value)}
+        >{open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button>
+        : <span className="paper-outline-disclosure-spacer" aria-hidden="true" />}
+      {entry.page === null
+        ? <span className={`${className} is-static`}><span className="paper-outline-title">{entry.title}</span></span>
+        : <button
+          type="button"
+          className={className}
+          aria-current={activeId === entry.id ? 'true' : undefined}
+          onClick={() => onOpen(entry)}
+        >
+          <span className="paper-outline-title">{entry.title}</span>
+          <span className="paper-outline-page">{entry.page}</span>
+        </button>}
+    </div>
+    {nested && open && <ul className="paper-outline-children">
+      {entry.children.map(child => <PaperOutlineBranch key={child.id} entry={child} activeId={activeId} onOpen={onOpen} />)}
+    </ul>}
+  </li>
+}
+
 export function PaperDocument({ data, documentKey = null, canAsk, askPassage, onAsk }: {
   data: Uint8Array
   documentKey?: string | null
@@ -150,6 +345,12 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
   const [pdfGeneration, setPdfGeneration] = useState(0)
   const [message, setMessage] = useState(t('papers.loading'))
   const [renderId, setRenderId] = useState(0)
+  const [outlineOpen, setOutlineOpen] = useState(false)
+  const [outline, setOutline] = useState<PaperOutlineEntry[] | null>(null)
+  const [activeOutline, setActiveOutline] = useState<string | null>(null)
+  const outlineToggle = useRef<HTMLButtonElement>(null)
+  const outlineWasOpen = useRef(false)
+  const [outlineSlot, setOutlineSlot] = useState<HTMLElement | null>(null)
   const scrollFromToolbar = (event: ReactWheelEvent<HTMLDivElement>) => {
     const answer = event.target instanceof Element ? event.target.closest('.paper-answer') : null
     if (answer instanceof HTMLElement && paperAnswerConsumesWheel(answer, event.deltaY)) return
@@ -212,6 +413,18 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
       window.clearTimeout(timer)
     }
   }, [])
+  useLayoutEffect(() => {
+    const changed = outlineWasOpen.current !== outlineOpen
+    outlineWasOpen.current = outlineOpen
+    if (!changed) return
+    const element = scroller.current
+    if (!element) return
+    setWidth(current => nextPaperWidth(current, element.clientWidth))
+  }, [outlineOpen])
+  useLayoutEffect(() => {
+    const slot = scroller.current?.closest('.workspace-editor-editor')?.querySelector('.paper-outline-slot')
+    setOutlineSlot(slot instanceof HTMLElement ? slot : null)
+  }, [])
   useEffect(() => {
     const controller = new AbortController()
     setMessage(t('papers.loading'))
@@ -236,6 +449,24 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
       void current?.loadingTask.destroy().catch(() => undefined)
     }
   }, [data])
+  useEffect(() => {
+    const pdf = pdfRef.current
+    if (!pdf) {
+      setOutline(null)
+      setActiveOutline(null)
+      return
+    }
+    let cancelled = false
+    setOutline(null)
+    setActiveOutline(null)
+    void readPaperOutline(pdf).then(entries => {
+      if (!cancelled) setOutline(entries)
+    }).catch(error => {
+      if (cancelled || isCancelled(error)) return
+      setOutline([])
+    })
+    return () => { cancelled = true }
+  }, [data, pdfGeneration])
   useEffect(() => {
     const element = scroller.current
     const pdf = pdfRef.current
@@ -277,22 +508,67 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
     }
     applyPaperMarkClasses(element, indexes.current, marks)
   }, [marks, renderId, replace])
+  const jumpToOutline = (entry: PaperOutlineEntry) => {
+    setActiveOutline(entry.id)
+    const root = scroller.current
+    if (!root || entry.page === null) return
+    const page = root.querySelector<HTMLElement>(`[data-paper-page="${entry.page}"]`)
+    if (!page) return
+    root.scrollTop = paperOutlineScrollTop(page.offsetTop, page.offsetHeight, entry.fraction)
+    root.focus({ preventScroll: true })
+  }
+  const closeOutline = () => {
+    setOutlineOpen(false)
+    outlineToggle.current?.focus()
+  }
+  const outlineButton = <button
+    ref={outlineToggle}
+    type="button"
+    className="paper-outline-toggle"
+    aria-expanded={outlineOpen}
+    aria-controls={outlineOpen ? 'paper-outline' : undefined}
+    aria-label={t('papers.outline')}
+    title={t('papers.outline')}
+    onClick={() => setOutlineOpen(value => !value)}
+  ><ListTree size={15} /></button>
   return <div className="paper-document">
     <div className="paper-document-tools">
-      <button type="button" aria-label={t('papers.zoomOut')} onClick={() => setZoom(value => Math.max(0.6, Math.round((value - 0.2) * 10) / 10))}><ZoomOut size={15} /></button>
-      <button type="button" aria-label={t('papers.zoomIn')} onClick={() => setZoom(value => Math.min(2.5, Math.round((value + 0.2) * 10) / 10))}><ZoomIn size={15} /></button>
+      {outlineSlot ? createPortal(outlineButton, outlineSlot) : outlineButton}
+      <div className="paper-document-zoom">
+        <button type="button" aria-label={t('papers.zoomOut')} onClick={() => setZoom(value => Math.max(0.6, Math.round((value - 0.2) * 10) / 10))}><ZoomOut size={15} /></button>
+        <button type="button" aria-label={t('papers.zoomIn')} onClick={() => setZoom(value => Math.min(2.5, Math.round((value + 0.2) * 10) / 10))}><ZoomIn size={15} /></button>
+      </div>
     </div>
     {message && <p className="paper-document-status" role="status">{message}</p>}
-    <div
-      className="paper-document-scroll"
-      ref={scroller}
-      tabIndex={0}
-      onMouseDown={event => { focusScroller(); onMouseDown(event) }}
-      onMouseMove={onMouseMove}
-      onMouseLeave={onMouseLeave}
-      onMouseUp={onMouseUp}
-      onKeyDown={turnPageFromKey}
-    />
+    <div className="paper-document-body">
+      {outlineOpen && <nav
+        id="paper-outline"
+        className="paper-outline"
+        aria-label={t('papers.outline')}
+        onKeyDown={event => {
+          if (event.key !== 'Escape') return
+          event.preventDefault()
+          event.stopPropagation()
+          closeOutline()
+        }}
+      >
+        {outline === null && <p className="paper-outline-empty" role="status">{t('papers.outlineLoading')}</p>}
+        {outline && outline.length === 0 && <p className="paper-outline-empty">{t('papers.outlineEmpty')}</p>}
+        {outline && outline.length > 0 && <ul className="paper-outline-list">
+          {outline.map(entry => <PaperOutlineBranch key={entry.id} entry={entry} activeId={activeOutline} onOpen={jumpToOutline} />)}
+        </ul>}
+      </nav>}
+      <div
+        className="paper-document-scroll"
+        ref={scroller}
+        tabIndex={0}
+        onMouseDown={event => { focusScroller(); onMouseDown(event) }}
+        onMouseMove={onMouseMove}
+        onMouseLeave={onMouseLeave}
+        onMouseUp={onMouseUp}
+        onKeyDown={turnPageFromKey}
+      />
+    </div>
     {selection && <PaperToolbar
       selection={selection}
       canAsk={canAsk}
