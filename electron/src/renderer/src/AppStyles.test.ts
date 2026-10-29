@@ -36,6 +36,18 @@ describe('app overlay interaction styles', () => {
     )
   })
 
+  it('keeps the window controls above the Linux drag region', () => {
+    expect(styles).toMatch(
+      /\.window-frame-controls \{[^}]*z-index:\s*300;[^}]*-webkit-app-region:\s*no-drag;/s
+    )
+    expect(styles).toMatch(
+      /html:not\(\[data-platform="darwin"\]\) \.workspace-tabs-bar,[\s\S]*?-webkit-app-region:\s*no-drag;/
+    )
+    expect(styles).toMatch(
+      /html:not\(\[data-platform="darwin"\]\) \.inspector-drag-region \{[^}]*width:\s*calc\(100% - var\(--window-controls-inset\)\);/s
+    )
+  })
+
   it('covers the split chat layout with a theme-aware transient file workspace', () => {
     expect(styles).toMatch(
       /\.split-workspace-overlay \{[^}]*position:\s*absolute;[^}]*z-index:\s*90;[^}]*inset:\s*0;[^}]*display:\s*grid;[^}]*grid-template-rows:\s*auto minmax\(0, 1fr\);/s

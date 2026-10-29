@@ -10,10 +10,13 @@ paste that file login. Remote clients still cannot. Provider helpers and
 shared-chat guests cannot use these controls. The `codex_auth_v1` health
 capability advertises status support with `api_key_login: false`.
 
-- `GET /api/admin/codex/auth` calls native `account/read` with
-  `refreshToken: false` and returns only `available`, `auth_mode`, `email`,
-  `plan_type` and `requires_openai_auth`. Email and plan apply only to ChatGPT
-  accounts. Responses are not cached.
+- `GET /api/admin/codex/auth` reads `account/read` with `refreshToken: false`
+  from a Codex process that is already running. It does not start one. If that
+  read does not finish within a few seconds, or no process is running, a saved
+  ChatGPT `auth.json` is reported instead. The response contains only
+  `available`, `auth_mode`, `email`, `plan_type` and `requires_openai_auth`.
+  Email and plan apply only to a completed native ChatGPT read. Responses are
+  not cached.
 - `POST /api/admin/codex/auth/api-key` is retained for older clients but always
   rejects authenticated requests with 409 and instructions to use **Custom
   endpoint**. It does not read the submitted key, open a native manager, or

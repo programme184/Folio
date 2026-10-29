@@ -1,5 +1,179 @@
 # Public development log
 
+## 2026-10-29 — Finish the Codex account check from the saved login
+
+- Settings no longer waits for a cold Codex process to start before showing
+  the account. A running process is still read. If that read stalls, the saved
+  ChatGPT `auth.json` is shown instead of a connection error.
+
+```text
+Change and expected user behavior: Codex CLI Login leaves "Checking the Codex
+account..." and shows the saved ChatGPT login when native account read does
+not finish promptly.
+Source commit / app build / server version: uncommitted server source. The
+local AgentsServer on 127.0.0.1:7850 was restarted so the running process
+loaded this check.
+Test surface: isolated Codex auth router tests, then the live status route and
+the open desktop Settings card.
+Actions exercised and observed outcomes: before the restart the live status
+route did not answer within 8 seconds. After the restart it returned ChatGPT
+twice in under 0.01 seconds. Settings → Codex → 重新检查 then showed ChatGPT.
+Real boundaries exercised; any mocked/stubbed boundaries: the desktop request
+reached the restarted server. No Codex logout was run and the saved auth.json
+was not replaced.
+Focused regression / typecheck / production build: 24 isolated Codex auth tests.
+Remaining limitations or blocked acceptance: the saved-login result does not
+include the account email. Email appears only after a completed native account
+read.
+Availability: local running server only
+```
+
+## 2026-10-28 — Keep Codex OAuth provenance when importing auth.json
+
+- A current Codex `auth.json` includes `tokens.oauth_provenance` and
+  `tokens.login_owner_id`. Importing it now keeps those fields, and still
+  accepts a cc-switch bundle that uses `PROXY_MANAGED` or omits `id_token`.
+- An issuer other than the official OpenAI auth hosts is refused.
+
+```text
+Change and expected user behavior: Pasting a ChatGPT auth.json from a current
+Codex login keeps the OAuth authority and login owner, so Codex can use that
+file login.
+Source commit / app build / server version: uncommitted source. The already
+running AgentsServer and desktop were not restarted.
+Test surface: isolated server import test, Electron parser test, and a local
+parse of the reported auth.json.
+Actions exercised and observed outcomes: the reported file normalizes with
+oauth provenance and login owner retained, and the API key marker cleared.
+The live Settings paste was not repeated, because that would replace the
+working Codex login.
+Real boundaries exercised; any mocked/stubbed boundaries: parser and isolated
+import route. No live desktop click and no Codex logout or token refresh.
+Focused regression / typecheck / production build: 3 focused Python auth
+tests passed, 25 Electron auth tests passed, TypeScript check passed, Python
+compile passed, and the Electron production bundle was rebuilt.
+Remaining limitations or blocked acceptance: the AgentsServer process and the
+open desktop were left running, so they still have the previous parser until
+restarted. The live Settings paste was not repeated.
+Availability: source only; local Electron bundle rebuilt
+```
+
+## 2026-10-28 — Accept cc-switch Codex OAuth auth.json bundles
+
+- Accept the non-secret `PROXY_MANAGED` marker that cc-switch writes while
+  preserving the official ChatGPT login.
+- Accept older managed bundles without `id_token` while retaining access-token
+  JWT and account checks; normalize the marker back to `null` before writing.
+
+```text
+Change and expected user behavior: Folio can import a Codex auth.json produced
+by cc-switch and use it for native Codex login without treating the routing
+marker as an API key.
+Source commit / app build / server version: uncommitted source; Electron
+production bundle rebuilt locally; AgentsServer 1.0.7-beta.11.
+Test surface: isolated server tests, Electron transport tests, local Codex CLI.
+Actions exercised and observed outcomes: current ~/.codex/auth.json parsed
+without exposing token contents; `codex login status` reported ChatGPT login.
+The cc-switch managed shape (PROXY_MANAGED plus no id_token) normalized and
+passed import validation.
+Real boundaries exercised; any mocked/stubbed boundaries: local Codex CLI
+status and isolated import/write path; the Folio desktop click path and remote
+authenticated AgentsServer import were not exercised because CUA desktop
+control and an authenticated remote server were unavailable.
+Focused regression / typecheck / production build: 2 focused Python tests,
+24 Electron auth tests, TypeScript check, Python compile, and Electron build
+with compile-output verification passed. The full Python auth module had one
+pre-existing expectation mismatch for login_reload_available.
+Remaining limitations or blocked acceptance: complete the import from Folio's
+Settings UI against an authenticated AgentsServer, then send a disposable
+native Codex request.
+Availability: source only
+```
+
+## 2026-10-28 — Restore Codex native context in Folio Side chat
+
+- Pass the parent Codex rollout file to the isolated native Side chat process,
+  so `thread/fork` can load the original conversation and its tool results.
+- If the rollout has not been persisted yet, keep the existing retryable 409
+  instead of starting a context-less side conversation.
+
+```text
+Change and expected user behavior: Folio Codex Side chat can answer from the
+native parent conversation, including completed tool results, once that
+conversation has been persisted.
+Source commit / app build / server version: uncommitted server source.
+Test surface: server syntax check and focused Codex side-question tests.
+Actions exercised and observed outcomes: source-level validation completed;
+live Codex/Folio provider verification remains pending in this environment.
+Real boundaries exercised; any mocked/stubbed boundaries: no live provider or
+Folio server was available; the focused tests use isolated fixtures.
+Focused regression / typecheck / production build: Python compile passed.
+The repository Python environment does not have pytest installed, so the
+focused pytest files could not run.
+Remaining limitations or blocked acceptance: run the real Folio → AgentsServer
+Codex Side chat flow on a disposable chat after installing the server test
+dependencies.
+Availability: source only
+```
+
+## 2026-10-28 — Keep chat beside an open file, and make the window buttons clickable
+
+- On Linux the frameless window buttons sat on the workspace drag region, so
+  minimize, maximize, and close did not receive clicks. That strip is no
+  longer a drag region.
+- Opening a file in a chat pane replaced the whole pane. The file now opens
+  on the right, with the chat still on the left.
+
+```text
+Change and expected user behavior: the top-right minimize, maximize, and
+close buttons work. Opening a file shows the chat on the left and the file
+on the right.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: WorkspaceEditor pane test and app style test.
+Actions exercised and observed outcomes: after the rebuild, maximize changed
+the window from 1532×1002 to 1920×1048 and restored it; close closed the
+window. Opening the current PDF tab laid the chat on the left and the file
+on the right. Minimize reaches the window manager.
+Real boundaries exercised; any mocked/stubbed boundaries: the live Folio
+window on this desktop, plus the component tests.
+Focused regression / typecheck / production build: 154 WorkspaceEditor
+and style tests passed. Desktop bundle rebuilt locally.
+Remaining limitations or blocked acceptance: a saved non-pane editor can
+still use the full-screen file control. Transient file workspaces that
+return to a preserved chat layout stay full screen until that return.
+Availability: source only
+```
+
+## 2026-10-28 — Use the HOME SSH config for guided server install
+
+- Guided install on a root-owned Folio process read `/root/.ssh/config`, so
+  Host aliases, `ProxyJump`, and `IdentityFile ~/.ssh/…` in the login user's
+  config were ignored. Install now loads `$HOME/.ssh/config` and rewrites
+  those home-relative paths to that directory. The destination stays the
+  alias, so jump hosts still apply.
+
+```text
+Change and expected user behavior: Settings → Server → guided install,
+remote machine, SSH host set to an alias from the HOME SSH config. The HTTP
+port stays 7850. Keys and ProxyJump come from the HOME SSH config.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: server-setup unit test, including ssh -G on a fixture config.
+Actions exercised and observed outcomes: `ssh -G` on a rewritten fixture
+keeps the alias, ProxyJump, IdentitiesOnly, and HOME identity paths. The
+same check against the local SSH config resolves its aliases. A live
+install was not started.
+Real boundaries exercised; any mocked/stubbed boundaries: fixture and local
+`ssh -G` only. No SSH session was opened.
+Focused regression / typecheck / production build: 33 server-setup tests
+passed. `tsc --noEmit` passed. Desktop bundle rebuilt locally; the open
+window still has to be restarted.
+Remaining limitations or blocked acceptance: quit and reopen Folio so the
+main process loads the change. The saved server URL is the resolved host
+address, so a jump host must still leave that address reachable from this
+Mac. The yellow tmux line on 127.0.0.1:7850 is the local server.
+Availability: source only
+```
+
 ## 2026-10-28 — Create a project chat with the saved Cursor API key
 
 - The project + button opened the new-chat dialog on General when the saved

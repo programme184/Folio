@@ -269,11 +269,11 @@ describe('WorkspaceEditor', () => {
     })))
     const editor = await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
     fireEvent.change(editor, { target: { value: 'unsaved edit' } })
-    expect(chat).not.toBeVisible()
-    expect(chat.closest('.workspace-editor-chat-panel')).toHaveAttribute('inert')
+    expect(chat).toBeVisible()
+    expect(chat.closest('.workspace-editor-chat-panel')).not.toHaveAttribute('inert')
     expect(onFileOpen).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Split editor right' })).not.toBeInTheDocument()
-    expect(view.container.querySelector('.workspace-editor-content-split')).toBeNull()
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
 
     fireEvent.click(screen.getByRole('button', { name: 'Chat (pinned)' }))
     expect(screen.getByRole('textbox', { name: 'Chat draft' })).toBe(chat)
@@ -382,7 +382,7 @@ describe('WorkspaceEditor', () => {
     expect(await screen.findByRole('textbox', { name: 'Contents of latest.ts' })).toBeVisible()
     expect(window.agentsDock.workspace.read).not.toHaveBeenCalledWith(session.id, 'first.ts')
     expect(view.container.querySelector('.workspace-editor-editor-groups-split')).toBeNull()
-    expect(view.container.querySelector('.workspace-editor-content-split')).toBeNull()
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
     expect(screen.getByRole('tab', { name: 'previous.ts' })).toBeInTheDocument()
   })
 

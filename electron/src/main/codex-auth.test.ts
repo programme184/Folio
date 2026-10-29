@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { AgentServerClient } from './server-client'
-import { parseCodexAuthStatus, validateCodexApiKey } from '../shared/codex-auth'
+import { codexAuthImportDocument, parseCodexAuthStatus, validateCodexApiKey } from '../shared/codex-auth'
 
 const account = { available: true, auth_mode: 'apiKey', email: null, plan_type: null, requires_openai_auth: true }
 const fakeKey = 'synthetic-key-not-a-real-credential'
@@ -118,4 +118,40 @@ describe('native Codex account transport', () => {
       expect(() => validateCodexApiKey(value)).toThrow('CODEX_AUTH_INVALID_KEY')
     }
   )
+
+  it('keeps Codex oauth provenance and the cc-switch marker without echoing a bad authority', () => {
+    const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')
+    const payload = Buffer.from(JSON.stringify({
+      sub: 'auth0|synthetic',
+      'https://api.openai.com/auth': { chatgpt_account_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }
+    })).toString('base64url')
+    const jwt = `${header}.${payload}.e30`
+    const document = {
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: 'PROXY_MANAGED',
+      tokens: {
+        access_token: jwt,
+        refresh_token: 'rt.synthetic-refresh-token-not-a-real-credential',
+        oauth_provenance: { issuer: 'https://auth.openai.com', client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' },
+        login_owner_id: 'synthetic-login-owner-id-value1',
+        account_id: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE'
+      },
+      last_refresh: '2026-10-28T07:26:28.814135100Z'
+    }
+    expect(codexAuthImportDocument(JSON.stringify(document))).toEqual({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: jwt,
+        refresh_token: document.tokens.refresh_token,
+        oauth_provenance: document.tokens.oauth_provenance,
+        login_owner_id: document.tokens.login_owner_id,
+        account_id: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+      },
+      last_refresh: document.last_refresh
+    })
+    const hostile = structuredClone(document)
+    hostile.tokens.oauth_provenance = { issuer: 'https://evil.example', client_id: 'app_EMoamEEZ73f0CkXaXp7hrann' }
+    expect(() => codexAuthImportDocument(JSON.stringify(hostile))).toThrow('CODEX_AUTH_INVALID')
+  })
 })

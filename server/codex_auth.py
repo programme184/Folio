@@ -25,9 +25,17 @@ MAX_API_KEY_CHARS = 4096
 _ACCOUNT_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _LAST_REFRESH = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|\+00:00)$")
 _REFRESH_TOKEN = re.compile(r"^[A-Za-z0-9._~-]{20,2048}$")
+# Codex records the authority that issued the refresh token and keeps that
+# login identity across rotation. Do not infer either value from JWT claims.
+_OAUTH_ISSUER = re.compile(r"^https://auth\.(?:openai\.com|api\.openai\.org)$")
+_OAUTH_CLIENT_ID = re.compile(r"^app_[A-Za-z0-9]{10,64}$")
+_LOGIN_OWNER_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _ENV_LOGIN_KEYS = ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_IDENTITY_TOKEN_FILE")
 _IMPORT_INVALID = "Paste a ChatGPT Codex auth.json."
 AUTH_TIMEOUT_SECONDS = 30.0
+# The desktop stops waiting before a cold Codex process can finish starting.
+# A status read must answer from the saved login inside this bound.
+STATUS_PROBE_SECONDS = 5.0
 BUSY_MESSAGE = "Wait for Codex chats, goals, queued turns and Side chat requests to finish before changing authentication."
 HANDOFF_MESSAGE = (
     "Codex sign-in changed or was explicitly reloaded. This chat is waiting for "
@@ -222,13 +230,41 @@ def _claimed_account(payload: dict) -> str | None:
     return account.lower()
 
 
+def _oauth_provenance(tokens: dict) -> dict | None:
+    """Copy Codex's stored issuer and client id. Unknown authorities are refused."""
+    raw = tokens.get("oauth_provenance")
+    if raw is None and "oauth_provenance" not in tokens:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"issuer", "client_id"}:
+        raise HTTPException(400, _IMPORT_INVALID)
+    issuer = raw.get("issuer")
+    client_id = raw.get("client_id")
+    if not isinstance(issuer, str) or not _OAUTH_ISSUER.fullmatch(issuer):
+        raise HTTPException(400, _IMPORT_INVALID)
+    if not isinstance(client_id, str) or not _OAUTH_CLIENT_ID.fullmatch(client_id):
+        raise HTTPException(400, _IMPORT_INVALID)
+    return {"issuer": issuer, "client_id": client_id}
+
+
+def _login_owner_id(tokens: dict) -> str | None:
+    if "login_owner_id" not in tokens:
+        return None
+    owner = tokens.get("login_owner_id")
+    if not isinstance(owner, str) or not _LOGIN_OWNER_ID.fullmatch(owner):
+        raise HTTPException(400, _IMPORT_INVALID)
+    return owner
+
+
 def validate_chatgpt_auth_import(value: object) -> dict:
     """Keep only the ChatGPT file Codex writes. Never echo or retain the input."""
     if not isinstance(value, dict):
         raise HTTPException(400, _IMPORT_INVALID)
     if value.get("auth_mode") not in (None, "chatgpt"):
         raise HTTPException(400, _IMPORT_INVALID)
-    if "OPENAI_API_KEY" in value and value.get("OPENAI_API_KEY") is not None:
+    # cc-switch keeps the official OAuth bundle in auth.json while routing
+    # model traffic elsewhere. In that mode it writes a non-secret marker
+    # instead of null; treat the marker exactly like the native null value.
+    if "OPENAI_API_KEY" in value and value.get("OPENAI_API_KEY") not in (None, "PROXY_MANAGED"):
         raise HTTPException(400, "API keys stay on Custom endpoint. Paste a ChatGPT Codex auth.json.")
     tokens = value.get("tokens")
     if not isinstance(tokens, dict):
@@ -240,10 +276,18 @@ def validate_chatgpt_auth_import(value: object) -> dict:
     if not isinstance(refresh, str) or not _REFRESH_TOKEN.fullmatch(refresh):
         raise HTTPException(400, _IMPORT_INVALID)
     account = account.lower()
+    if not isinstance(tokens.get("access_token"), str):
+        raise HTTPException(400, _IMPORT_INVALID)
     for field in ("id_token", "access_token"):
+        # cc-switch's managed bundle may omit id_token for older accounts.
+        # When present, still validate its JWT shape and account claim.
+        if field == "id_token" and field not in tokens:
+            continue
         claimed = _claimed_account(_jwt_object(tokens.get(field)))
         if claimed is not None and claimed != account:
             raise HTTPException(400, _IMPORT_INVALID)
+    provenance = _oauth_provenance(tokens)
+    owner = _login_owner_id(tokens)
     raw_refresh = value.get("last_refresh")
     if isinstance(raw_refresh, str) and _LAST_REFRESH.fullmatch(raw_refresh):
         last_refresh = raw_refresh[:-6] + "Z" if raw_refresh.endswith("+00:00") else raw_refresh
@@ -253,9 +297,11 @@ def validate_chatgpt_auth_import(value: object) -> dict:
         "auth_mode": "chatgpt",
         "OPENAI_API_KEY": None,
         "tokens": {
-            "id_token": tokens["id_token"],
+            **({"id_token": tokens["id_token"]} if "id_token" in tokens else {}),
             "access_token": tokens["access_token"],
             "refresh_token": refresh,
+            **({"oauth_provenance": provenance} if provenance is not None else {}),
+            **({"login_owner_id": owner} if owner is not None else {}),
             "account_id": account,
         },
         "last_refresh": last_refresh,
@@ -394,12 +440,20 @@ def create_router(*, authorize, operation, available, import_auth=None, refresh_
                 "message": "Codex authentication controls require the app-server transport."},
                 headers={"Cache-Control": "no-store"})
         try:
-            async with operation(mutate=False) as manager:
-                result = await read_account(manager)
+            # Read a process that is already running. Starting one here can sit
+            # in initialization until the desktop has already dropped the request.
+            async with asyncio.timeout(STATUS_PROBE_SECONDS):
+                async with operation(mutate=False, existing_only=True) as manager:
+                    if manager is None:
+                        raise LookupError("Codex is not running")
+                    result = await read_account(manager)
         except HTTPException:
             raise
         except Exception:
-            raise HTTPException(503, "Codex authentication status is unavailable.") from None
+            saved = await asyncio.to_thread(saved_file_status)
+            if saved is None:
+                raise HTTPException(503, "Codex authentication status is unavailable. Check Codex on this server and refresh.") from None
+            result = saved
         return JSONResponse({**result, "login_reload_available": reload_login is not None},
                             headers={"Cache-Control": "no-store"})
 

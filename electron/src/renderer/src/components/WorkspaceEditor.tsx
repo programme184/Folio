@@ -3457,8 +3457,8 @@ export function WorkspaceEditor({
   const pdfPath = primaryFile?.viewerKind === 'pdf' ? primaryFile.path : null
   const pdfFull = pdfFullPath !== null && pdfFullPath === pdfPath
   const pdfReader = Boolean(pdfPath) && !tabbedPane && !onReturnToChat && !changesOpen
-  const editorOnly = fileActive && (tabbedPane || Boolean(onReturnToChat) || (pdfReader ? pdfFull : filePresentation === 'full'))
-  const splitActive = !tabbedPane && !changesOpen && fileActive && !onReturnToChat && (pdfReader ? !pdfFull : filePresentation === 'split')
+  const editorOnly = fileActive && (Boolean(onReturnToChat) || (!tabbedPane && (pdfReader ? pdfFull : filePresentation === 'full')))
+  const splitActive = !changesOpen && fileActive && !onReturnToChat && (tabbedPane || (pdfReader ? !pdfFull : filePresentation === 'split'))
   const splitSide = pdfReader && !pdfFull ? 'right' : editorSplit.side
   const splitStyle = splitActive
     ? { '--workspace-editor-width': `${editorSplit.editorPercent}%` } as CSSProperties

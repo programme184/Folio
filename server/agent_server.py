@@ -85090,6 +85090,15 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                 from codex_side_question import NativeCodexSideChat
                 if self.codex is None:
                     cwd = existing_cwd(str(current.get("cwd") or DEFAULT_CWD))
+                    # The side-chat app-server is intentionally isolated from
+                    # the main process and does not share its history DB.
+                    # Give Codex the exact persisted parent rollout so the
+                    # native fork can load the parent's tool/result context.
+                    parent_rollout = await asyncio.to_thread(find_codex_history, parent_id)
+                    if parent_rollout is None:
+                        raise side_questions.SideQuestionError(
+                            409, "The native conversation context is not available yet"
+                        )
                     model, effort, service_tier = codex_runtime_settings(current)
                     approval_policy = current.get("codex_approval_policy")
                     if approval_policy not in CODEX_APPROVAL_POLICIES:
@@ -85149,7 +85158,8 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                             await persist_state({**binding, "codex": value})
                     self.codex = NativeCodexSideChat(parent_id, executable=CODEX_BIN,
                         model=model if isinstance(model, str) and model.strip() else None,
-                        cwd=cwd, fork_overrides=fork_overrides, turn_overrides=turn_overrides,
+                        parent_rollout_path=str(parent_rollout), cwd=cwd,
+                        fork_overrides=fork_overrides, turn_overrides=turn_overrides,
                         server_request_handler=side_server_request,
                         env=side_questions.isolated_environment(runner_env()),
                         provider_selection=provider_selection, durable=durable,

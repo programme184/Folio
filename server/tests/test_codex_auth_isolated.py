@@ -11,6 +11,7 @@ from pathlib import Path
 import stat
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -79,7 +80,8 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
             "SERVER_MAINTENANCE_SESSIONS": set(), "CODEX_NATIVE_ACTION_TASKS": {}, "CODEX_PENDING_INTERACTIONS": {},
             "CODEX_SUBAGENT_INDEX_LOCK": threading.RLock(), "CODEX_SUBAGENT_STATE": {},
             "codex_subagent_has_live_owner": lambda thread, state: state.get("live") is True,
-            "SIDE_QUESTIONS": side_questions.SideQuestions(), "codex_app_server_manager": AsyncMock(return_value=self.manager)})
+            "SIDE_QUESTIONS": side_questions.SideQuestions(), "codex_app_server_manager": AsyncMock(return_value=self.manager),
+            "CODEX_APP_SERVER_MANAGER": self.manager})
         self.ns["codex_app_server_managers"] = lambda: (self.manager,)
         self.ns["refresh_codex_app_server_login"] = AsyncMock()
         exec(OPERATION_CODE, self.ns)
@@ -103,6 +105,42 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
     def login(self, body=None, headers=None):
         return self.client.post("/api/admin/codex/auth/api-key", headers=NATIVE if headers is None else headers,
             json={"api_key": SECRET} if body is None else body)
+
+    def test_cc_switch_managed_auth_shape_is_importable(self):
+        managed = synthetic_auth(OPENAI_API_KEY="PROXY_MANAGED")
+        managed["tokens"].pop("id_token")
+        normalized = codex_auth.validate_chatgpt_auth_import(managed)
+        self.assertIsNone(normalized["OPENAI_API_KEY"])
+        self.assertNotIn("id_token", normalized["tokens"])
+        self.assertEqual(normalized["tokens"]["account_id"], ACCOUNT)
+
+    def test_codex_oauth_provenance_and_login_owner_are_preserved(self):
+        document = synthetic_auth()
+        document["tokens"]["oauth_provenance"] = {
+            "issuer": "https://auth.openai.com", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"}
+        document["tokens"]["login_owner_id"] = "synthetic-login-owner-id-value1"
+        document["last_refresh"] = "2026-10-28T07:26:28.814135100Z"
+        response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=document)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertNotIn("synthetic-login-owner-id-value1", response.text)
+        self.assertNotIn(REFRESH, response.text)
+        saved = json.loads((self.codex_home / "auth.json").read_text())
+        self.assertEqual(saved["tokens"]["oauth_provenance"], document["tokens"]["oauth_provenance"])
+        self.assertEqual(saved["tokens"]["login_owner_id"], document["tokens"]["login_owner_id"])
+        self.assertEqual(saved["last_refresh"], document["last_refresh"])
+        self.assertEqual(list(saved["tokens"]), ["id_token", "access_token", "refresh_token",
+            "oauth_provenance", "login_owner_id", "account_id"])
+        for broken in (
+            {"issuer": "https://evil.example", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann"},
+            {"issuer": "https://auth.openai.com", "client_id": "not-an-app"},
+            {"issuer": "https://auth.openai.com", "client_id": "app_EMoamEEZ73f0CkXaXp7hrann", "extra": "x"},
+        ):
+            rejected = synthetic_auth()
+            rejected["tokens"]["oauth_provenance"] = broken
+            response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=rejected)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertNotIn("evil.example", response.text)
+            self.assertNotIn(REFRESH, response.text)
 
     def test_reload_is_explicit_native_post_not_account_read(self):
         self.manager.request.return_value = {"account": None, "requiresOpenaiAuth": True}
@@ -290,6 +328,43 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
             guard(request("/api/sessions/chat-a/side-questions", "POST", ("127.0.0.1", 9)))
         self.assertEqual(locked.exception.status_code, 401)
 
+    def test_stalled_native_probe_returns_saved_login_without_waiting_out_startup(self):
+        @asynccontextmanager
+        async def stalled(*, mutate, existing_only=False, start_manager=True):
+            await asyncio.Event().wait()
+            yield None
+
+        app = FastAPI()
+        app.middleware("http")(self.ns["require_agent_token"])
+        app.include_router(codex_auth.create_router(authorize=self.ns["require_native_admin_control"],
+            operation=stalled, available=lambda: True, reload_login=self.reload_login))
+        client = TestClient(app)
+        self.addCleanup(client.close)
+        self.codex_home.mkdir()
+        codex_auth.install_chatgpt_auth(
+            {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}, self.home.name, synthetic_auth())
+        with patch.object(codex_auth, "STATUS_PROBE_SECONDS", 0.05), patch.dict(
+                os.environ, {"CODEX_HOME": str(self.codex_home), "HOME": self.home.name}, clear=False):
+            started = time.monotonic()
+            response = client.get("/api/admin/codex/auth", headers=NATIVE)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["auth_mode"], "chatgpt")
+        self.assertTrue(response.json()["login_reload_available"])
+        self.assertNotIn(REFRESH, response.text)
+        self.assertNotIn(ACCOUNT, response.text)
+        missing = TestClient(app)
+        self.addCleanup(missing.close)
+        with patch.object(codex_auth, "STATUS_PROBE_SECONDS", 0.05), patch.dict(
+                os.environ, {"CODEX_HOME": str(self.codex_home / "absent"), "HOME": self.home.name}, clear=False):
+            started = time.monotonic()
+            unavailable = missing.get("/api/admin/codex/auth", headers=NATIVE)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 2.0)
+        self.assertEqual(unavailable.status_code, 503, unavailable.text)
+        self.assertNotIn(REFRESH, unavailable.text)
+
     def test_saved_file_keeps_chatgpt_status_when_account_read_fails(self):
         self.codex_home.mkdir()
         codex_auth.install_chatgpt_auth(
@@ -299,7 +374,7 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
             response = self.client.get("/api/admin/codex/auth", headers=NATIVE)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"available": True, "auth_mode": "chatgpt", "email": None,
-            "plan_type": None, "requires_openai_auth": True})
+            "plan_type": None, "requires_openai_auth": True, "login_reload_available": True})
         self.assertNotIn(REFRESH, response.text)
         self.assertNotIn(ACCOUNT, response.text)
 

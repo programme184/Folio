@@ -620,7 +620,15 @@ html:not([data-platform="darwin"]) .sidebar-topbar button { -webkit-app-region: 
 .chat-header { min-width: 0; height: 40px; padding: 0 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); -webkit-app-region: drag; }
 html:not([data-platform="darwin"]) .conversation-pane > .chat-header,
 html:not([data-platform="darwin"]) .teamspace-header { margin-right: 138px; }
-.window-frame-controls { position: absolute; z-index: 80; top: 0; right: 0; height: 40px; display: flex; align-items: stretch; -webkit-app-region: no-drag; pointer-events: auto; }
+.window-frame-controls { position: absolute; z-index: 300; top: 0; right: 0; height: 40px; display: flex; align-items: stretch; -webkit-app-region: no-drag; pointer-events: auto; }
+html:not([data-platform="darwin"]) { --window-controls-inset: 148px; }
+html:not([data-platform="darwin"]) .workspace-tabs-bar,
+html:not([data-platform="darwin"]) .teamspace-header,
+html:not([data-platform="darwin"]) .conversation-pane > .chat-header { -webkit-app-region: no-drag; position: relative; }
+html:not([data-platform="darwin"]) .workspace-tabs-bar::before,
+html:not([data-platform="darwin"]) .teamspace-header::before,
+html:not([data-platform="darwin"]) .conversation-pane > .chat-header::before { content: ""; position: absolute; z-index: 0; top: 0; left: 0; right: var(--window-controls-inset); height: 28px; -webkit-app-region: drag; }
+html:not([data-platform="darwin"]) .inspector-drag-region { width: calc(100% - var(--window-controls-inset)); }
 .window-frame-controls button { width: 46px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; -webkit-app-region: no-drag; pointer-events: auto; }
 .window-frame-controls button:hover { color: var(--text); background: var(--interaction-hover); }
 .window-frame-controls .window-frame-close:hover { color: #fff; background: #e81123; }

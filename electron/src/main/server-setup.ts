@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -443,23 +443,28 @@ export class ServerSetupManager {
     teamHubHost = false,
     release: PinnedServerRelease
   ): Promise<ServerSetupResult> {
-    const resolvedHost = await resolveSSHConfigHost(sshHost)
-    if (resolvedHost !== sshHost.slice(sshHost.lastIndexOf('@') + 1)) {
-      this.recordDiagnostic(`Resolved the SSH destination to ${resolvedHost}.`, 'connect')
+    const sshConfig = createUserSSHConfig()
+    try {
+      const resolvedHost = await resolveSSHConfigHost(sshHost, sshConfig?.file)
+      if (resolvedHost !== sshHost.slice(sshHost.lastIndexOf('@') + 1)) {
+        this.recordDiagnostic(`Resolved the SSH destination to ${resolvedHost}.`, 'connect')
+      }
+      this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
+      await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh', sshConfig?.file), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
+        phase: 'connect',
+        message: `Connecting to ${sshHost}…`
+      })
+      this.throwIfCancelled()
+      const result = await this.runInstaller(sshCommand(), [
+        ...remoteShellArgs(sshHost, 'sh', sshConfig?.file), String(port), teamHubHost ? 'true' : 'false'
+      ], remoteReleaseBootstrap(release), progress, { phase: 'download', message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…` })
+      if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
+        result.serverUrl = remoteFallbackURL(sshHost, port, resolvedHost)
+      }
+      return result
+    } finally {
+      if (sshConfig) rmSync(sshConfig.directory, { recursive: true, force: true })
     }
-    this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
-    await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh'), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
-      phase: 'connect',
-      message: `Connecting to ${sshHost}…`
-    })
-    this.throwIfCancelled()
-    const result = await this.runInstaller(sshCommand(), [
-      ...remoteShellArgs(sshHost, 'sh'), String(port), teamHubHost ? 'true' : 'false'
-    ], remoteReleaseBootstrap(release), progress, { phase: 'download', message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…` })
-    if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
-      result.serverUrl = remoteFallbackURL(sshHost, port, resolvedHost)
-    }
-    return result
   }
 
   private async runInstaller(
@@ -662,9 +667,42 @@ export class ServerSetupManager {
 
 function sshCommand(): string { return process.platform === 'darwin' ? '/usr/bin/ssh' : 'ssh' }
 
-export function resolveSSHConfigHost(sshHost: string): Promise<string> {
+/** Rewrite ~/… identity paths so they stay in HOME when ssh's account home is /root. */
+export function expandSSHConfigHome(text: string, home: string): string {
+  const root = home.replace(/\/+$/, '')
+  return text.replace(/^(\s*(?:IdentityFile|CertificateFile|UserKnownHostsFile)\s+["']?)~/gim, `$1${root}`)
+}
+
+export function createUserSSHConfig(home = process.env.HOME?.trim() || ''): { directory: string; file: string } | null {
+  const source = home ? join(home, '.ssh', 'config') : ''
+  if (!source || !existsSync(source)) return null
+  const directory = mkdtempSync(join(tmpdir(), 'agentsdock-ssh-'))
+  const file = join(directory, 'config')
+  try {
+    const known = join(home, '.ssh', 'known_hosts')
+    const expanded = expandSSHConfigHome(readFileSync(source, 'utf8'), home)
+    const identities = ['id_ed25519', 'id_ecdsa', 'id_rsa']
+      .map(name => join(home, '.ssh', name))
+      .filter(path => existsSync(path))
+      .map(path => `  IdentityFile ${path}`)
+    const fallback = [
+      'Host *',
+      ...identities,
+      `  UserKnownHostsFile ${known}`,
+      '  GlobalKnownHostsFile /dev/null'
+    ].join('\n')
+    const body = `${expanded.endsWith('\n') ? expanded : `${expanded}\n`}${fallback}\n`
+    writeFileSync(file, body, { mode: 0o600 })
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true })
+    throw error
+  }
+  return { directory, file }
+}
+
+export function resolveSSHConfigHost(sshHost: string, configFile?: string): Promise<string> {
   return new Promise(resolve => {
-    execFile(sshCommand(), ['-G', sshHost], {
+    execFile(sshCommand(), [...(configFile ? ['-F', configFile] : []), '-G', sshHost], {
       encoding: 'utf8',
       env: { ...process.env, PATH: serverSetupProcessPath(process.env.PATH), LC_ALL: 'C', LANG: 'C' },
       timeout: 5_000,
@@ -675,8 +713,9 @@ export function resolveSSHConfigHost(sshHost: string): Promise<string> {
   })
 }
 
-export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash'): string[] {
+export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFile?: string): string[] {
   return [
+    ...(configFile ? ['-F', configFile] : []),
     '-o', 'BatchMode=yes',
     '-o', 'ConnectTimeout=15',
     '-o', 'ConnectionAttempts=2',

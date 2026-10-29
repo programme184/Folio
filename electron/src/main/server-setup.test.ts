@@ -31,6 +31,8 @@ import {
   remoteFallbackURL,
   remoteReleaseBootstrap,
   remoteShellArgs,
+  expandSSHConfigHome,
+  createUserSSHConfig,
   serverSetupCapabilities,
   SERVER_SETUP_PATH_BOOTSTRAP,
   SERVER_SETUP_PREFLIGHT_SCRIPT,
@@ -283,6 +285,47 @@ port 22
     expect(fsHarness.rm).not.toHaveBeenCalled()
   })
 
+  it('keeps ProxyJump and identity files in the HOME ssh config when ssh would otherwise read /root', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentsdock-ssh-home-'))
+    mkdirSync(join(home, '.ssh'), { mode: 0o700 })
+    writeFileSync(join(home, '.ssh', 'config'), [
+      'Host jump',
+      '  HostName 203.0.113.10',
+      '  User ec2-user',
+      '  IdentityFile ~/.ssh/id_ed25519',
+      'Host gpu',
+      '  HostName 100.64.0.8',
+      '  User ubuntu',
+      '  ProxyJump jump',
+      '  IdentityFile ~/.ssh/id_ed25519',
+      '  IdentitiesOnly yes',
+      'Host plain',
+      '  HostName 192.0.2.8',
+      '  User ubuntu',
+      ''
+    ].join('\n'), { mode: 0o600 })
+    writeFileSync(join(home, '.ssh', 'id_ed25519'), 'fixture-key\n', { mode: 0o600 })
+    const created = createUserSSHConfig(home)
+    expect(created).not.toBeNull()
+    try {
+      const text = readFileSync(created!.file, 'utf8')
+      expect(text.indexOf('Host gpu')).toBeLessThan(text.lastIndexOf('Host *'))
+      expect(text).toContain(`IdentityFile ${home}/.ssh/id_ed25519`)
+      expect(text).not.toContain('~/.ssh')
+      expect(text).toContain(`UserKnownHostsFile ${join(home, '.ssh', 'known_hosts')}`)
+      const listed = execFileSync('ssh', ['-F', created!.file, '-G', 'gpu'], { encoding: 'utf8' })
+      expect(listed).toMatch(/proxyjump jump/i)
+      expect(listed).toMatch(/hostname 100\.64\.0\.8/i)
+      expect(listed).toMatch(/identitiesonly yes/i)
+      const plain = execFileSync('ssh', ['-F', created!.file, '-G', 'plain'], { encoding: 'utf8' })
+      expect(plain).toMatch(new RegExp(`identityfile ${home}/\\.ssh/id_ed25519`, 'i'))
+      expect(expandSSHConfigHome('IdentityFile ~/.ssh/id_ed25519\n', home)).toBe(`IdentityFile ${home}/.ssh/id_ed25519\n`)
+    } finally {
+      rmSync(created!.directory, { recursive: true, force: true })
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('uses BatchMode for remote preflight and installer bootstrap', async () => {
     const manager = new ServerSetupManager() as unknown as ServerSetupManagerHarness
     const result: ServerSetupResult = {
@@ -298,10 +341,13 @@ port 22
     await expect(manager.runRemote('user@server', 7850, vi.fn(), true, STABLE_RELEASE)).resolves.toEqual(result)
 
     expect(runProcess).toHaveBeenCalledTimes(2)
-    expect(runProcess.mock.calls[0]?.[1]).toEqual(remoteShellArgs('user@server', 'sh'))
+    const preflightArgs = runProcess.mock.calls[0]?.[1] as string[]
+    const installArgs = runProcess.mock.calls[1]?.[1] as string[]
+    const config = preflightArgs[0] === '-F' ? preflightArgs[1] : undefined
+    expect(preflightArgs).toEqual(remoteShellArgs('user@server', 'sh', config))
     expect(runProcess.mock.calls[0]?.[2]).toBe(SERVER_SETUP_PREFLIGHT_SCRIPT)
     expect(runProcess.mock.calls[0]?.[4]).toBe(false)
-    expect(runProcess.mock.calls[1]?.[1]).toEqual([...remoteShellArgs('user@server', 'sh'), '7850', 'true'])
+    expect(installArgs).toEqual([...remoteShellArgs('user@server', 'sh', config), '7850', 'true'])
     expect(runProcess.mock.calls[1]?.[2]).toBe(REMOTE_BOOTSTRAP)
     expect(runProcess.mock.calls[1]?.[4]).toBe(true)
     expect(runProcess.mock.calls.every(call => call[1].includes('BatchMode=yes'))).toBe(true)
@@ -316,7 +362,9 @@ port 22
     await expect(manager.runRemote('user@server', 7850, vi.fn(), false, STABLE_RELEASE)).rejects.toThrow('systemctl --user')
 
     expect(runProcess).toHaveBeenCalledOnce()
-    expect(runProcess.mock.calls[0]?.[1]).toEqual(remoteShellArgs('user@server', 'sh'))
+    const preflightArgs = runProcess.mock.calls[0]?.[1] as string[]
+    const config = preflightArgs[0] === '-F' ? preflightArgs[1] : undefined
+    expect(preflightArgs).toEqual(remoteShellArgs('user@server', 'sh', config))
     expect(runProcess.mock.calls[0]?.[2]).toBe(SERVER_SETUP_PREFLIGHT_SCRIPT)
   })
 
