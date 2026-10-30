@@ -314,6 +314,13 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(overrides["collaborationMode"]["settings"]["reasoning_effort"])
         await chat.close()
 
+    async def test_blank_parent_without_standalone_never_starts_a_thread(self):
+        with self.assertRaises(SideQuestionError) as caught:
+            adapter.NativeCodexSideChat("", executable="synthetic-codex", model=None, env={})
+        self.assertEqual(caught.exception.status_code, 409)
+        self.client.start_thread.assert_not_awaited()
+        self.client.fork_thread.assert_not_awaited()
+
     async def test_followups_reuse_provider_history_until_explicit_close(self):
         chat = adapter.NativeCodexSideChat("parent-thread", executable="synthetic-codex",
             model=None, env={"HOME": "/synthetic/auth"})

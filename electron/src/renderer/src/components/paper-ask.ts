@@ -2,9 +2,31 @@ import { useCallback } from 'react'
 import { getLocale, t } from '@shared/i18n'
 import { paperPassageQuestion } from '@shared/paper-passages'
 import { sideQuestionsAvailable, type SideQuestionScope } from '@shared/side-questions'
-import type { Session } from '@shared/types'
+import type { Health, Session } from '@shared/types'
 import { useAppStore } from '../store/app-store'
 import type { PaperAsk } from './PaperSelection'
+
+/**
+ * Side questions need a real provider conversation to fork/resume. A newly
+ * created AgentsDock chat has an app session id, but its native Codex thread
+ * is not created until the first main turn is admitted.
+ */
+export function hasMainProviderConversation(session: Session | null): boolean {
+  if (!session) return false
+  if (session.backend === 'codex') {
+    // Older persisted sessions may retain the native thread only in the
+    // provider-agnostic session_id field.
+    return Boolean(session.codex_thread_id?.trim() || session.session_id?.trim())
+  }
+  if (session.backend === 'claude') {
+    return Boolean(session.claude_session_id?.trim() || session.session_id?.trim())
+  }
+  return false
+}
+
+export function paperSideChatAvailable(health: Health | null | undefined, session: Session | null): boolean {
+  return Boolean(session && hasMainProviderConversation(session) && sideQuestionsAvailable(health, session.backend))
+}
 
 export function usePaperAsk(session: Session | null, scope: SideQuestionScope | null): {
   canAsk: boolean
@@ -15,7 +37,7 @@ export function usePaperAsk(session: Session | null, scope: SideQuestionScope | 
   const switching = useAppStore(state => state.switchingProfileId)
   const canSideAsk = Boolean(
     session && scope?.profileId && connected && !switching && !window.agentsDock.sharedChat
-    && sideQuestionsAvailable(health, session.backend)
+    && paperSideChatAvailable(health, session)
   )
   const canAsk = canSideAsk || Boolean(
     session && connected && !switching && !session.archived && !window.agentsDock.sharedChat

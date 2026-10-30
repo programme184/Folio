@@ -3827,12 +3827,14 @@ export function WorkspaceEditor({
                   ? <Suspense fallback={<div className="workspace-editor-loading">{t('papers.loading')}</div>}>
                     <LazyWorkspacePaperViewer
                       source={mediaSource}
+                      documentPath={file.path}
                       label={editorContentLabel(file)}
                       load={() => file.origin === 'artifact' && file.artifact
                         ? window.agentsDock.files.previewBytes(session.id, file.artifact.id)
                         : window.agentsDock.workspace.previewBytes(session.id, file.path)}
                       session={session}
                       scope={profileScope}
+                      workspaceRoot={workspaceRoot || cwd}
                       onAsk={onAskPaper}
                     />
                   </Suspense>

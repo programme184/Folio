@@ -7237,11 +7237,24 @@ describe('workspace file scope safety', () => {
     expect(a.workspacePreviewRequest).toHaveBeenCalledWith('chat', 'docs/design.pdf')
   })
 
+  it('accepts a figure-heavy PDF above the old 40 MiB reader cap', async () => {
+    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46])
+    const a = fakeClient({
+      workspacePreviewRequest: async () => new Response(bytes, {
+        status: 200,
+        headers: { 'content-length': String(48 * 1024 * 1024) }
+      })
+    })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.workspacePreviewBytes('chat', 'docs/egomatrix.pdf')).resolves.toEqual(bytes)
+  })
+
   it('refuses a workspace preview larger than the paper reader limit', async () => {
     const a = fakeClient({
       workspacePreviewRequest: async () => new Response(new Uint8Array([1]), {
         status: 200,
-        headers: { 'content-length': String(40 * 1024 * 1024 + 1) }
+        headers: { 'content-length': String(100 * 1024 * 1024 + 1) }
       })
     })
     const { service } = createProfileService({ 'http://a.test:7850': [a] })

@@ -1,5 +1,155 @@
 # Public development log
 
+## 2026-10-29 — Keep Codex paper questions in the main chat until it exists
+
+- A new Codex chat has no native parent thread to fork. Paper Explain now sends
+  its request through the main conversation, and Paper Ask places its passage
+  in the main composer. Once the first main Codex turn creates a native thread,
+  both paper actions can use the native Side chat again.
+- This supersedes the earlier same-day standalone-thread behavior; a paper
+  action no longer creates a private Codex thread before the main turn.
+- The server-side native Side chat guard also remains strict: a request without
+  a main provider conversation is rejected instead of creating a standalone
+  private thread.
+
+```text
+Change and expected user behavior: Codex paper actions stay in the main chat
+until that chat has a native Codex thread; existing main threads still fork
+paper questions into Side chat.
+Source commit / app build / server version: uncommitted Electron and server
+source; electron-vite production output built locally.
+Test surface: focused paper-routing Vitest tests and isolated Codex Side chat
+adapter/server glue tests.
+Actions exercised and observed outcomes: the focused renderer harness verified
+no-thread Explain uses the main send path and an existing-thread Explain uses
+the Side chat path. No installed desktop click-through or live provider request
+was available in this turn.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer tests mock
+the native API and store action; server tests use isolated provider fixtures.
+Focused regression / typecheck / production build: 3 paper-routing tests passed,
+90 isolated server tests passed, TypeScript passed, electron-vite build passed,
+and the Electron compile-output check passed. The broader App test file is
+currently blocked by its pre-existing ChatHeader mock missing WindowFrameControls.
+Remaining limitations or blocked acceptance: exercise a disposable new Codex
+chat and an existing Codex thread in the installed app, including Paper Ask and
+Explain, then run one real provider request through each path.
+Availability: source and local Electron build only
+```
+
+## 2026-10-29 — Share PDF marks across chats in one workspace
+
+- Workspace PDF highlight and underline records are now keyed by the server
+  profile, working-directory root, and document path. Opening the same PDF from
+  another chat in that folder therefore shows the existing marks; different
+  working folders remain isolated.
+
+```text
+Change and expected user behavior: PDF marks are shared by chats that use the
+same working folder, while marks from other folders remain separate.
+Source commit / app build / server version: uncommitted Electron source.
+Test surface: focused shared-key and paper-store tests plus a local Electron
+production bundle.
+Actions exercised and observed outcomes: the key regression covers same-root
+reuse and different-root isolation. No installed desktop click-through was
+available in this turn.
+Real boundaries exercised; any mocked/stubbed boundaries: mark persistence
+uses the existing local store fixture; no live provider or server boundary is
+involved.
+Focused regression / typecheck / production build: 21 focused Vitest tests
+passed, TypeScript passed, and electron-vite build passed.
+Remaining limitations or blocked acceptance: the actual desktop workflow still
+needs a manual check by opening the same PDF, marking text in one chat, then
+opening it in a second chat with the same working directory.
+Availability: source and local Electron build only
+```
+
+## 2026-10-29 — Show Cursor permission choices on the composer
+
+- The Cursor permission chip hid its label in a narrow composer and opened a
+  single dropdown. It now keeps the current mode visible and lists each mode
+  with its effect, so a chat can be switched among configured permissions,
+  full access, and plan.
+
+```text
+Change and expected user behavior: On a Cursor chat, the shield beside the
+model shows the current permission. Opening it lists the modes and saves the
+chosen one for the next turn.
+Source commit / app build / server version: uncommitted Electron source.
+electron-vite build wrote the renderer. The open desktop window still has the
+previous bundle until it reloads.
+Test surface: component fixture. The open desktop window was not clicked.
+Actions exercised and observed outcomes: the permission menu tests cover
+opening the list, hiding unadvertised modes, and saving full access.
+Real boundaries exercised; any mocked/stubbed boundaries: the session update
+is mocked in the component test. No live click saved a mode.
+Focused regression / typecheck / production build: 12 permission-menu tests
+passed. electron-vite build and the compile-output check succeeded.
+Remaining limitations or blocked acceptance: reload the desktop window, open
+the shield, and confirm the selected mode is saved.
+Availability: source and local Electron build only
+```
+
+## 2026-10-29 — Answer Codex paper questions before the main chat starts
+
+- Paper explain and Side chat on a new Codex chat returned “native context
+  is not available” because that chat had no Codex thread to fork.
+- Those questions now start a private Codex thread and answer. They still do
+  not create a main chat turn. A later main thread is used only after Side
+  chat is cleared. Claude still requires an existing conversation.
+
+```text
+Change and expected user behavior: Explain and ask on a new Codex chat return
+an answer. A chat that already has a Codex thread still forks it.
+Source commit / app build / server version: uncommitted server source. The
+local AgentsServer on port 7850 was restarted onto this source.
+Test surface: isolated adapter and side-chat glue tests, then the local server
+endpoints used by paper explain and Side chat.
+Actions exercised and observed outcomes: a paper-style explain request on the
+open new Codex chat returned an answer in about 60 seconds. A follow-up in
+its existing Side chat returned an answer in about 22 seconds. The main chat
+still has no Codex thread and no new turn.
+Real boundaries exercised; any mocked/stubbed boundaries: the live Codex
+thread start and model reply were real. Unit tests mock the provider process.
+The paper toolbar was not clicked.
+Focused regression / typecheck / production build: 45 isolated unittest
+cases passed. No Electron build; this change is server-side.
+Remaining limitations or blocked acceptance: after a main Codex turn exists,
+clear Side chat before expecting that turn's context. The first failed
+question stays in the panel; the follow-up answer is the one that completed.
+Availability: local server process reloaded from source
+```
+
+## 2026-10-29 — Open figure-heavy PDFs up to the server preview cap
+
+- Workspace and paper-shelf PDF reads used a 40 MiB client cap. AgentsServer
+  already allows 100 MiB. A 48 MiB, 22-page paper was rejected before pdf.js
+  saw it, and the viewer showed the generic open failure.
+- Both client ceilings are now 100 MiB. A declared size above that still fails.
+
+```text
+Change and expected user behavior: A PDF between 40 MiB and 100 MiB opens in
+the workspace viewer and the paper shelf. Larger previews still fail.
+Source commit / app build / server version: uncommitted Electron source.
+electron-vite build wrote out/main/index.js. The already-running desktop
+process still has the old 40 MiB check in memory.
+Test surface: main-process unit tests, pdf.js parse of the reported file, and
+the production main bundle. The open desktop window was not restarted.
+Actions exercised and observed outcomes: the reported file is a valid
+unencrypted 22-page PDF of about 48.4 MiB. pdf.js 6.4.299 loaded it and
+returned page 1 at letter size. The previous main bundle rejected previews
+above 40 MiB. The new bundle uses 100 MiB for both the workspace preview and
+the paper shelf.
+Real boundaries exercised; any mocked/stubbed boundaries: pdf.js parsed the
+real file. The byte-limit regression used a mocked preview response. The live
+window was not clicked, because the check lives in the main process and a
+reload would not load it.
+Focused regression / typecheck / production build: 3 focused Vitest tests
+passed. electron-vite build and the compile-output check succeeded.
+Remaining limitations or blocked acceptance: quit and reopen the desktop app,
+then open the same PDF. A window reload is not enough.
+Availability: source and local Electron build only
+```
+
 ## 2026-10-29 — Finish the Codex account check from the saved login
 
 - Settings no longer waits for a cold Codex process to start before showing

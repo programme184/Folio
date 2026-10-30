@@ -2,7 +2,8 @@ import { realpath, readdir, readFile, stat } from 'node:fs/promises'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 export const DEFAULT_PAPER_ROOT = '/home/ubuntu/Zotero/Context/Hand'
-export const PAPER_PDF_BYTE_LIMIT = 40 * 1024 * 1024
+// Same ceiling as workspace PDF preview, which follows the server's 100 MiB default.
+export const PAPER_PDF_BYTE_LIMIT = 100 * 1024 * 1024
 const MAX_PAPERS = 2000
 const MAX_DEPTH = 8
 

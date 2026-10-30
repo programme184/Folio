@@ -1745,6 +1745,14 @@ button.tool-event-toggle:hover { background: #242424; }
 .claude-permission-fields label { grid-column: 1 / -1; }
 .codex-permission-fields select { width: 100%; min-width: 0; height: 32px; padding: 0 27px 0 8px; color: var(--text); background: #191919; border: 1px solid #3b3b3b; border-radius: var(--radius-control); }
 .codex-permission-fields select:disabled { opacity: .46; }
+.cursor-permission-choices { display: grid; gap: 6px; }
+.cursor-permission-choice { display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: start; gap: 8px; width: 100%; padding: 8px 10px; color: var(--text); background: #191919; border: 1px solid #3b3b3b; border-radius: var(--radius-control); text-align: left; }
+.cursor-permission-choice[aria-checked="true"] { border-color: var(--accent); }
+.cursor-permission-choice strong, .cursor-permission-choice small { display: block; }
+.cursor-permission-choice strong { font-size: var(--text-size-meta); font-weight: var(--text-weight-label); }
+.cursor-permission-choice small { margin-top: 3px; color: var(--faint); font-size: var(--text-size-meta); font-weight: var(--text-weight-body); line-height: 1.35; }
+.cursor-permission-choice:disabled { opacity: .46; }
+.cursor-permission-choice:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .codex-permission-hint, .codex-permission-error { margin: 9px 0 0; font-size: var(--text-size-meta); line-height: 1.4; }
 .codex-permission-hint { color: var(--faint); }
 .codex-permission-error { color: var(--danger); }
@@ -2982,6 +2990,7 @@ button.tool-event-toggle:hover { background: #242424; }
 :root[data-theme="light"] .cwd-popover { background: #fff; border-color: var(--border); box-shadow: 0 18px 48px #00000030; }
 :root[data-theme="light"] .codex-permission-popover-icon { color: var(--muted); background: var(--surface-2); }
 :root[data-theme="light"] .codex-permission-fields select { color: var(--text); background: var(--surface-2); border-color: var(--border); }
+:root[data-theme="light"] .cursor-permission-choice { color: var(--text); background: var(--surface-2); border-color: var(--border); }
 :root[data-theme="light"] .codex-permission-arrow { fill: var(--border); }
 :root[data-theme="light"] .send-button { color: var(--text-on-accent); background: var(--text); }
 :root[data-theme="light"] .send-button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 90%, #fff); }

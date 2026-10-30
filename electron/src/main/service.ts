@@ -7810,7 +7810,9 @@ function unsupportedCodexGoalsConfiguration(): CodexGoalsConfiguration {
   }
 }
 
-const PREVIEW_BYTE_LIMIT = 40 * 1024 * 1024
+// Match AgentsServer's default MAX_WORKSPACE_PREVIEW_BYTES. A 40 MiB cap
+// rejected ordinary figure-heavy papers before pdf.js received the bytes.
+const PREVIEW_BYTE_LIMIT = 100 * 1024 * 1024
 
 async function readLimitedPreview(response: Response, limit = PREVIEW_BYTE_LIMIT): Promise<Uint8Array> {
   if (!response.ok) {

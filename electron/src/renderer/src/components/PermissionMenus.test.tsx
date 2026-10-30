@@ -178,7 +178,8 @@ describe('controlled permission menus', () => {
 
     view.rerender(cursorMenu(true, onOpenChange, true))
     expect(await screen.findByRole('heading', { name: 'Cursor permissions' })).toBeVisible()
-    expect(screen.getByLabelText('Permission mode')).toBeEnabled()
+    expect(screen.getByRole('radiogroup', { name: 'Permission mode' })).toBeVisible()
+    expect(screen.getByRole('radio', { name: 'Cursor defaults' })).toBeEnabled()
     expect(screen.getByText('This change applies to the next turn; the active turn keeps its current access.')).toBeVisible()
 
     await userEvent.setup().click(screen.getByRole('button', { name: 'Close Cursor permissions' }))
@@ -258,12 +259,12 @@ describe('controlled permission menus', () => {
 
     render(cursorMenu(true, vi.fn()))
 
-    const select = screen.getByLabelText('Permission mode')
-    expect(within(select).getAllByRole('option').map(option => option.textContent)).toEqual([
+    const choices = screen.getByRole('radiogroup', { name: 'Permission mode' })
+    expect(within(choices).getAllByRole('radio').map(option => option.getAttribute('aria-label'))).toEqual([
       'Cursor defaults', 'Plan only'
     ])
-    expect(within(select).queryByRole('option', { name: 'Auto-review' })).not.toBeInTheDocument()
-    expect(within(select).queryByRole('option', { name: 'Full access' })).not.toBeInTheDocument()
+    expect(within(choices).queryByRole('radio', { name: 'Auto-review' })).not.toBeInTheDocument()
+    expect(within(choices).queryByRole('radio', { name: 'Full access' })).not.toBeInTheDocument()
   })
 
   it('falls back to Cursor-configured permissions when permission modes are absent', () => {
@@ -286,7 +287,7 @@ describe('controlled permission menus', () => {
     render(cursorMenu(true, vi.fn()))
 
     expect(screen.getByRole('button', { name: 'Cursor permissions: Cursor defaults' })).toBeEnabled()
-    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual(['Cursor defaults'])
+    expect(screen.getAllByRole('radio').map(option => option.getAttribute('aria-label'))).toEqual(['Cursor defaults'])
     expect(screen.getByText(/Cursor’s configured permissions/)).toBeInTheDocument()
   })
 
@@ -299,8 +300,8 @@ describe('controlled permission menus', () => {
     render(<CursorPermissionMenu session={legacySession} running={false} open onOpenChange={vi.fn()} />)
 
     expect(screen.getByRole('button', { name: 'Cursor permissions: Cursor defaults' })).toBeEnabled()
-    expect(screen.getByLabelText('Permission mode')).toHaveValue('default')
-    expect(screen.queryByRole('option', { name: /Auto-review/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Cursor defaults' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('radio', { name: /Auto-review/i })).not.toBeInTheDocument()
   })
 
   it('saves a new Cursor permission mode through the session-update queue', async () => {
@@ -319,7 +320,7 @@ describe('controlled permission menus', () => {
     // effect stomp the optimistic value with the stale prop).
     render(<ConnectedCursorMenu />)
 
-    await user.selectOptions(screen.getByLabelText('Permission mode'), 'full_access')
+    await user.click(screen.getByRole('radio', { name: 'Full access' }))
 
     await vi.waitFor(() => expect(update).toHaveBeenCalledWith('cursor-chat', { cursor_permission_mode: 'full_access' }))
     expect(await screen.findByRole('button', { name: 'Cursor permissions: Full access' })).toBeInTheDocument()

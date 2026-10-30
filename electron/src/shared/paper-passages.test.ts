@@ -379,7 +379,11 @@ describe('paper marks', () => {
 
   it('names shelf and workspace documents without accepting an empty key', () => {
     expect(paperShelfMarkKey('nested/hand.pdf')).toBe('shelf:nested/hand.pdf')
-    expect(paperWorkspaceMarkKey('profile-a', 'chat-1', 'docs/paper.pdf')).toBe('workspace:profile-a:chat-1:docs/paper.pdf')
+    expect(paperWorkspaceMarkKey('profile-a', '/work/project', 'docs/paper.pdf')).toBe('workspace:profile-a:/work/project:docs/paper.pdf')
+    expect(paperWorkspaceMarkKey('profile-a', '/work/project', 'docs/paper.pdf'))
+      .toBe(paperWorkspaceMarkKey('profile-a', '/work/project', 'docs/paper.pdf'))
+    expect(paperWorkspaceMarkKey('profile-a', '/work/project', 'docs/paper.pdf'))
+      .not.toBe(paperWorkspaceMarkKey('profile-a', '/work/other', 'docs/paper.pdf'))
     expect(paperShelfMarkKey('')).toBeNull()
     expect(paperWorkspaceMarkKey('profile-a', '', 'docs/paper.pdf')).toBeNull()
   })

@@ -10,12 +10,14 @@ import './PaperShelf.css'
 
 const PaperDocument = lazy(() => import('./PaperDocument').then(module => ({ default: module.PaperDocument })))
 
-export function WorkspacePaperViewer({ source, label, load, session, scope, onAsk }: {
+export function WorkspacePaperViewer({ source, documentPath, label, load, session, scope, workspaceRoot, onAsk }: {
   source: string
+  documentPath: string
   label: string
   load: () => Promise<Uint8Array>
   session: Session
   scope: WorkspaceProfileScope | null
+  workspaceRoot: string
   onAsk?: (draft: string) => void
 }) {
   useLocale()
@@ -50,7 +52,7 @@ export function WorkspacePaperViewer({ source, label, load, session, scope, onAs
     {!failed && data && <Suspense fallback={<div className="workspace-editor-loading">{t('papers.loading')}</div>}>
       <PaperDocument
         data={data}
-        documentKey={paperWorkspaceMarkKey(scope?.profileId ?? 'local', session.id, source)}
+        documentKey={paperWorkspaceMarkKey(scope?.profileId ?? 'local', workspaceRoot, documentPath)}
         canAsk={canAsk}
         askPassage={askPassage}
         onAsk={askInChat}

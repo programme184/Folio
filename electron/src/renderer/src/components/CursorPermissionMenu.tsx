@@ -114,6 +114,7 @@ export function CursorPermissionMenu({
       >
         <Shield size={14} aria-hidden="true" />
         <span className="codex-permission-primary">{label}</span>
+        <span className="codex-permission-compact">{label}</span>
         <ChevronDown size={12} aria-hidden="true" />
       </button>
     </Popover.Trigger>
@@ -145,21 +146,28 @@ export function CursorPermissionMenu({
             </Popover.Close>
           </div>
         </header>
-        <div className="codex-permission-fields claude-permission-fields">
-          <label>
-            <span>{t("ui.CursorPermissionMenu.CursorPermissionMenu.permission_mode_c7a8e6d")}</span>
-            <select
-              value={mode}
-              disabled={controlsDisabled}
-              onChange={event => apply(event.target.value as CursorPermissionMode)}
-            >
-              {permissionModes.map(value =>
-                <option key={value} value={value}>{CURSOR_PERMISSION_MODE_LABELS[value]}</option>
-              )}
-            </select>
-          </label>
+        <div
+          className="cursor-permission-choices"
+          role="radiogroup"
+          aria-label={t("ui.CursorPermissionMenu.CursorPermissionMenu.permission_mode_c7a8e6d")}
+        >
+          {permissionModes.map(value => <button
+            key={value}
+            type="button"
+            role="radio"
+            aria-checked={mode === value}
+            aria-label={CURSOR_PERMISSION_MODE_LABELS[value]}
+            className="cursor-permission-choice"
+            disabled={controlsDisabled}
+            onClick={() => apply(value)}
+          >
+            <span>
+              <strong>{CURSOR_PERMISSION_MODE_LABELS[value]}</strong>
+              <small>{CURSOR_PERMISSION_MODE_HELP[value]}</small>
+            </span>
+            {mode === value && <Check size={14} aria-hidden="true" />}
+          </button>)}
         </div>
-        <p className="codex-permission-hint">{CURSOR_PERMISSION_MODE_HELP[mode]}</p>
         {running && <p className="codex-permission-hint">{t("ui.CursorPermissionMenu.CursorPermissionMenu.this_change_applies_to_the_next_turn_the_a_af4af7d")}</p>}
         {saveError && <p className="codex-permission-error" role="alert">{saveError}</p>}
         <Popover.Arrow className="codex-permission-arrow" />

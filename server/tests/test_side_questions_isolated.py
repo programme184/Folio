@@ -905,6 +905,7 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
             CODEX_SANDBOX_POLICY_TYPES={"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"},
             CODEX_DEFAULT_PERMISSION_PROFILE=None, CODEX_PROVIDER_MCP_NAME="_agentsdock_internal_provider_9f3a2c71",
             handle_codex_server_request=AsyncMock(),
+            find_codex_history=lambda thread_id: root / "parent-rollout.jsonl",
             build_claude_sdk_options=Mock(return_value=(self.options, "configuration", "synthetic-claude")),
             claude_sdk_manager=AsyncMock(return_value=self.manager),
             runner_env=lambda: {"AGENTSDOCK_CHAT_ID": "parent", "HOME": "/synthetic"})
@@ -1026,6 +1027,11 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_native_parent_and_unsupported_backend_never_launch_provider(self):
         self.session.pop("claude_session_id")
+        with self.assertRaises(side.SideQuestionError) as caught:
+            await self.namespace["create_native_side_chat"]("chat")
+        self.assertEqual(caught.exception.status_code, 409)
+        self.session["backend"] = "codex"
+        self.session.pop("codex_thread_id")
         with self.assertRaises(side.SideQuestionError) as caught:
             await self.namespace["create_native_side_chat"]("chat")
         self.assertEqual(caught.exception.status_code, 409)

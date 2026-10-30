@@ -691,9 +691,14 @@ export function paperShelfMarkKey(relativePath: string): string | null {
   return joinMarkKey('shelf', relativePath)
 }
 
-export function paperWorkspaceMarkKey(profileId: string, sessionId: string, source: string): string | null {
-  if (!markPart(profileId) || !markPart(sessionId) || !markPart(source)) return null
-  return joinMarkKey('workspace', `${profileId}:${sessionId}:${source}`)
+/**
+ * Workspace PDF marks belong to the working folder, not to an individual chat.
+ * `workspaceRoot` is the stable identity shared by chats opened in the same
+ * working directory; the session id must not participate in this key.
+ */
+export function paperWorkspaceMarkKey(profileId: string, workspaceRoot: string, source: string): string | null {
+  if (!markPart(profileId) || !markPart(workspaceRoot) || !markPart(source)) return null
+  return joinMarkKey('workspace', `${profileId}:${workspaceRoot}:${source}`)
 }
 
 export function isPaperMarkKey(value: unknown): value is string {

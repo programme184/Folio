@@ -26,8 +26,8 @@ import { Sidebar } from './components/Sidebar'
 import { TerminalDock } from './components/TerminalDock'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
 import { WelcomeChat } from './components/WelcomeChat'
-import { sideQuestionsAvailable } from '@shared/side-questions'
 import { WorkspaceFilesProvider } from './components/WorkspaceFilesContext'
+import { paperSideChatAvailable } from './components/paper-ask'
 import { readInspectorTab, saveInspectorTab } from './lib/inspector-preference'
 import { trackEvent } from './lib/analytics'
 import { activeEmergencyAlert } from './lib/emergency-alert'
@@ -543,7 +543,7 @@ function AppWorkspace() {
 
   const askPaperPassage = (quote: string) => {
     if (!selectedSession || !activeProfileId) return
-    if (!sideQuestionsAvailable(useAppStore.getState().health, selectedSession.backend)) {
+    if (!paperSideChatAvailable(useAppStore.getState().health, selectedSession)) {
       useAppStore.getState().setDraftForSession(selectedSession.id, quote)
       return
     }

@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createPaperShelfWith, DEFAULT_PAPER_ROOT, type PaperShelfDependencies } from './paper-shelf'
+import { createPaperShelfWith, DEFAULT_PAPER_ROOT, PAPER_PDF_BYTE_LIMIT, type PaperShelfDependencies } from './paper-shelf'
 
 const roots: string[] = []
 
@@ -27,6 +27,10 @@ function memoryShelf(root: string | null, extras: Partial<PaperShelfDependencies
 }
 
 describe('local paper shelf', () => {
+  it('keeps the local PDF ceiling aligned with the 100 MiB workspace preview', () => {
+    expect(PAPER_PDF_BYTE_LIMIT).toBe(100 * 1024 * 1024)
+  })
+
   it('uses the default folder until a directory is chosen', async () => {
     const shelf = memoryShelf('relative/papers')
     expect(await shelf.root()).toBe(DEFAULT_PAPER_ROOT)
