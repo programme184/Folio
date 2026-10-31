@@ -599,7 +599,7 @@
   "editor.thisFolderIsEmpty": "此文件夹为空。",
   "editor.thisImageSourceIsUnavailable": "此图片源不可用。",
   "editor.thisVideoSourceIsUnavailable": "此视频来源不可用。",
-  "editor.couldNotPlayThisVideo": "无法播放此视频。",
+  "editor.couldNotPlayThisVideo": "无法播放此视频。可能是编码不受支持，或此 AgentsServer 版本过旧、尚不支持视频预览，需要更新。",
   "editor.thisPdfSourceIsUnavailable": "此 PDF 源不可用。",
   "editor.thisPermanentlyDeletesTheFileOnAgentsserverThisCannotBeUndone": "这会在 AgentsServer 上永久删除该文件。此操作无法撤销。",
   "editor.thisPermanentlyDeletesTheFolderAndEverythingInsideItOnAgentsserver": "这会在 AgentsServer 上永久删除该文件夹及其中的所有内容。",
