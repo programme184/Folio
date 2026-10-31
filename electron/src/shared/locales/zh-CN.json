@@ -598,6 +598,8 @@
   "editor.thisFileChangedOnDiskWhileAgentsdockWasClosedRevertTheLocalDraftOrReloadFromDiskBeforeSavi": "AgentsDock 关闭期间，此文件已在磁盘上发生更改。保存前请还原本地草稿或从磁盘重新加载。",
   "editor.thisFolderIsEmpty": "此文件夹为空。",
   "editor.thisImageSourceIsUnavailable": "此图片源不可用。",
+  "editor.thisVideoSourceIsUnavailable": "此视频来源不可用。",
+  "editor.couldNotPlayThisVideo": "无法播放此视频。",
   "editor.thisPdfSourceIsUnavailable": "此 PDF 源不可用。",
   "editor.thisPermanentlyDeletesTheFileOnAgentsserverThisCannotBeUndone": "这会在 AgentsServer 上永久删除该文件。此操作无法撤销。",
   "editor.thisPermanentlyDeletesTheFolderAndEverythingInsideItOnAgentsserver": "这会在 AgentsServer 上永久删除该文件夹及其中的所有内容。",

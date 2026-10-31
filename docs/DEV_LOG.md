@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-10-31 — Play video files in the workspace file viewer
+
+- Opening an `.mp4`, `.m4v`, `.mov` or `.webm` file from the workspace tree or the
+  file search used to fail with "is binary and cannot be opened in the text
+  editor". It now opens in a tab with a standard player (play, seek, volume, full
+  screen). Videos use the same read-only preview transport as images and PDFs, so
+  they are not read as text; the server's preview size limit still applies (100 MiB
+  by default).
+- The server now lists video types in its workspace preview types, so a server that
+  includes this change is required; an older server keeps answering that videos are
+  not a supported preview.
+
+```text
+Source commit / app build / server version: uncommitted Electron and server
+source; electron-vite build; AgentsServer from the same tree. Availability: source only.
+Test surface: isolated native app (headless, own profile) with an isolated server.
+Exercised: a real H.264 `.mp4` (2.3 s) and a `.webm` (37 s) opened as tabs, loaded
+with controls and no error, seeked to 20 s and played forward (ranged streaming).
+Focused checks: server preview tests (63 pass, new video types and ranges);
+workspace editor tests (154 pass, new per-extension video test); tsc --noEmit;
+production build.
+Remaining limitations: videos from chat attachments and artifact tabs are unchanged.
+Files over the preview limit show the server's size message. Dark theme and narrow
+width were not checked. A remote server must be updated before it can preview videos.
+```
+
 ## 2026-10-31 — Fix the PDF full-screen button doing nothing
 
 - The full-screen button in the paper viewer did nothing: the app denied every web

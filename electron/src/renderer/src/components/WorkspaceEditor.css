@@ -939,7 +939,8 @@
     #191919;
 }
 
-.workspace-editor-image-viewer img {
+.workspace-editor-image-viewer img,
+.workspace-editor-image-viewer video {
   display: block;
   max-width: 100%;
   max-height: 100%;

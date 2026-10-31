@@ -598,6 +598,8 @@
   "editor.thisFileChangedOnDiskWhileAgentsdockWasClosedRevertTheLocalDraftOrReloadFromDiskBeforeSavi": "This file changed on disk while AgentsDock was closed. Revert the local draft or reload from disk before saving.",
   "editor.thisFolderIsEmpty": "This folder is empty.",
   "editor.thisImageSourceIsUnavailable": "This image source is unavailable.",
+  "editor.thisVideoSourceIsUnavailable": "This video source is unavailable.",
+  "editor.couldNotPlayThisVideo": "Could not play this video.",
   "editor.thisPdfSourceIsUnavailable": "This PDF source is unavailable.",
   "editor.thisPermanentlyDeletesTheFileOnAgentsserverThisCannotBeUndone": "This permanently deletes the file on AgentsServer. This cannot be undone.",
   "editor.thisPermanentlyDeletesTheFolderAndEverythingInsideItOnAgentsserver": "This permanently deletes the folder and everything inside it on AgentsServer.",

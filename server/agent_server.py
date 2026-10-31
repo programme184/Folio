@@ -1442,10 +1442,14 @@ WORKSPACE_PREVIEW_MEDIA_TYPES = {
     ".ico": "image/x-icon",
     ".jpeg": "image/jpeg",
     ".jpg": "image/jpeg",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mp4": "video/mp4",
     ".pdf": "application/pdf",
     ".png": "image/png",
     ".tif": "image/tiff",
     ".tiff": "image/tiff",
+    ".webm": "video/webm",
     ".webp": "image/webp",
 }
 WORKSPACE_SEARCH_IGNORED_DIRECTORIES = {
@@ -3111,7 +3115,7 @@ def workspace_preview_media_type(relative_path: str) -> str:
             415,
             "workspace_preview_unsupported",
             (
-                f"{relative_path} is not a supported image or PDF preview. "
+                f"{relative_path} is not a supported image, video or PDF preview. "
                 "SVG and text files must be opened in the text editor."
             ),
         )

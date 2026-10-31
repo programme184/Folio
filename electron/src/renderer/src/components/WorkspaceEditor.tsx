@@ -33,6 +33,7 @@ import {
   FileCode2,
   FileDiff,
   FileImage,
+  FileVideo,
   FilePlus2,
   FileText,
   Folder,
@@ -51,7 +52,7 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import { internalFileViewerKind, type InternalFileViewerKind } from '@shared/file-content-type'
+import { effectiveFileContentType, internalFileViewerKind, type InternalFileViewerKind } from '@shared/file-content-type'
 import { PaperMarkBar, PaperMarkBarProvider } from './paper-mark-bar'
 import type {
   AgentFile,
@@ -128,7 +129,7 @@ interface EditorSplitPreference {
 
 interface OpenWorkspaceFile extends WorkspaceFile {
   origin: 'workspace' | 'external' | 'artifact' | 'untitled'
-  viewerKind: Exclude<InternalFileViewerKind, 'unsupported'>
+  viewerKind: WorkspaceViewerKind
   artifact?: AgentFile
   displayPath?: string
   saveDirectory?: string
@@ -226,6 +227,9 @@ interface PendingOpenReservation {
 }
 type PaletteCloseReason = 'cancel' | 'commit'
 type MarkdownViewMode = 'source' | 'split' | 'preview'
+// Workspace files add video playback on top of the shared viewer kinds.
+type WorkspaceViewerKind = Exclude<InternalFileViewerKind, 'unsupported'> | 'video'
+const isMediaViewer = (kind: WorkspaceViewerKind): boolean => kind === 'image' || kind === 'pdf' || kind === 'video'
 
 interface PersistedWorkspaceSnapshot {
   target: string
@@ -1409,7 +1413,7 @@ export function WorkspaceEditor({
     const existing = openFilesRef.current.find(file => file.path === path)
     const refreshingLoadedExternal = refreshExternal && existing?.origin === 'external'
     if (!existing || existing.loading || existing.loaded && !refreshingLoadedExternal) return
-    if (existing.viewerKind === 'image' || existing.viewerKind === 'pdf') return
+    if (isMediaViewer(existing.viewerKind)) return
     if (existing.origin === 'external' && !absoluteReadsAvailable) return
     if (existing.origin === 'workspace' && workspaceMutationBlocks(path)) {
       reportWorkspaceMutationBlock()
@@ -2059,8 +2063,8 @@ export function WorkspaceEditor({
         if (file.origin !== 'workspace' || !workspacePathIsWithin(file.path, previousPath)) return file
         const path = remapWorkspacePath(file.path, previousPath, nextPath)
         const viewerKind = workspaceFileViewerKind(path)
-        const wasMedia = file.viewerKind === 'image' || file.viewerKind === 'pdf'
-        const isMedia = viewerKind === 'image' || viewerKind === 'pdf'
+        const wasMedia = isMediaViewer(file.viewerKind)
+        const isMedia = isMediaViewer(viewerKind)
         const renamed = {
           ...file,
           root: result.root,
@@ -2308,7 +2312,7 @@ export function WorkspaceEditor({
       return false
     }
     const viewerKind = workspaceFileViewerKind(path)
-    if (viewerKind === 'image' || viewerKind === 'pdf') {
+    if (isMediaViewer(viewerKind)) {
       if (capabilityVersion < 3) {
         if (!options.quiet) {
           const message = t('editor.updateAgentsserverToPreviewWorkspaceImagesAndPdfs')
@@ -3125,7 +3129,7 @@ export function WorkspaceEditor({
     }
     const targetPath = [pending.directory, pending.name.trim()].filter(Boolean).join('/')
     const viewerKind = workspaceFileViewerKind(targetPath)
-    if (viewerKind === 'image' || viewerKind === 'pdf') {
+    if (isMediaViewer(viewerKind)) {
       setPendingUntitledSave(current => current ? {
         ...current,
         error: t('editor.chooseATextOrCodeFilenameForThisEditorBuffer')
@@ -3585,6 +3589,8 @@ export function WorkspaceEditor({
           >
             {file.viewerKind === 'image'
               ? <FileImage size={13} aria-hidden="true" />
+              : file.viewerKind === 'video'
+                ? <FileVideo size={13} aria-hidden="true" />
               : file.viewerKind === 'pdf'
                 ? <FileText size={13} aria-hidden="true" />
                 : <FileCode2 size={13} aria-hidden="true" />}
@@ -3668,7 +3674,7 @@ export function WorkspaceEditor({
         />
       </Suspense>
     )
-    const mediaSource = file && (file.viewerKind === 'image' || file.viewerKind === 'pdf')
+    const mediaSource = file && isMediaViewer(file.viewerKind)
       ? workspaceMediaSource(file, profileScope, session.id)
       : null
     return <PaperMarkBarProvider><section
@@ -3816,6 +3822,10 @@ export function WorkspaceEditor({
               ? mediaSource
                 ? <WorkspaceImageViewer source={mediaSource} label={editorContentLabel(file)} />
                 : <div className="workspace-editor-loading">{t('editor.thisImageSourceIsUnavailable')}</div>
+              : file.viewerKind === 'video'
+                ? mediaSource
+                  ? <WorkspaceVideoViewer source={mediaSource} label={editorContentLabel(file)} />
+                  : <div className="workspace-editor-loading">{t('editor.thisVideoSourceIsUnavailable')}</div>
               : file.viewerKind === 'pdf'
                 ? mediaSource
                   ? <Suspense fallback={<div className="workspace-editor-loading">{t('papers.loading')}</div>}>
@@ -4834,7 +4844,7 @@ function loadingArtifactTextFile(file: AgentFile): OpenWorkspaceFile {
 
 function restoredWorkspaceFile(cwd: string, tab: PersistedTab): OpenWorkspaceFile {
   const viewerKind = workspaceFileViewerKind(tab.path)
-  if (viewerKind === 'image' || viewerKind === 'pdf') {
+  if (isMediaViewer(viewerKind)) {
     return openWorkspacePreviewFile(cwd, tab.path, viewerKind)
   }
   const hasDraft = typeof tab.draft === 'string'
@@ -4915,7 +4925,7 @@ function restoredArtifactFile(file: AgentFile): OpenWorkspaceFile {
 function openWorkspacePreviewFile(
   root: string,
   path: string,
-  viewerKind: 'image' | 'pdf',
+  viewerKind: WorkspaceViewerKind,
   entry?: WorkspaceEntry
 ): OpenWorkspaceFile {
   return {
@@ -4967,7 +4977,8 @@ function openArtifactPreviewFile(file: AgentFile, viewerKind: 'image' | 'pdf'): 
   }
 }
 
-function workspaceFileViewerKind(path: string): Exclude<InternalFileViewerKind, 'unsupported'> {
+function workspaceFileViewerKind(path: string): WorkspaceViewerKind {
+  if (effectiveFileContentType({ filename: fileName(path), content_type: null }).startsWith('video/')) return 'video'
   const kind = internalFileViewerKind({ filename: fileName(path), content_type: null })
   return kind === 'unsupported' ? 'text' : kind
 }
@@ -5438,6 +5449,17 @@ function workspaceMediaSource(
   } catch {
     return null
   }
+}
+
+function WorkspaceVideoViewer({ source, label }: { source: string; label: string }) {
+  useLocale()
+  const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [source])
+  return <div className="workspace-editor-image-viewer">
+    {failed
+      ? <div className="workspace-editor-loading">{t('editor.couldNotPlayThisVideo')}</div>
+      : <video src={source} aria-label={label} controls preload="metadata" onError={() => setFailed(true)} />}
+  </div>
 }
 
 function WorkspaceImageViewer({ source, label }: { source: string; label: string }) {

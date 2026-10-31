@@ -2547,6 +2547,19 @@ describe('WorkspaceEditor', () => {
     expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-right')
   })
 
+  it.each(['mp4', 'mov', 'webm', 'm4v'])('plays workspace %s videos through the preview transport without reading them as text', async extension => {
+    const view = renderEditor()
+    const path = `flow/outputs/episode_0000008.${extension}`
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: 'chat-a', path } }))
+    })
+    await waitFor(() => expect(view.container.querySelector('video')).not.toBeNull())
+    const video = view.container.querySelector('video')!
+    expect(video).toHaveAttribute('src', `agentsdock-media://workspace/profile-a/1/chat-a/${encodeURIComponent(path)}`)
+    expect(video).toHaveAttribute('controls')
+    expect(window.agentsDock.workspace.read).not.toHaveBeenCalledWith('chat-a', path)
+  })
+
   it('prefers a live workspace image through the main-process availability probe', async () => {
     const file: AgentFile = {
       id: 'live-image-artifact',
