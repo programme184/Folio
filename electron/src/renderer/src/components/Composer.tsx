@@ -15,8 +15,10 @@ import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ClaudePermissionMode, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
 import { teamAllServersAliasAvailable, teamBulletinAliasAvailable, type TeamNetworkServer } from '@shared/team-network'
-import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortAfterModelChange, runtimeEffortOptions, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
+import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortOptions, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
+import { messageAnalyticsProps } from '../lib/session-analytics'
+import { modelCommandArgument, resolveModelCommand, sessionModelPatch } from '../lib/model-command'
 import { backendLabel, formatBytes, runtimeLabel } from '../lib/format'
 import { CodexModelDiscovery } from './CodexModelDiscovery'
 import { cancelComposerEditorLayout, composerTextCanUseMirror, observeComposerEditorWidth, scheduleComposerEditorLayout, syncComposerEditorMirror } from '../lib/composer-editor-layout'
@@ -607,6 +609,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     snapshot: null
   })
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false)
+  const modelCommandPendingRef = useRef<string | null>(null)
   const [runtimeMenuSection, setRuntimeMenuSection] = useState<'model' | 'reasoning' | null>(null)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
   const [mcpDialogOpen, setMcpDialogOpen] = useState(false)
@@ -781,7 +784,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       && state.error === sendFailure.message) state.setError(null)
     setSendFailure(null)
   }, [sendContext, connectionIdentity, connectionMode])
-  const canSend = !writeDisabled && !selectedRuntimeError && !admitting && uploadPaths.length === 0 && referencesSupported && (Boolean(draft.trim()) || uploads.length > 0)
+  const isModelCommand = modelCommandArgument(draft) !== null
+  const canSend = !writeDisabled && !admitting && (isModelCommand
+    || !selectedRuntimeError && uploadPaths.length === 0 && referencesSupported && (Boolean(draft.trim()) || uploads.length > 0))
   const codexControls = health?.capabilities?.codex_controls
   const claudeControls = health?.capabilities?.claude_controls
   const claudeMcpAvailable = claudeMcpCapabilitySupported(claudeControls)
@@ -1261,23 +1266,59 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
 
   const send = async (steer = false, promptOverride?: string, consumeComposer = true) => {
     if (writeDisabled) return
+    const modelCommandKey = `${activeProfileId}:${profileGeneration}:${session?.id}`
+    if (modelCommandPendingRef.current === modelCommandKey) return
     setSendFailure(null)
-    if (steer && running && session?.backend === 'opencode') { useAppStore.getState().setError(t('opencode.steerUnavailable')); return }
     if (!profileIsActive(activeProfileId, profileGeneration)) return
+    const liveState = useAppStore.getState()
+    const liveSession = liveState.sessions.find(candidate => candidate.id === session?.id) ?? session
+    const rawOutgoing = promptOverride ?? draft
+    const modelArgument = consumeComposer ? modelCommandArgument(rawOutgoing) : null
+    if (modelArgument !== null && liveSession) {
+      // A model command changes session settings. Never admit a turn, consume
+      // attachments, or pass this text through provider prompt composition.
+      if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, liveSession.id, draftContextRef, mountedRef)) return
+      liveState.setError(null)
+      if (!modelArgument) {
+        trackEvent('builtin_slash_command_used')
+        updateComposerDraft('', 0)
+        setRuntimeMenuSection('model')
+        setRuntimeMenuOpen(true)
+        return
+      }
+      const options = runtimeCatalogOptions(liveState.runtimeCatalog, liveSession.backend, 'models', liveSession.model,
+        liveSession.provider_connection === 'custom' ? 'custom' : liveSession.codex_provider,
+        liveSession.provider_connection_catalog ?? liveSession.codex_provider_catalog)
+      const option = resolveModelCommand(modelArgument, options)
+      if (!option) { liveState.setError(t('composer.modelCommand.chooseAvailable')); return }
+      trackEvent('builtin_slash_command_used')
+      modelCommandPendingRef.current = modelCommandKey
+      try {
+        let saved = false
+        await liveState.updateSession(liveSession.id, sessionModelPatch(liveSession, liveState.runtimeCatalog, option.value), {
+          // A cleared model may be resolved to the API connection's concrete
+          // default (for example Cursor's "auto") by the server.
+          onConfirmed: updated => { saved = option.value === '' || (updated.model ?? '') === option.value }
+        })
+        if (saved && composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, liveSession.id, draftContextRef, mountedRef)
+          && draftRef.current === rawOutgoing) updateComposerDraft('', 0)
+      } finally {
+        if (modelCommandPendingRef.current === modelCommandKey) modelCommandPendingRef.current = null
+      }
+      return
+    }
+    if (steer && running && session?.backend === 'opencode') { liveState.setError(t('opencode.steerUnavailable')); return }
     let steerConsent: InboundDeliveryConsent | undefined
     if (steer && selectedId) {
       const consent = confirmInboundDeliveryInterruption(selectedId, 'send_now')
       if (!consent) return
       steerConsent = consent
     }
-    const liveState = useAppStore.getState()
-    const liveSession = liveState.sessions.find(candidate => candidate.id === session?.id) ?? session
     const runtimeError = sessionRuntimeAdmissionError(liveSession, liveState.health, liveState.runtimeCatalog)
     if (runtimeError) {
       liveState.setError(runtimeError)
       return
     }
-    const rawOutgoing = promptOverride ?? draft
     const boundProviderCommand = consumeComposer
       && providerCommandBindingRef.current
       && providerCommandBindingRef.current.contextKey === providerCommandsKey
@@ -1477,6 +1518,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         return
       }
       if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
+      // No await between this snapshot and store admission; both refer to the
+      // same submitting chat, even if navigation happens before the receipt.
+      const messageProps = messageAnalyticsProps(useAppStore.getState().sessions.find(candidate => candidate.id === session.id))
       const sent = await useAppStore.getState().sendPromptForSession(session.id, outgoing, steer, {
         consumeComposer,
         admissionToken,
@@ -1493,7 +1537,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         if (message) setSendFailure({ context: sendContext, message })
       }
       if (sent) {
-        trackEvent('message_sent', { backend: session.backend })
+        trackEvent('message_sent', messageProps)
         if (boundProviderCommand) {
           trackEvent(boundProviderCommand.kind.toLowerCase() === 'skill' ? 'slash_skill_used' : 'slash_command_used')
         }
@@ -1773,6 +1817,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     } else if (command.id === 'import') {
       useAppStore.getState().setModal('importChats', true)
     } else if (command.id === 'model' || command.id === 'reasoning') {
+      if (command.id === 'model' && useAppStore.getState().error === t('composer.modelCommand.chooseAvailable')) useAppStore.getState().setError(null)
       setRuntimeMenuSection(command.id)
       setRuntimeMenuOpen(true)
     } else if (command.id === 'mcp') {
@@ -3332,9 +3377,7 @@ function RuntimeMenu({
   }, [focusSection, open])
 
   const selectModel = (value: string) => {
-    const model = value || null
-    const effort = runtimeEffortAfterModelChange(catalog, session.backend, model, session.effort, (session.provider_connection === 'custom' ? 'custom' : session.codex_provider), (session.provider_connection_catalog ?? session.codex_provider_catalog))
-    void useAppStore.getState().updateSession(session.id, { model, effort })
+    void useAppStore.getState().updateSession(session.id, sessionModelPatch(session, catalog, value))
   }
   const dismissReloadNotice = () => {
     if (reloadNoticeTimer.current !== null) window.clearTimeout(reloadNoticeTimer.current)

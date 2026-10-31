@@ -1,4 +1,5 @@
 {
+  "composer.modelCommand.chooseAvailable": "Model not found, ambiguous, or unavailable. Use /model to choose an available model, or enter its exact ID.",
   "subagents.title": "Subagents",
   "subagents.singular": "subagent",
   "subagents.providerName": "{provider} subagent",

@@ -318,6 +318,86 @@ read.
 Availability: local running server only
 ```
 
+## 2026-10-28 - Cursor compound tool IDs and live analytics acceptance
+
+- Cursor CLI 2026.10.22 emits compound tool correlation IDs containing an LF
+  separator. The server previously rejected these and interrupted otherwise
+  valid tool-using turns. Recognize the observed bounded compound format and
+  map its entire value to a deterministic, control-free digest. Preserve ordinary
+  IDs, separate the encoded namespace from literal provider IDs, and continue
+  rejecting empty, oversized and unrelated control-bearing IDs. Tool start and
+  completion retain the same key without conflating distinct calls.
+- Reproduced the native CLI format before the fix. Added a failing-before/passing-
+  after parser regression and production-runner subprocess coverage. An isolated
+  native offscreen Electron app connected through its production IPC/HTTP boundary
+  to a source-built test server and real Cursor API key: two file reads completed
+  with distinct paired IDs, their results appeared in the UI, and a subsequent
+  tool-using follow-up succeeded. No production service was restarted or deployed.
+- Repeated acceptance in the user-designated installed test instance, retaining
+  its existing connection identity and configuration and changing only the parser.
+  The visible native desktop app selected Cursor API key and a disposable working
+  directory through the UI. Three real-provider turns and six paired tool calls
+  (including four file reads) completed successfully, and reloading retained the
+  results. The main service was left running unchanged; this test-only patch is
+  not a published update.
+- Removed the temporary local-launcher analytics cancellation used during
+  automated QA; this was not shipped app code. With normal consent handling
+  unchanged, three real UI submissions produced exactly three Cursor Custom API
+  message events in the actual Mixpanel project's raw export. Verification must
+  distinguish raw ingestion from dashboards that exclude test installations.
+  Earlier intercepted events were not replayed or backfilled. No new payload
+  fields, credentials or message content were added.
+- Follow-up desktop acceptance found that `/model default` could remain in the
+  composer after a successful API-model reset: the server returned its concrete
+  default rather than null. Clear the command after that confirmed normalization,
+  retaining existing failure/newer-draft/server-switch guards. Added a regression
+  that fails before this correction. No prompt or provider turn is submitted.
+- Validation: 120 focused Cursor parser/runner/API-key regressions, 577 desktop
+  regressions, TypeScript and Electron production build/output verification pass.
+  Source repair is not an installed server update: existing services need to load
+  the new parser before their tool-using chats benefit.
+
+## 2026-10-28 - Custom API message metrics and local model commands
+
+- Desktop accepted-message analytics now includes an allowlisted connection
+  kind (`default` or `custom_api`) when explicitly known at submission. Keep it
+  separate from the five Agent families; omit legacy/unknown values. No model,
+  endpoint, credential, account, chat ID or message content is collected.
+  Update the event catalog and source privacy disclosure accordingly.
+- Typed `/model` opens the existing model picker; `/model <ID or unique label>`
+  updates the session through the same model/effort logic as that picker.
+  Commands never enter prompt composition or count as sent messages. Unknown,
+  ambiguous and locked choices are rejected without starting a turn. Preserve
+  attachments, failed-command drafts and newer drafts; ignore late results
+  after switching servers. Keep existing slash skills and ordinary text intact.
+- Based on main `9a750c7a`; source-built desktop metadata remains 0.2.0/build 86.
+  An isolated native offscreen Electron app connected to a test AgentsServer
+  1.0.7-beta.11 reproduced the old typed command starting a Claude turn without
+  changing the selected model. After the fix, real keyboard input changed
+  Claude and Codex models through production preload/IPC/HTTP and server
+  persistence without adding turns. Subsequent real provider messages returned
+  expected replies. Repeated switching, default reset, reload persistence,
+  unknown-model draft retention and the existing picker were also exercised.
+- Captured and cancelled test analytics before network transmission: default
+  Claude/Codex messages included the new property; model commands did not emit
+  message events. Custom API classification across all five Agents, Custom API
+  accepted sends, queued/failed sends, stale-response ownership and failure
+  rollback were verified with deterministic tests. The isolated test service
+  had no configured Custom API endpoint; see the user-acceptance follow-up below.
+  No production analytics events were sent.
+- 576 focused regressions, TypeScript and the production build/output check
+  passed. No server/mobile changes, release, deployment, or website publication.
+- User-acceptance follow-up: at the user's request, gracefully closed the prior
+  local source app and launched this branch with its existing profile and cache.
+  Rebuilt and verified the loaded renderer asset, online connection, composer
+  and model picker through native input. No server restart or release occurred.
+  The user's subsequent live Cursor Custom API submission produced one accepted
+  `message_sent` event with `backend: cursor` and `connection_kind: custom_api`.
+  This verifies client submission acceptance and classification, not provider
+  completion. Test telemetry is captured locally and cancelled before Mixpanel
+  submission. Other live Custom API backends and a live queued-send scenario
+  remain untested; their deterministic coverage is described above.
+
 ## 2026-10-28 — Keep Codex OAuth provenance when importing auth.json
 
 - A current Codex `auth.json` includes `tokens.oauth_provenance` and

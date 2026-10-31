@@ -1,7 +1,7 @@
 import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { setLocale } from '@shared/i18n'
 import type { TeamHubStatus, TeamHubTeamDetails, TeamHubWorkspace } from '@shared/team-hub'
@@ -17,6 +17,8 @@ import { Composer, TeamMentionPalette } from './Composer'
 import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
+import * as analytics from '../lib/analytics'
+import * as sessionAnalytics from '../lib/session-analytics'
 
 const secureConnectionId = '09d7bb2e-3b47-4be7-89fc-2cecd90f4434'
 const secureRouteId = '22e7bb2e-3b47-4be7-89fc-2cecd90f4434'
@@ -192,6 +194,128 @@ describe('Composer', () => {
       runtimeCatalog: null,
       health: null,
       error: null,
+    })
+  })
+
+  describe('typed model commands and message routing analytics', () => {
+    let tracker: MockInstance<typeof analytics.trackEvent>
+    const claude: Session = {id:'chat-1',title:'QA',backend:'claude',model:'sonnet',provider_connection:'default'}
+    beforeEach(() => {
+      tracker = vi.spyOn(analytics, 'trackEvent').mockImplementation(() => {})
+      window.agentsDock.sessions = {update:vi.fn().mockImplementation(async (_id,patch) => ({...claude,...patch}))} as unknown as AgentsDockAPI['sessions']
+      window.agentsDock.turns = {send:vi.fn().mockResolvedValue({session:claude,queued:false})} as unknown as AgentsDockAPI['turns']
+      useAppStore.setState({sessions:[claude],runtimeCatalog:{backends:{claude:{models:[{value:'sonnet',label:'Sonnet'},{value:'opus',label:'Opus'},{value:'locked',label:'Locked',locked:true}],efforts:[]}}}})
+    })
+    afterEach(() => tracker.mockRestore())
+    const enter = (text: string) => {
+      const input = screen.getByPlaceholderText('Message')
+      fireEvent.change(input, {target:{value:text}})
+      fireEvent.keyDown(input, {key:'Enter',code:'Enter'})
+    }
+    it.each([false,true])('changes the session model, never sends a prompt (busy=%s)', async busy => {
+      const confirmed = vi.spyOn(sessionAnalytics, 'trackConfirmedSessionChange')
+      useAppStore.setState({activeSessionIds:new Set(busy ? ['chat-1'] : [])})
+      render(<Composer />)
+      enter('/model Opus')
+      await waitFor(() => expect(useAppStore.getState().sessions[0].model).toBe('opus'))
+      await waitFor(() => expect(screen.getByPlaceholderText('Message')).toHaveValue(''))
+      expect(window.agentsDock.sessions.update).toHaveBeenCalledExactlyOnceWith('chat-1',{model:'opus',effort:null})
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+      expect(useAppStore.getState().pendingTurnSubmissions).toEqual({})
+      expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({model:'sonnet'}),{model:'opus',effort:null},expect.objectContaining({model:'opus'}))
+      confirmed.mockRestore()
+      expect(tracker).not.toHaveBeenCalledWith('message_sent',expect.anything())
+    })
+    it('opens the existing picker for a bare command and preserves attached files', async () => {
+      const file = {id:'file-1',filename:'keep.png'} as AgentFile
+      window.agentsDock.files = {mediaURL:vi.fn().mockReturnValue('data:image/png;base64,')} as unknown as AgentsDockAPI['files']
+      useAppStore.setState({uploadsBySession:{'chat-1':[file]}})
+      render(<Composer />)
+      enter('/model ')
+      expect(await screen.findByRole('menuitemcheckbox',{name:'Opus'})).toBeInTheDocument()
+      expect(useAppStore.getState().uploadsBySession['chat-1']).toEqual([file])
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+    })
+    it('clears a confirmed default command when the server resolves the concrete API model', async () => {
+      const cursor: Session = {id:'chat-1',title:'QA',backend:'cursor',provider_connection:'custom',model:'chosen'}
+      useAppStore.setState({sessions:[cursor],runtimeCatalog:{backends:{cursor:{models:[],efforts:[],custom_provider:{configured:true,available:true,base_url:null,model:'auto',default_model:'auto',models:[{value:'auto',label:'Auto'},{value:'chosen',label:'Chosen'}]}}}}})
+      vi.mocked(window.agentsDock.sessions.update).mockResolvedValue({...cursor,model:'auto'})
+      render(<Composer />); enter('/model default')
+      await waitFor(() => expect(screen.getByPlaceholderText('Message')).toHaveValue(''))
+      expect(window.agentsDock.sessions.update).toHaveBeenCalledExactlyOnceWith('chat-1',{model:null,effort:null})
+      expect(useAppStore.getState().sessions[0].model).toBe('auto')
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+      expect(tracker).not.toHaveBeenCalledWith('message_sent',expect.anything())
+    })
+    it('allows fixing an unavailable current model without sending a turn', async () => {
+      useAppStore.setState({sessions:[{...claude,model:'locked'}]})
+      render(<Composer />); enter('/model Opus')
+      await waitFor(() => expect(screen.getByPlaceholderText('Message')).toHaveValue(''))
+      expect(useAppStore.getState().sessions[0].model).toBe('opus')
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+    })
+    it.each(['/model unknown','/model locked','/model Opus\nextra instructions'])('rejects %s without admitting a turn', text => {
+      render(<Composer />); enter(text)
+      expect(useAppStore.getState().error).toMatch(/Model not found/)
+      expect(screen.getByPlaceholderText('Message')).toHaveValue(text)
+      expect(window.agentsDock.sessions.update).not.toHaveBeenCalled()
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+    })
+    it('keeps a failed command for retry and rolls back the model', async () => {
+      vi.mocked(window.agentsDock.sessions.update).mockRejectedValueOnce(new Error('offline'))
+      render(<Composer />); enter('/model Opus')
+      await waitFor(() => expect(useAppStore.getState().error).toBe('offline'))
+      expect(useAppStore.getState().sessions[0].model).toBe('sonnet')
+      expect(screen.getByPlaceholderText('Message')).toHaveValue('/model Opus')
+      expect(tracker).not.toHaveBeenCalledWith('chat_model_changed',expect.anything())
+      enter('/model Opus')
+      await waitFor(() => expect(screen.getByPlaceholderText('Message')).toHaveValue(''))
+      expect(useAppStore.getState().sessions[0].model).toBe('opus')
+    })
+    it('keeps a newer draft and guards double Enter while saving', async () => {
+      let done!: (s:Session) => void
+      vi.mocked(window.agentsDock.sessions.update).mockReturnValue(new Promise(resolve => {done=resolve}))
+      render(<Composer />); enter('/model Opus'); enter('/model Opus')
+      expect(window.agentsDock.sessions.update).toHaveBeenCalledOnce()
+      fireEvent.change(screen.getByPlaceholderText('Message'),{target:{value:'new draft'}})
+      await act(async () => done({...claude,model:'opus'}))
+      expect(screen.getByPlaceholderText('Message')).toHaveValue('new draft')
+      expect(window.agentsDock.turns.send).not.toHaveBeenCalled()
+    })
+    it('does not clear a different server draft on a late model reply', async () => {
+      let done!: (s:Session) => void
+      vi.mocked(window.agentsDock.sessions.update).mockReturnValue(new Promise(resolve => {done=resolve}))
+      render(<Composer />); enter('/model Opus')
+      act(() => useAppStore.setState({activeProfileId:'profile-b',profileGeneration:1,sessions:[{...claude,model:'sonnet'}],drafts:{'chat-1':'other server draft'}}))
+      await act(async () => done({...claude,model:'opus'}))
+      expect(useAppStore.getState().sessions[0].model).toBe('sonnet')
+      expect(screen.getByPlaceholderText('Message')).toHaveValue('other server draft')
+      expect(tracker).not.toHaveBeenCalledWith('chat_model_changed',expect.anything())
+    })
+    it.each([false,true])('tracks the submitting connection after receipt, not the later selection (queued=%s)', async queued => {
+      let done!: (response:unknown) => void
+      vi.mocked(window.agentsDock.turns.send).mockImplementation(() => new Promise(resolve => {done=resolve}) as never)
+      render(<Composer />); enter('QA normal message')
+      await waitFor(() => expect(window.agentsDock.turns.send).toHaveBeenCalledOnce())
+      expect(tracker).not.toHaveBeenCalledWith('message_sent',expect.anything())
+      act(() => useAppStore.setState({sessions:[{...claude,provider_connection:'custom'}]}))
+      await act(async () => done({session:claude,queued}))
+      expect(tracker).toHaveBeenCalledWith('message_sent',{backend:'claude',connection_kind:'default'})
+      expect(tracker.mock.calls.filter(([event]) => event==='message_sent')).toHaveLength(1)
+    })
+    it('does not count a failed submission', async () => {
+      vi.mocked(window.agentsDock.turns.send).mockRejectedValue(new Error('offline'))
+      render(<Composer />); enter('QA failed message')
+      await waitFor(() => expect(useAppStore.getState().error).toBe('offline'))
+      expect(tracker).not.toHaveBeenCalledWith('message_sent',expect.anything())
+    })
+    it('counts an accepted Custom API message without API or model details', async () => {
+      const custom: Session = {...claude,provider_connection:'custom',model:'private-model'}
+      useAppStore.setState({sessions:[custom],health:{ok:true,capabilities:{provider_connections_v1:{per_chat:true}}},runtimeCatalog:{backends:{claude:{models:[],efforts:[],custom_provider:{configured:true,available:true,base_url:'https://private.invalid',model:'private-model',default_model:'private-model',models:[{value:'private-model',label:'Private'}]}}}}})
+      vi.mocked(window.agentsDock.turns.send).mockResolvedValue({session:custom,queued:false})
+      render(<Composer />); enter('private message')
+      await waitFor(() => expect(tracker).toHaveBeenCalledWith('message_sent',{backend:'claude',connection_kind:'custom_api'}))
+      expect(JSON.stringify(tracker.mock.calls)).not.toMatch(/private/)
     })
   })
 
