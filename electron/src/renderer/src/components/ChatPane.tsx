@@ -50,7 +50,7 @@ export const ChatPane = memo(function ChatPane({
   onTerminalToggle?: () => void
   papersOpen?: boolean
   onPapersToggle?: () => void
-  onAskPaper?: (draft: string) => void
+  onAskPaper?: (draft: string, submit?: boolean) => void | Promise<void>
 }) {
   useLocale()
   const activeProfileId = useAppStore(state => state.activeProfileId)

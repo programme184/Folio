@@ -1,13 +1,6 @@
 import type { AgentFile, Event } from '@shared/types'
 
 /** These opaque, signed IDs name only media already attached/published in this share. */
-export interface SharedVideo {
-  id: string
-  filename: string
-  content_type: 'video/mp4' | 'video/webm' | 'video/quicktime' | 'video/ogg'
-  size: number
-}
-
 export function isSharedVideoId(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 1024
     && /^video_[A-Za-z0-9_-]+\.[a-f0-9]{64}$/.test(value)

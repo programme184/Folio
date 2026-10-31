@@ -11,7 +11,6 @@ const LEGACY_MIXPANEL_PERSISTENCE_KEY = `mp_${MIXPANEL_TOKEN}_mixpanel`
 const LEGACY_MIXPANEL_OPT_IN_OUT_KEY = `__mp_opt_in_out_${MIXPANEL_TOKEN}`
 const TRACK_TIMEOUT_MS = 10_000
 
-export const ANALYTICS_PRIVACY_POLICY_URL = 'https://agentsdock.net/privacy.html'
 export const ANALYTICS_CONSENT_CHANGED_EVENT = 'agentsdock:analytics-consent-changed'
 
 export type AnalyticsConsentDecision = 'granted' | 'denied'

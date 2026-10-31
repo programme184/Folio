@@ -9,7 +9,6 @@ import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import {
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardPaste,

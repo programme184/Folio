@@ -133,7 +133,7 @@ async function collectPdfs(root: string): Promise<PaperFileEntry[]> {
   return files.sort((a, b) => a.path.localeCompare(b.path))
 }
 
-function portableParts(input: string): string[] | null {
+export function portableParts(input: string): string[] | null {
   if (typeof input !== 'string' || !input || input.length > 1024 || input.includes('\0') || input.includes('\\')) return null
   if (input.startsWith('/')) return null
   const parts = input.split('/')
@@ -142,7 +142,7 @@ function portableParts(input: string): string[] | null {
   return parts
 }
 
-function isInside(root: string, target: string): boolean {
+export function isInside(root: string, target: string): boolean {
   const rel = relative(root, target)
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }

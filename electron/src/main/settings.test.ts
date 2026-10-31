@@ -126,7 +126,7 @@ describe('direct macOS credential saves', () => {
   it('can replace legacy ciphertext without decrypting it and preserves it after a failed disk write', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
     const path = settingsPath(), keychain = new MemoryKeychain()
-    const store = new SettingsStore({ path, keychain, safeStorage: memorySafeStorage })
+new SettingsStore({ path, keychain, safeStorage: memorySafeStorage })
     const snapshot = stored(path), profile = snapshot.profiles[0]
     profile.encryptedAccessToken = encrypted('old-test-token')
     profile.keychainAccessToken = false
@@ -308,7 +308,6 @@ describe('SettingsStore schema v2 migration', () => {
     })
 
     const writesAfterMigration = keychain.writes.length
-    const deletesAfterMigration = keychain.deletes.length
     const reopened = new SettingsStore({
       path,
       keychain,

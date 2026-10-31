@@ -289,3 +289,48 @@ it('does not require a model for Zen, separates protocol and auth rows, and keep
   expect(screen.getByLabelText('API protocol')).toHaveValue('anthropic')
   expect(screen.getByLabelText('Authentication header')).toHaveValue('x-api-key')
 })
+
+const ark = { claude: { url: 'https://ark.cn-beijing.volces.com/api/plan', protocol: 'anthropic' }, opencode: { url: 'https://ark.cn-beijing.volces.com/api/plan/v3', protocol: 'chat_completions' } }
+async function openForm(backend: 'claude' | 'opencode' | 'cursor' | 'gemini', configuration = {}) {
+  const request = bridge().mockResolvedValue({ configuration: { ...empty, backend, ...configuration } })
+  render(<ProviderConnectionSettings {...props} backend={backend} />)
+  await waitFor(() => expect(screen.getAllByRole('button', { name: 'Configure API' })[0]).toBeEnabled())
+  fireEvent.click(screen.getAllByRole('button', { name: 'Configure API' })[0])
+  return request
+}
+
+it.each(['claude', 'opencode'] as const)('fills the Doubao %s preset and verifies in one step with the prefilled model', async backend => {
+  const request = await openForm(backend)
+  expect(screen.queryByLabelText('Model ID')).not.toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: 'Use Doubao (Volcengine Ark)' }))
+  expect(screen.getByLabelText('API base URL')).toHaveValue(ark[backend].url)
+  expect(screen.getByLabelText('API protocol')).toHaveValue(ark[backend].protocol)
+  expect(screen.getByLabelText('Authentication header')).toHaveValue('bearer')
+  expect(screen.getByLabelText('API key')).toHaveValue('')
+  expect(screen.getByLabelText('Model ID')).toHaveValue('doubao-seed-2-0-mini-260428')
+  fireEvent.change(screen.getByLabelText('Model ID'), { target: { value: 'doubao-seed-2-1-lite-260915' } })
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'synthetic-test-key' } })
+  expect(request).toHaveBeenCalledTimes(1)
+  request.mockResolvedValueOnce({ ok: true, status: 'verified', configuration: { ...saved, backend, base_url: ark[backend].url, model: 'doubao-seed-2-1-lite-260915' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+  expect(request.mock.calls[1].slice(1, 3)).toEqual([backend, 'save'])
+  expect(request.mock.calls[1][3]).toMatchObject({ base_url: ark[backend].url, model: 'doubao-seed-2-1-lite-260915', protocol: ark[backend].protocol, auth_header: 'bearer' })
+})
+
+it('prefills the default Doubao model when reopening a saved endpoint without one, and sends none for other URLs', async () => {
+  const request = await openForm('opencode', { ...saved, base_url: ark.opencode.url, protocol: 'chat_completions', auth_header: 'bearer', model: null, last_result: 'model_required' })
+  expect(screen.getByLabelText('Model ID')).toHaveValue('doubao-seed-2-0-mini-260428')
+  fireEvent.change(screen.getByLabelText('API base URL'), { target: { value: 'https://opencode.ai/zen/v1' } })
+  expect(screen.queryByLabelText('Model ID')).not.toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'synthetic-test-key' } })
+  request.mockResolvedValueOnce({ ok: false, status: 'model_required', configuration: { ...saved, backend: 'opencode', model: null, last_result: 'model_required' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+  expect(request.mock.calls[1][3]).toMatchObject({ model: null })
+})
+
+it.each(['cursor', 'gemini'] as const)('offers no Doubao preset for %s', async backend => {
+  await openForm(backend)
+  expect(screen.queryByRole('button', { name: 'Use Doubao (Volcengine Ark)' })).not.toBeInTheDocument()
+})

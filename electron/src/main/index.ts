@@ -34,6 +34,7 @@ import {
   readSysctl,
   unprivilegedNamespacesFromSysctl
 } from './folio-linux-identity'
+import { permissionAllowed } from './session-permissions'
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } }
@@ -169,8 +170,8 @@ if (!app.requestSingleInstanceLock()) {
         }
       })
       appLog('main', 'IPC registered')
-      session.defaultSession.setPermissionCheckHandler(() => false)
-      session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+      session.defaultSession.setPermissionCheckHandler((webContents, permission) => permissionAllowed(permission, webContents === mainWindow?.webContents))
+      session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => callback(permissionAllowed(permission, webContents === mainWindow?.webContents)))
       session.defaultSession.protocol.handle('agentsdock-media', async request => {
         const resource = parseMediaURL(request.url)
         if (!service || !resource) return mediaNotFoundResponse()

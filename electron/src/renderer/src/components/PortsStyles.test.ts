@@ -72,10 +72,6 @@ describe('forwarded ports layout styles', () => {
   })
 })
 
-function ruleBody(selector: string): string {
-  return ruleBodies(selector)[0]
-}
-
 function ruleBodies(selector: string): string[] {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const matches = [...styles.matchAll(new RegExp(`(?:^|})\\s*${escaped}\\s*\\{([^}]*)}`, 'gm'))]

@@ -70,10 +70,6 @@ export function sideQuestionLimit(health: Health | null | undefined): number {
     : SIDE_QUESTION_MAX_CHARS
 }
 
-export function sideQuestionHistoryAvailable(health: Health | null | undefined): boolean {
-  return health?.capabilities?.side_questions?.history === true
-}
-
 function validUnicode(text: string): boolean {
   // A lone surrogate is replaced in transit, changing the request and its
   // receipt identity. Keep frontend and server validation consistent.

@@ -11,7 +11,6 @@ import {
   BookOpenCheck,
   Check,
   ChevronDown,
-  ChevronRight,
   Download,
   File,
   FileText,
@@ -31,7 +30,6 @@ import {
   Send,
   Server,
   Trash2,
-  Users,
   X
 } from 'lucide-react'
 import type { TeamHubScope } from '@shared/team-hub'
@@ -1052,88 +1050,6 @@ function TeamActivityNotice({ kind, scope, teamId, address, inbox, loading, onRe
       {t(kind === 'bulletin' ? 'teamNetwork.mail.bulletinUpdatedRefresh' : 'teamNetwork.mail.newMailRefresh')}
     </button>
   </div>
-}
-
-interface MessageBundle {
-  key: string
-  label: string
-  icon: ReactNode
-  unreadCount: number
-  messages: TeamMessageSummary[]
-}
-
-function MessageBundleDetail({ bundle, scope, teamId, label, onBack, onOpen, ownedAddresses, canManageMessages, deletionSupported, deletionKeys, onDeleted }: {
-  bundle: MessageBundle
-  scope: TeamHubScope
-  teamId: string
-  label: string
-  onBack: () => void
-  onOpen: (message: TeamMessageSummary) => void
-  ownedAddresses: TeamMessageAddress[]
-  canManageMessages: boolean
-  deletionSupported: boolean
-  deletionKeys: ReadonlySet<string>
-  onDeleted: (messageId: string) => void
-}) {
-  useLocale()
-  const [selected, setSelected] = useState<TeamMessageSummary | null>(null)
-  const [deleteMessage, setDeleteMessage] = useState<TeamMessageSummary | null>(null)
-  const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState<string | null>(null)
-  useEffect(() => {
-    if (selected && deletionKeys.has(`message:${selected.id}`)) setSelected(null)
-  }, [deletionKeys, selected])
-  const confirmDelete = async () => {
-    if (!deleteMessage || deleting) return
-    const message = deleteMessage
-    setDeleting(true)
-    setDeleteError(null)
-    try {
-      const result = await window.agentsDock.teamHub.deleteTeamMessage(scope, {
-        teamId,
-        messageId: message.id,
-        idempotencyKey: crypto.randomUUID()
-      })
-      if (result.deleted !== true || result.message_id !== message.id) throw new Error('Team Hub returned the wrong message deletion receipt.')
-      dispatchTeamNetworkMessageDeleted(scope, teamId, message.id)
-      onDeleted(message.id)
-      setDeleteMessage(null)
-    } catch (cause) {
-      setDeleteError(errorMessage(cause))
-    } finally {
-      setDeleting(false)
-    }
-  }
-  if (selected) return <MessageDetailLoader
-    summary={selected}
-    scope={scope}
-    teamId={teamId}
-    onBack={() => setSelected(null)}
-    canDelete={deletionSupported && canDeleteMessageAuthor(selected.sender, ownedAddresses, canManageMessages)}
-    onDeleted={messageId => {
-      onDeleted(messageId)
-      setSelected(null)
-    }}
-  />
-  return <section className="network-v2-surface" aria-label={label}>
-    <header className="network-v2-detail-header"><button type="button" className="quiet-button" autoFocus onClick={onBack}><ArrowLeft size={14} />{t('teamNetwork.mail.mail')}</button><div><span className="network-v2-avatar">{bundle.icon}</span><span><h1>{bundle.label}</h1><p>{t(bundle.messages.length === 1 ? 'teamNetwork.mail.messageCountOne' : 'teamNetwork.mail.messageCountMany', { count: bundle.messages.length })}</p></span></div></header>
-    <div className="network-v2-scroll network-v2-message-list">{bundle.messages.map(message => <MessageCard
-      key={message.id}
-      message={message}
-      onOpen={() => { setSelected(message); void onOpen(message) }}
-      onDelete={deletionSupported && canDeleteMessageAuthor(message.sender, ownedAddresses, canManageMessages)
-        ? () => { setDeleteError(null); setDeleteMessage(message) }
-        : undefined}
-    />)}</div>
-    {deleteMessage && <MessageDeleteDialog
-      target={deleteTargetForMessage(deleteMessage)}
-      variant="mail"
-      busy={deleting}
-      error={deleteError}
-      onCancel={() => { if (!deleting) setDeleteMessage(null) }}
-      onConfirm={() => void confirmDelete()}
-    />}
-  </section>
 }
 
 function useLinkedTeamMessage(scope: TeamHubScope, teamId: string, messageId: string | null, requestId: number,
@@ -2485,34 +2401,6 @@ function InlineError({ message, onRetry }: { message: string; onRetry: () => voi
 function EmptyState({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   useLocale()
   return <div className="network-v2-empty"><span>{icon}</span><h2>{title}</h2><p>{body}</p></div>
-}
-
-function buildMessageBundles(
-  messages: TeamMessageSummary[],
-  box: 'inbox' | 'sent',
-  address: TeamMessageAddress | null
-): MessageBundle[] {
-  const grouped = new Map<string, MessageBundle>()
-  for (const message of [...messages].sort((left, right) => right.created_at.localeCompare(left.created_at))) {
-    const counterpart = box === 'inbox'
-      ? { key: `${message.sender.kind}:${message.sender.id}`, label: message.sender.display_name, icon: message.sender.kind === 'server' ? <Server size={16} /> : <Users size={16} /> }
-      : sentCounterpart(message)
-    const current = grouped.get(counterpart.key)
-    const unread = box === 'inbox' && messageIsUnread(message, address) ? 1 : 0
-    if (current) { current.messages.push(message); current.unreadCount += unread }
-    else grouped.set(counterpart.key, { ...counterpart, unreadCount: unread, messages: [message] })
-  }
-  return [...grouped.values()].sort((left, right) => right.messages[0].created_at.localeCompare(left.messages[0].created_at))
-}
-
-function sentCounterpart(message: TeamMessageSummary) {
-  if (message.destination === 'all_servers') return { key: 'all_servers', label: t('teamNetwork.mail.allServers'), icon: <Mail size={16} /> }
-  if (isBulletinMessage(message)) return { key: 'all', label: t('teamNetwork.mail.bulletin'), icon: <Users size={16} /> }
-  const recipients = [...message.recipients].sort((left, right) => (
-    `${left.kind}:${left.id ?? ''}`.localeCompare(`${right.kind}:${right.id ?? ''}`)
-  ))
-  const labels = recipients.map(recipient => recipient.display_name).join(', ')
-  return { key: recipients.map(recipient => `${recipient.kind}:${recipient.id}`).join('|'), label: labels || t('teamNetwork.mail.recipients'), icon: <Mail size={16} /> }
 }
 
 function messageIsUnread(message: TeamMessageSummary, address: TeamMessageAddress | null): boolean {

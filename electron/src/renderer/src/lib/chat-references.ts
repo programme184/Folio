@@ -21,7 +21,6 @@ const CHAT_REFERENCE_ACTIONS = new Set<ChatReferenceAction>([
   'instruction',
   'final_result'
 ])
-const EXPLICIT_CHAT_REFERENCE_ACTIONS = new Set<ChatReferenceAction>(['direct_message', 'route'])
 export const AGENT_CROSS_CHAT_ROUTES_CLIENT_CAPABILITY = 'agent_cross_chat_routes_v2'
 export const ASYNC_CHAT_ROUTE_CLIENT_CAPABILITY = 'chat_conversation_async_route_v1'
 export const ROUTE_HINT_MENTIONS_CAPABILITY_VERSION = 7
@@ -127,10 +126,6 @@ export function defaultCrossChatAction(
 
 export function chatMentionAction(_trigger: Pick<ChatMentionTrigger, 'kind'>): Extract<ChatReferenceAction, 'route'> {
   return 'route'
-}
-
-export function explicitChatReferenceAction(action: ChatReferenceAction): action is Extract<ChatReferenceAction, 'direct_message' | 'route'> {
-  return EXPLICIT_CHAT_REFERENCE_ACTIONS.has(action)
 }
 
 export function chatReferenceText(reference: Pick<ChatReference, 'action' | 'display_title_snapshot'>): string {

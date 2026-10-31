@@ -374,7 +374,12 @@ const api: AgentsDockAPI = {
     read: path => ipcRenderer.invoke('papers:read', path),
     translate: text => ipcRenderer.invoke('papers:translate', text),
     loadMarks: key => ipcRenderer.invoke('papers:marks:load', key),
-    saveMarks: (key, marks) => ipcRenderer.invoke('papers:marks:save', key, marks)
+    saveMarks: (key, marks) => ipcRenderer.invoke('papers:marks:save', key, marks),
+    listNotes: path => ipcRenderer.invoke('papers:notes:list', path),
+    readNote: (path, name) => ipcRenderer.invoke('papers:notes:read', path, name),
+    createNote: (path, name) => ipcRenderer.invoke('papers:notes:create', path, name),
+    writeNote: (path, name, body) => ipcRenderer.invoke('papers:notes:write', path, name, body),
+    removeNote: (path, name) => ipcRenderer.invoke('papers:notes:remove', path, name)
   },
   workspace: {
     info: sessionId => ipcRenderer.invoke('workspace:info', sessionId),

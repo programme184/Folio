@@ -1,11 +1,12 @@
 import type { Backend, CodexProvider, RuntimeCatalog, Session } from '@shared/types'
 import { getLocale, t, type Locale } from '@shared/i18n'
+import { doubaoLabel } from '@shared/doubao'
 import { runtimeBackendCatalogFor, runtimeEffortOptions } from '@shared/runtime-catalog'
 
-export function backendLabel(backend: Backend, codexProvider?: CodexProvider): string {
+export function backendLabel(backend: Backend, codexProvider?: CodexProvider, customBaseURL?: string | null): string {
   if (backend === 'cursor' && codexProvider === 'custom') return t('connections.cursorKey')
   if (backend === 'codex' && codexProvider === 'custom') return t('codexProvider.label')
-  if (codexProvider === 'custom') return t('connections.chatLabel', { provider: backend === 'gemini' ? 'Gemini' : backend === 'opencode' ? 'OpenCode' : 'Claude' })
+  if (codexProvider === 'custom') return doubaoLabel(backend, customBaseURL) ?? t('connections.chatLabel', { provider: backend === 'gemini' ? 'Gemini' : backend === 'opencode' ? 'OpenCode' : 'Claude' })
   if (backend === 'gemini') return 'Gemini'
   if (backend === 'codex') return 'Codex'
   if (backend === 'cursor') return 'Cursor'

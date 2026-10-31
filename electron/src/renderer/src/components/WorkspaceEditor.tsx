@@ -83,7 +83,6 @@ import {
 } from '../lib/workspace-shortcuts'
 import { useTransientClose } from '../lib/transient-close'
 import type { CodeMirrorNavigationRequest, CodeMirrorViewState } from './CodeMirrorEditor'
-import { MarkdownContent } from './MarkdownContent'
 import { ShortcutKey } from './ShortcutTooltip'
 import { useWorkspaceGitLabels } from '../lib/workspace-git-labels'
 import './WorkspaceEditor.css'
@@ -293,7 +292,7 @@ export interface WorkspaceEditorProps {
   unavailableMessage?: string
   onReady?: () => void
   onReturnToChat?: () => void
-  onAskPaper?: (draft: string) => void
+  onAskPaper?: (draft: string, submit?: boolean) => void | Promise<void>
   filesOnly?: boolean
   onActivate?: () => void
   onFileOpen?: () => void
@@ -2393,7 +2392,6 @@ export function WorkspaceEditor({
     let resolvePendingOutcome!: (outcome: PendingOpenOutcome) => void
     const outcomePromise = new Promise<PendingOpenOutcome>(resolve => { resolvePendingOutcome = resolve })
     pendingOpenOutcomesRef.current.set(path, outcomePromise)
-    let opened = false
     let pendingOutcomeState: PendingOpenOutcome = { kind: 'stale' }
     setOpeningPath(path)
     setPaletteError(null)
@@ -2437,7 +2435,6 @@ export function WorkspaceEditor({
         }
         setPendingClosePath(null)
       }
-      opened = true
       pendingOutcomeState = { kind: 'opened', path }
       return true
     } catch (error) {
@@ -2457,7 +2454,6 @@ export function WorkspaceEditor({
       ) {
         releasePendingOpen(path, pendingReservation)
         await openArtifactFile(fallbackArtifact, location, targetGroup)
-        opened = true
         pendingOutcomeState = { kind: 'opened', path: artifactTabPath(fallbackArtifact) }
         return true
       } else if (
@@ -2555,7 +2551,6 @@ export function WorkspaceEditor({
     let resolvePendingOutcome!: (outcome: PendingOpenOutcome) => void
     const outcomePromise = new Promise<PendingOpenOutcome>(resolve => { resolvePendingOutcome = resolve })
     pendingOpenOutcomesRef.current.set(path, outcomePromise)
-    let opened = false
     let pendingOutcomeState: PendingOpenOutcome = { kind: 'stale' }
     setOpeningPath(path)
     setPaletteError(null)
@@ -2606,7 +2601,6 @@ export function WorkspaceEditor({
         size: file.size,
         writable: externalFile.writable
       })
-      opened = true
       pendingOutcomeState = { kind: 'opened', path: resolvedPath }
       return true
     } catch (error) {
@@ -3835,6 +3829,7 @@ export function WorkspaceEditor({
                       session={session}
                       scope={profileScope}
                       workspaceRoot={workspaceRoot || cwd}
+                      notesEnabled={file.origin === 'workspace'}
                       onAsk={onAskPaper}
                     />
                   </Suspense>

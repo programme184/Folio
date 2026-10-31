@@ -29,6 +29,13 @@ chat and select an API model (or enter its exact ID if discovery is unavailable)
 Codex uses the same Configure API entry while retaining its separate endpoint
 credentials, chat routing and optional model check.
 
+Doubao (Volcengine Ark agent plan) uses the Claude Code or OpenCode custom API.
+In Configure API choose **Use Doubao (Volcengine Ark)**: Claude Code fills
+`https://ark.cn-beijing.volces.com/api/plan` (Anthropic Messages), OpenCode fills
+`https://ark.cn-beijing.volces.com/api/plan/v3` (Chat Completions), both with
+Bearer authentication and a prefilled plan model ID. Enter the plan key and
+Connect to verify in one step. Each runtime holds one endpoint, so saving replaces it.
+
 Neutral icons mean unconnected or unconfirmed, not necessarily signed out.
 A green API check means the last explicit credential check passed; it does
 not certify every model or tool. Merely saving a legacy configuration cannot

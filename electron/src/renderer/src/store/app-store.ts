@@ -5296,12 +5296,6 @@ function installLatencySensitiveInteractionTracking(): () => void {
   }
 }
 
-interface LatencySensitiveInteractionQuietOptions {
-  signal?: AbortSignal
-  shouldContinue?: () => boolean
-  quietMs?: number
-}
-
 /**
  * Wait until the renderer has both an idle slice and a short input-quiet
  * window. This reuses the timestamp maintained by the one app-wide input
@@ -5309,69 +5303,6 @@ interface LatencySensitiveInteractionQuietOptions {
  * Passive work may wait indefinitely while the user remains active, and an
  * owning effect can abort the wait without leaving a timer or idle callback.
  */
-export function waitForLatencySensitiveInteractionQuiet(
-  options: LatencySensitiveInteractionQuietOptions = {}
-): Promise<boolean> {
-  const shouldContinue = options.shouldContinue ?? (() => true)
-  const quietMs = Math.max(0, options.quietMs ?? LIVE_EVENT_INTERACTION_QUIET_MS)
-  const signal = options.signal
-  if (signal?.aborted || !shouldContinue()) return Promise.resolve(false)
-
-  return new Promise(resolve => {
-    let settled = false
-    let timer: number | null = null
-    let idleRequest: number | null = null
-
-    const finish = (ready: boolean) => {
-      if (settled) return
-      settled = true
-      if (timer !== null) window.clearTimeout(timer)
-      if (idleRequest !== null && typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(idleRequest)
-      }
-      signal?.removeEventListener('abort', onAbort)
-      resolve(ready)
-    }
-    const requestIdle = () => {
-      if (signal?.aborted || !shouldContinue()) {
-        finish(false)
-        return
-      }
-      const remainingQuietMs = quietMs - (Date.now() - lastLatencySensitiveInteractionAt)
-      if (remainingQuietMs > 0) {
-        timer = window.setTimeout(() => {
-          timer = null
-          requestIdle()
-        }, remainingQuietMs)
-        return
-      }
-      const onIdle = () => {
-        idleRequest = null
-        if (signal?.aborted || !shouldContinue()) {
-          finish(false)
-          return
-        }
-        // Input may have arrived while the idle request was pending. Recheck
-        // the shared timestamp before releasing optional background work.
-        if (Date.now() - lastLatencySensitiveInteractionAt < quietMs) {
-          requestIdle()
-          return
-        }
-        finish(true)
-      }
-      if (typeof window.requestIdleCallback === 'function') {
-        idleRequest = window.requestIdleCallback(onIdle)
-      } else {
-        queueMicrotask(onIdle)
-      }
-    }
-    const onAbort = () => finish(false)
-
-    signal?.addEventListener('abort', onAbort, { once: true })
-    requestIdle()
-  })
-}
-
 function isLatencySensitiveInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false
   return target.matches('textarea, input, [contenteditable="true"], [contenteditable="plaintext-only"]')
@@ -5627,4 +5558,3 @@ export function handleMenuCommand(command: string, get: () => AppState, set: (va
 }
 
 export function sessionUnread(session: Session): boolean { return isUnread(session) }
-export function sessionRunning(sessionId: string): boolean { return useAppStore.getState().activeSessionIds.has(sessionId) }

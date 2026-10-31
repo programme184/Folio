@@ -21,7 +21,7 @@ export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggl
   sideChat: (session: Session) => ReactNode
   papersOpen?: boolean
   onPapersToggle?: () => void
-  onAskPaper?: (draft: string) => void
+  onAskPaper?: (draft: string, submit?: boolean) => void | Promise<void>
 }) {
   useLocale()
   const workspaces = useAppStore(state => state.chatWorkspaces)

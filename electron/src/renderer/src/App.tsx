@@ -27,7 +27,7 @@ import { TerminalDock } from './components/TerminalDock'
 import { TeamNetwork, type PendingSecurePeerInvite, type TeamNetworkMailboxTarget, type TeamNetworkMessageTarget, type TeamNetworkSection } from './components/TeamNetwork'
 import { WelcomeChat } from './components/WelcomeChat'
 import { WorkspaceFilesProvider } from './components/WorkspaceFilesContext'
-import { paperSideChatAvailable } from './components/paper-ask'
+import { paperUseSideChat } from './components/paper-ask'
 import { readInspectorTab, saveInspectorTab } from './lib/inspector-preference'
 import { trackEvent } from './lib/analytics'
 import { activeEmergencyAlert } from './lib/emergency-alert'
@@ -541,16 +541,20 @@ function AppWorkspace() {
     }}
   />
 
-  const askPaperPassage = (quote: string) => {
+  const askPaperPassage = async (quote: string, submit = false) => {
     if (!selectedSession || !activeProfileId) return
-    if (!paperSideChatAvailable(useAppStore.getState().health, selectedSession)) {
-      useAppStore.getState().setDraftForSession(selectedSession.id, quote)
+    const state = useAppStore.getState()
+    const running = state.activeSessionIds.has(selectedSession.id)
+    if (!paperUseSideChat(state.health, selectedSession, running)) {
+      if (submit) await state.sendPromptForSession(selectedSession.id, quote, false, { consumeComposer: false })
+      else state.setDraftForSession(selectedSession.id, quote)
       return
     }
     const scope = { profileId: activeProfileId, profileGeneration, serverIdentity: activeServerIdentity }
     sideChatController.setDraft(scope, selectedSession.id, quote)
     setSideChatOpenTarget(JSON.stringify([activeProfileId, profileGeneration, selectedSession.id]))
     setSideChatFocusVersion(value => value + 1)
+    if (submit) await sideChatController.sendQuestion(scope, selectedSession, quote)
   }
 
   if (!initialized) {

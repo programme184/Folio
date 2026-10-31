@@ -2150,11 +2150,6 @@ export interface TimelineSearchResult {
   serverIdentity?: string | null
 }
 
-export interface ProfileTimelineSearchResult extends TimelineSearchResult {
-  profileId: string
-  profileName: string
-}
-
 export interface ProfileSessionSearchResult {
   profileId: string
   profileName: string

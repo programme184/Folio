@@ -9,7 +9,6 @@ import {
   type ReactNode
 } from 'react'
 import type {
-  ClaudePendingInteraction,
   ClaudeRuntimeSnapshot,
   Session
 } from '@shared/types'
@@ -18,7 +17,6 @@ import { trackOperation } from '../lib/analytics'
 
 export const CLAUDE_RUNTIME_REFRESH_TIMEOUT_MS = 10_000
 
-export type ClaudeInteraction = ClaudePendingInteraction
 export type { ClaudeRuntimeSnapshot }
 
 interface ClaudeRuntimeContextValue {

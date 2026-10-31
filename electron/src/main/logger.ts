@@ -14,8 +14,6 @@ export function appLog(scope: string, message: string, data?: unknown): void {
   } catch { /* logging must never affect the app */ }
 }
 
-export function currentLogPath(): string { return logPath() }
-
 function logPath(): string {
   if (cachedPath) return cachedPath
   cachedPath = join(app.getPath('userData'), 'logs', 'agentsdock.log')

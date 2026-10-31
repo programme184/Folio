@@ -2571,7 +2571,6 @@ describe('TeamHubService embedded discovery', () => {
     const test = harness()
     const connectionId = '09d7bb2e-3b47-4be7-89fc-2cecd90f4434'
     const otherConnectionId = '19d7bb2e-3b47-4be7-89fc-2cecd90f4434'
-    const basePath = `/api/team-hub-secure/${connectionId}`
     const profileScope = {
       profileId: 'server-profile-1',
       profileGeneration: 1,

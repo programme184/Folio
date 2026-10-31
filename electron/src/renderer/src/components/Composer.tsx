@@ -82,7 +82,6 @@ import {
   isSecurePeerDeliveryQueuedTurn,
   isSteeringCancellation,
   isSteeringPending,
-  isUserQueuedTurn,
   isVisibleQueuedTurn,
   queuedMoveCrossesCrossChatDelivery,
   queuedTurnCrossChatFence,
@@ -3433,7 +3432,7 @@ function BackendMenu({ session, running, admitting }: { session: Session; runnin
       : admitting
         ? 'Wait for the message to be accepted before changing backend'
         : t('ui.composer.changeAgent')
-  const providerLabel = backendLabel(session.backend, (session.provider_connection === 'custom' ? 'custom' : session.codex_provider))
+  const providerLabel = backendLabel(session.backend, (session.provider_connection === 'custom' ? 'custom' : session.codex_provider), catalog?.backends?.[session.backend]?.custom_provider?.base_url)
   const compactLabel = session.backend === 'codex' && (session.provider_connection === 'custom' ? 'custom' : session.codex_provider) === 'custom'
     ? t('codexProvider.compactLabel')
     : providerLabel
@@ -3458,7 +3457,7 @@ function BackendMenu({ session, running, admitting }: { session: Session; runnin
       </Tooltip.Trigger>
       <Tooltip.Portal><Tooltip.Content className="shortcut-tooltip backend-unavailable-tooltip" side="right" sideOffset={7}><span>{unavailableReason}</span><Tooltip.Arrow className="shortcut-tooltip-arrow" /></Tooltip.Content></Tooltip.Portal>
     </Tooltip.Root>
-    return <DropdownMenu.CheckboxItem key={choice} className="menu-item" checked={chatBackendChoice(session) === choice} onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { backend, codex_provider, provider_connection, model: null, effort: null })}><BackendMark backend={backend} size={15} />{backendLabel(backend, provider_connection === 'custom' ? 'custom' : codex_provider)}</DropdownMenu.CheckboxItem>
+    return <DropdownMenu.CheckboxItem key={choice} className="menu-item" checked={chatBackendChoice(session) === choice} onCheckedChange={() => void useAppStore.getState().updateSession(session.id, { backend, codex_provider, provider_connection, model: null, effort: null })}><BackendMark backend={backend} size={15} />{backendLabel(backend, provider_connection === 'custom' ? 'custom' : codex_provider, catalog?.backends?.[backend]?.custom_provider?.base_url)}</DropdownMenu.CheckboxItem>
   })}<DropdownMenu.Separator className="menu-separator" /><DropdownMenu.Item className="menu-item" onSelect={() => openAIProviderSettings()}><Plus size={15} />{t('connections.addAgent')}</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></Tooltip.Provider>
 }
 
@@ -4558,14 +4557,6 @@ function queuedTurnRuntimeAdmissionError(
 /** Product-owned `/mcp` must never be admitted as a Claude model turn. */
 function isStandaloneMcpCommand(value: string): boolean {
   return /^\s*\/mcp\s*$/iu.test(value)
-}
-
-function mentionSessionStatus(session: Session, activeSessionIds: Set<string>, queuedCount: number): string {
-  if (session.codex_needs_user_action || session.claude_needs_user_action) return t("ui.Composer.mentionSessionStatus.needs_approval_db0e960")
-  if (activeSessionIds.has(session.id)) return t("ui.Composer.mentionSessionStatus.running_f4ccae2")
-  if (queuedCount > 0) return t("ui.Composer.mentionSessionStatus.queued_9824882", { "count": String(queuedCount) })
-  if (session.codex_goal && session.codex_goal.status !== 'complete') return t("ui.Composer.mentionSessionStatus.goal_a98c7bc", { "status": String(session.codex_goal.status) })
-  return t("ui.Composer.mentionSessionStatus.idle_ab0171c")
 }
 
 function reportActionError(error: unknown): void {

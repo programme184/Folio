@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, ChevronRight, ListTree, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronDown, ChevronRight, ListTree, Maximize, Minimize, StickyNote, ZoomIn, ZoomOut } from 'lucide-react'
 import { getDocument, GlobalWorkerOptions, TextLayer, type PDFDocumentProxy, type PDFPageProxy, type RenderTask } from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { t } from '@shared/i18n'
 import { glyphsFromTextContent, indexPaperPage, paperWordPieces, retargetPaperMarks, type PaperMark, type PaperPageIndex } from '@shared/paper-passages'
 import { useLocale } from '../lib/i18n'
+import type { PaperNoteSource } from './paper-notes'
 import { usePaperMarkController } from './paper-marks'
 import { usePublishPaperMarkBar } from './paper-mark-bar'
+import { PaperNotesPanel } from './PaperNotes'
 import { applyPaperMarkClasses, PaperToolbar, usePaperSelection, type PaperAsk } from './PaperSelection'
 
 GlobalWorkerOptions.workerSrc = workerUrl
@@ -313,9 +315,10 @@ function PaperOutlineBranch({ entry, activeId, onOpen }: {
   </li>
 }
 
-export function PaperDocument({ data, documentKey = null, canAsk, askPassage, onAsk }: {
+export function PaperDocument({ data, documentKey = null, notes = null, canAsk, askPassage, onAsk }: {
   data: Uint8Array
   documentKey?: string | null
+  notes?: PaperNoteSource | null
   canAsk: boolean
   askPassage?: PaperAsk
   onAsk?: (draft: string) => void
@@ -351,6 +354,24 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
   const outlineToggle = useRef<HTMLButtonElement>(null)
   const outlineWasOpen = useRef(false)
   const [outlineSlot, setOutlineSlot] = useState<HTMLElement | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
+  const documentRoot = useRef<HTMLDivElement>(null)
+  const [fullscreen, setFullscreen] = useState(false)
+  useEffect(() => {
+    const element = documentRoot.current
+    const sync = () => setFullscreen(element !== null && document.fullscreenElement === element)
+    document.addEventListener('fullscreenchange', sync)
+    return () => {
+      document.removeEventListener('fullscreenchange', sync)
+      if (element && document.fullscreenElement === element) void document.exitFullscreen().catch(() => undefined)
+    }
+  }, [])
+  const toggleFullscreen = () => {
+    const element = documentRoot.current
+    if (!element) return
+    const exit = document.fullscreenElement === element
+    void (exit ? document.exitFullscreen() : element.requestFullscreen()).catch(() => undefined)
+  }
   const scrollFromToolbar = (event: ReactWheelEvent<HTMLDivElement>) => {
     const answer = event.target instanceof Element ? event.target.closest('.paper-answer') : null
     if (answer instanceof HTMLElement && paperAnswerConsumesWheel(answer, event.deltaY)) return
@@ -531,12 +552,27 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
     title={t('papers.outline')}
     onClick={() => setOutlineOpen(value => !value)}
   ><ListTree size={15} /></button>
-  return <div className="paper-document">
+  return <div className="paper-document" ref={documentRoot}>
     <div className="paper-document-tools">
       {outlineSlot ? createPortal(outlineButton, outlineSlot) : outlineButton}
+      <button
+        type="button"
+        className="paper-tool-button"
+        aria-expanded={notesOpen}
+        aria-label={t('papers.notes')}
+        title={t('papers.notesHint')}
+        onClick={() => setNotesOpen(value => !value)}
+      ><StickyNote size={15} /></button>
       <div className="paper-document-zoom">
         <button type="button" aria-label={t('papers.zoomOut')} onClick={() => setZoom(value => Math.max(0.6, Math.round((value - 0.2) * 10) / 10))}><ZoomOut size={15} /></button>
         <button type="button" aria-label={t('papers.zoomIn')} onClick={() => setZoom(value => Math.min(2.5, Math.round((value + 0.2) * 10) / 10))}><ZoomIn size={15} /></button>
+        {document.fullscreenEnabled && <button
+          type="button"
+          aria-pressed={fullscreen}
+          aria-label={fullscreen ? t('papers.exitFullscreen') : t('papers.fullscreen')}
+          title={fullscreen ? t('papers.exitFullscreen') : t('papers.fullscreen')}
+          onClick={toggleFullscreen}
+        >{fullscreen ? <Minimize size={15} /> : <Maximize size={15} />}</button>}
       </div>
     </div>
     {message && <p className="paper-document-status" role="status">{message}</p>}
@@ -558,6 +594,7 @@ export function PaperDocument({ data, documentKey = null, canAsk, askPassage, on
           {outline.map(entry => <PaperOutlineBranch key={entry.id} entry={entry} activeId={activeOutline} onOpen={jumpToOutline} />)}
         </ul>}
       </nav>}
+      {notesOpen && <PaperNotesPanel key={notes?.key ?? 'none'} files={notes?.files ?? null} />}
       <div
         className="paper-document-scroll"
         ref={scroller}

@@ -23,7 +23,6 @@ import {
 } from '@shared/paper-passages'
 import { useLocale } from '../lib/i18n'
 import { usePaperMarkController } from './paper-marks'
-import { sideQuestionError } from './SideQuestionPanel'
 
 export interface PaperAskInput {
   kind: 'explain' | 'translate'
@@ -317,7 +316,7 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
   onWheel?: (event: ReactWheelEvent<HTMLDivElement>) => void
 }) {
   useLocale()
-  const [answer, setAnswer] = useState<{ status: 'pending' | 'done' | 'error' | 'cancelled'; text?: string; kind?: 'explain' | 'translate' } | null>(null)
+  const [answer, setAnswer] = useState<{ status: 'pending' | 'done' | 'error'; text?: string; kind: 'translate' } | null>(null)
   const abort = useRef<AbortController | null>(null)
   const token = useRef(0)
   useEffect(() => () => {
@@ -329,18 +328,8 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
   }, [selection.passage.text])
   const run = (kind: 'explain') => {
     if (!canAsk || !askPassage) return
-    abort.current?.abort()
     const controller = new AbortController()
-    abort.current = controller
-    const current = ++token.current
-    setAnswer({ status: 'pending', kind })
-    void askPassage({ kind, passage: selection.passage }, controller.signal).then(text => {
-      if (token.current === current) setAnswer({ status: 'done', text })
-    }).catch(error => {
-      if (token.current !== current) return
-      if (controller.signal.aborted) setAnswer({ status: 'cancelled' })
-      else setAnswer({ status: 'error', text: sideQuestionError(error) })
-    })
+    void askPassage({ kind, passage: selection.passage }, controller.signal).catch(() => undefined)
   }
   const translate = () => {
     const source = selection.passage.text
@@ -389,7 +378,6 @@ export function PaperToolbar({ selection, canAsk, askPassage, onAsk, onHold, onR
       {answer.status === 'pending' && <p><LoaderCircle className="spin" size={14} />{t(answer.kind === 'translate' ? 'papers.translating' : 'papers.answering')}</p>}
       {answer.status === 'done' && <p>{answer.text}</p>}
       {answer.status === 'error' && <p>{answer.text}</p>}
-      {answer.status === 'cancelled' && <p>{t('sideChat.cancelled')}</p>}
       {answer.status === 'pending'
         ? <button type="button" onClick={() => { abort.current?.abort(); token.current += 1; setAnswer(null) }}>{t('papers.cancel')}</button>
         : <button type="button" aria-label={t('papers.dismiss')} onClick={() => setAnswer(null)}><X size={14} /></button>}

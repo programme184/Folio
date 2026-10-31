@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { Event, Health, RuntimeCatalog, Session } from '@shared/types'
+import type { Event, Session } from '@shared/types'
 import { setLocale } from '@shared/i18n'
 import { useAppStore } from '../store/app-store'
 import { Inspector } from './Inspector'
@@ -897,20 +897,3 @@ describe('Inspector', () => {
   })
 
 })
-
-function jobsAccessHealth(): Health {
-  return {
-    ok: true,
-    capabilities: {
-      provider_jobs_access_control_v1: {
-        available: true,
-        required: false,
-        message: 'Ready',
-        action: null,
-        version: 1,
-        modes: ['full', 'read_only', 'blocked'],
-        default: 'full'
-      }
-    }
-  }
-}

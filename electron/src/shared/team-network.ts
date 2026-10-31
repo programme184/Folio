@@ -2527,10 +2527,6 @@ function nullableResponseText(value: unknown, label: string, maximum: number): s
   return value == null ? null : responseText(value, label, maximum, false)
 }
 
-function nullableShortText(value: unknown, label: string, maximum: number): string | null {
-  return value == null ? null : responseText(value, label, maximum, false)
-}
-
 function inputSkillSlug(value: unknown): string {
   if (typeof value !== 'string' || !new RegExp(TEAM_MESSAGES_SKILL_SLUG_PATTERN).test(value)) {
     throw new Error('Team Skill slug is invalid.')

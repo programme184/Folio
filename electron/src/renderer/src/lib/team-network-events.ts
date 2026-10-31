@@ -30,21 +30,3 @@ export function dispatchTeamNetworkMessageDeleted(
     }
   ))
 }
-
-export function teamNetworkMessageDeletedDetail(event: Event): TeamNetworkMessageDeletedEventDetail | null {
-  const value = (event as CustomEvent<unknown>).detail
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const detail = value as Partial<TeamNetworkMessageDeletedEventDetail>
-  if (
-    typeof detail.scopeKey !== 'string'
-    || typeof detail.profileId !== 'string'
-    || !Number.isSafeInteger(detail.profileGeneration)
-    || detail.profileGeneration! < 0
-    || typeof detail.serverIdentity !== 'string'
-    || typeof detail.teamId !== 'string'
-    || detail.teamId.length === 0
-    || typeof detail.messageId !== 'string'
-    || detail.messageId.length === 0
-  ) return null
-  return detail as TeamNetworkMessageDeletedEventDetail
-}

@@ -245,6 +245,14 @@ export class SideChatController {
     }
   }
 
+  async sendQuestion(scope: SideQuestionScope, session: Session, question: string): Promise<void> {
+    this.setDraft(scope, session.id, question)
+    if (sideChatSyncAvailable(useAppStore.getState().health) && this.snapshot(scope, session.id).revision === undefined) {
+      await this.refresh(scope, session.id)
+    }
+    await this.send(scope, session)
+  }
+
   async cancel(scope: SideQuestionScope, sessionId: string, userRequested = false): Promise<void> {
     const key = this.key(scope, sessionId)
     if (this.snapshot(scope, sessionId).synced) {

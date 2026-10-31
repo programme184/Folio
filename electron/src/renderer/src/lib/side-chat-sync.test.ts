@@ -31,6 +31,20 @@ beforeEach(() => useAppStore.setState({ activeProfileId: 'a', profileGeneration:
   health: { ok: true, capabilities: { side_questions: { available: true, version: 2, native_context: true, sync: true, backends: ['codex'], max_question_chars: 8000 } } } }))
 
 describe('server-owned side chat', () => {
+  it('loads the persistent conversation before submitting a prepared paper question', async () => {
+    const { api, controller } = fixture()
+    api.submit.mockImplementation((_scope, _sessionId, input) => Promise.resolve(chat(1, {
+      request_id: input.request_id, question: input.question, status: 'running', answer: undefined
+    })))
+
+    await controller.sendQuestion(scope, session, 'Explain this paper passage.')
+
+    expect(api.read).toHaveBeenCalledOnce()
+    expect(api.submit).toHaveBeenCalledOnce()
+    expect(api.submit.mock.calls[0][2]).toMatchObject({ question: 'Explain this paper passage.', side_chat_id: 'side-a' })
+    expect(controller.snapshot(scope, session.id).draft).toBe('')
+  })
+
   it('restores completed history on a fresh client and only refreshes from notices or reconnect', async () => {
     const { api, emit, controller } = fixture()
     api.read.mockResolvedValue(chat(2, {}))

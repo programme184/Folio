@@ -30,21 +30,6 @@ import {
   normalizeSecurePeerScopes
 } from '../shared/secure-peer'
 
-export interface SecurePeerControlStatusWire {
-  version: 1 | 2
-  heartbeat_interval_seconds?: number
-  lease_seconds?: number
-  server_identity: string
-  server_instance_id: string
-  active_connection_id: string | null
-  remote_route_delivery_available?: boolean
-  connection_error?: string | null
-  host: unknown
-  pairings: unknown[]
-  remote_routes?: unknown[]
-  published_routes?: unknown[]
-}
-
 export function parseSecurePeerControlStatus(
   value: unknown,
   scope: SecurePeerProfileScope,

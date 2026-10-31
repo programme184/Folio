@@ -1,5 +1,5 @@
 import type { Job, JobScheduleKind } from '@shared/types'
-import { getLocale, t } from '@shared/i18n'
+import { t } from '@shared/i18n'
 
 const DAY_KEYS: Record<string, string> = { MO: 'monday', TU: 'tuesday', WE: 'wednesday', TH: 'thursday', FR: 'friday', SA: 'saturday', SU: 'sunday' }
 

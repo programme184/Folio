@@ -11,6 +11,7 @@ import { reportStorageError } from './storage-health'
 import { createDesktopPaperMarkStore } from './paper-marks-desktop'
 import { createDesktopPaperShelf } from './paper-shelf-desktop'
 import type { PaperMarkStore } from './paper-marks'
+import { createPaperNoteFiles, type PaperNoteFileStore } from './paper-note-files'
 import type { PaperShelf } from './paper-shelf'
 import { translateToChinese } from './paper-translate'
 import { issueReportEnvironment } from './issue-report'
@@ -21,6 +22,7 @@ export interface RegisterIpcOptions {
   notificationReady?: () => boolean
   papers?: PaperShelf
   paperMarks?: PaperMarkStore
+  paperNoteFiles?: PaperNoteFileStore
 }
 
 export function registerIpc(
@@ -488,6 +490,13 @@ export function registerIpc(
   handle('papers:read', (relativePath: string) => papers().read(relativePath))
   handle('papers:marks:load', (key: string) => paperMarks().load(key))
   handle('papers:marks:save', (key: string, marks: unknown) => paperMarks().save(key, marks))
+  let desktopNoteFiles: PaperNoteFileStore | null = null
+  const paperNoteFiles = () => options.paperNoteFiles ?? (desktopNoteFiles ??= createPaperNoteFiles(() => papers().root()))
+  handle('papers:notes:list', (path: string) => paperNoteFiles().list(path))
+  handle('papers:notes:read', (path: string, name: string) => paperNoteFiles().read(path, name))
+  handle('papers:notes:create', (path: string, name: string) => paperNoteFiles().create(path, name))
+  handle('papers:notes:write', (path: string, name: string, body: string) => paperNoteFiles().write(path, name, body))
+  handle('papers:notes:remove', (path: string, name: string) => paperNoteFiles().remove(path, name))
   handle('preferences:get', (key, fallback) => service.preference(key, fallback))
   handle('preferences:set', (key, value) => service.putPreference(key, value))
   handle('preferences:get-scoped', (scope, key, fallback) => service.scopedPreference(scope, key, fallback))

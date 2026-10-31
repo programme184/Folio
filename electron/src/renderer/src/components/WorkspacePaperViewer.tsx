@@ -1,16 +1,17 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { t } from '@shared/i18n'
 import { paperWorkspaceMarkKey } from '@shared/paper-passages'
 import { sideQuestionsAvailable } from '@shared/side-questions'
 import type { Session, WorkspaceProfileScope } from '@shared/types'
 import { useLocale } from '../lib/i18n'
 import { useAppStore } from '../store/app-store'
+import { workspaceNoteFiles, type PaperNoteSource } from './paper-notes'
 import { usePaperAsk } from './paper-ask'
 import './PaperShelf.css'
 
 const PaperDocument = lazy(() => import('./PaperDocument').then(module => ({ default: module.PaperDocument })))
 
-export function WorkspacePaperViewer({ source, documentPath, label, load, session, scope, workspaceRoot, onAsk }: {
+export function WorkspacePaperViewer({ source, documentPath, label, load, session, scope, workspaceRoot, notesEnabled = false, onAsk }: {
   source: string
   documentPath: string
   label: string
@@ -18,17 +19,21 @@ export function WorkspacePaperViewer({ source, documentPath, label, load, sessio
   session: Session
   scope: WorkspaceProfileScope | null
   workspaceRoot: string
-  onAsk?: (draft: string) => void
+  notesEnabled?: boolean
+  onAsk?: (draft: string, submit?: boolean) => void | Promise<void>
 }) {
   useLocale()
   const [data, setData] = useState<Uint8Array | null>(null)
   const [failed, setFailed] = useState(false)
   const loadRef = useRef(load)
   loadRef.current = load
+  const notes = useMemo<PaperNoteSource | null>(() => notesEnabled
+    ? { key: `${session.id}:${documentPath}`, files: workspaceNoteFiles(session.id, documentPath) }
+    : null, [notesEnabled, session.id, documentPath])
   const sideScope = scope
     ? { profileId: scope.profileId, profileGeneration: scope.profileGeneration, serverIdentity: scope.serverIdentity }
     : null
-  const { canAsk, askPassage } = usePaperAsk(session, sideScope)
+  const { canAsk, askPassage } = usePaperAsk(session, sideScope, onAsk ? question => onAsk(question, true) : undefined)
   useEffect(() => {
     let cancelled = false
     setData(null)
@@ -53,6 +58,7 @@ export function WorkspacePaperViewer({ source, documentPath, label, load, sessio
       <PaperDocument
         data={data}
         documentKey={paperWorkspaceMarkKey(scope?.profileId ?? 'local', workspaceRoot, documentPath)}
+        notes={notes}
         canAsk={canAsk}
         askPassage={askPassage}
         onAsk={askInChat}

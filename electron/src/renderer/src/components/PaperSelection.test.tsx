@@ -153,6 +153,17 @@ describe('paper selection toolbar', () => {
     expect(askPassage).not.toHaveBeenCalled()
   })
 
+  it('routes Explain without rendering its answer under the selected paper text', async () => {
+    const askPassage = vi.fn().mockResolvedValue('This must appear in chat, not over the paper.')
+    const view = render(<PaperPassageView pages={[{ page: 1, glyphs }]} canAsk askPassage={askPassage} />)
+    fireEvent.mouseMove(view.container.querySelector('[data-paper-item="0"]')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Explain' }))
+
+    expect(askPassage).toHaveBeenCalledOnce()
+    expect(screen.queryByText('This must appear in chat, not over the paper.')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.paper-answer')).toBeNull()
+  })
+
   it('keeps a highlight on the passage after the pointer moves, and removes it with the same button', () => {
     vi.useFakeTimers()
     try {

@@ -1,5 +1,5 @@
 // Localized display strings use semantic catalog keys.
-import { t, getLocale } from '@shared/i18n'
+import { t } from '@shared/i18n'
 import type { ClaudePermissionMode } from '@shared/types'
 
 export const CLAUDE_PERMISSION_MODES: ClaudePermissionMode[] = [

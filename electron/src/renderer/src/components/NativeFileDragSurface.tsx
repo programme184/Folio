@@ -1,5 +1,5 @@
 // Localized display strings use semantic catalog keys.
-import { t, getLocale } from '@shared/i18n'
+import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useRef, useState, type ReactNode } from 'react'
 import type { AgentFile } from '@shared/types'

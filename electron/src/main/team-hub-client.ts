@@ -37,7 +37,6 @@ import type {
   TeamAttachment,
   TeamAttachmentDeclaration,
   TeamMessage,
-  TeamMessageCreateInput,
   TeamMessageDeleteResult,
   TeamMessagePage,
   TeamMessageProvenance,

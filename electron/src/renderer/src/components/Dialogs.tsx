@@ -1213,8 +1213,6 @@ export function SettingsDialog() {
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const activeProfile = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId) || null)
   const activeProfileServerUrl = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.serverUrl || null)
-  const activeConnectionState = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.connectionState)
-  const degraded = connected && activeConnectionState === 'degraded'
   const { active: activeServerTurns, queued: queuedServerTurns } = serverWorkCounts(health)
   const queuedServerUpdateBlockers = serverUpdateBlockingQueuedTurns(health)
   const serverRestartBlocked = activeServerTurns > 0 || queuedServerUpdateBlockers > 0

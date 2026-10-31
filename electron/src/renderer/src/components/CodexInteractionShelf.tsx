@@ -101,7 +101,6 @@ export function CodexInteractionCard(props: Omit<InteractionCardProps, 'provider
 export function ProviderInteractionCard({ interaction, busy, providerName = 'Codex', approvalActionLabels, onRespond }: InteractionCardProps) {
   useLocale()
   const method = interaction.method
-  const params = interaction.params ?? {}
 
   if (method === 'item/tool/requestUserInput') {
     return <AskUserCard interaction={interaction} busy={busy} providerName={providerName} onRespond={onRespond} />

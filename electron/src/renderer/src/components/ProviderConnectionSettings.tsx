@@ -10,6 +10,7 @@ import './CodexAuthSettings.css'
 import './ProviderConnectionSettings.css'
 import { CustomModelSettings } from './CustomModelSettings'
 import { EndpointMenu } from './EndpointMenu'
+import { DOUBAO_DEFAULT_MODEL, DOUBAO_PRESETS, isDoubaoEndpoint } from '@shared/doubao'
 
 type Props = { connected: boolean; profileId: string | null; profileGeneration: number; expanded?: boolean; onStatus?: (value: boolean) => void }
 type Failure = ConnectionResult | 'update' | 'admin' | 'stale' | 'invalid' | 'failed' | 'modelSetupUpdate'
@@ -33,6 +34,9 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
   const [protocol, setProtocol] = useState<ConnectionProtocol>('anthropic')
   const [authHeader, setAuthHeader] = useState<EndpointDraft['authHeader']>('bearer')
   const [hasKey, setHasKey] = useState(false)
+  const [model, setModel] = useState('')
+  const doubao = DOUBAO_PRESETS[backend]
+  const doubaoForm = doubao && isDoubaoEndpoint(baseURL)
   const key = useRef<HTMLInputElement | null>(null)
   const serial = useRef(0)
   const scopeRef = useRef(props)
@@ -76,6 +80,8 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
   function configure() {
     clearKey(); setError(null)
     const draft = readEndpointDraft(props.profileId, backend)
+    // Reopening a saved Doubao endpoint without a model prefills the default so Connect verifies in one step.
+    setModel(saved?.model ?? (doubao && isDoubaoEndpoint(draft?.baseURL ?? saved?.base_url) ? DOUBAO_DEFAULT_MODEL : ''))
     setBaseURL(backend === 'cursor' ? 'https://api2.cursor.sh' : draft?.baseURL ?? saved?.base_url ?? (backend === 'claude' ? 'https://api.anthropic.com' : ''))
     setProtocol(backend === 'cursor' ? 'cursor' : backend === 'claude' ? 'anthropic' : draft?.protocol ?? saved?.protocol ?? 'chat_completions')
     setAuthHeader(backend === 'cursor' ? 'bearer' : draft?.authHeader ?? saved?.auth_header ?? (backend === 'claude' ? 'x-api-key' : 'bearer')); setOpen(true)
@@ -91,7 +97,7 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
     const n = ++serial.current
     const scope = { profileId: props.profileId, profileGeneration: props.profileGeneration }
     setBusy(true); setError(null)
-    const input = action === 'save' ? { base_url: baseURL, model: null, protocol, auth_header: authHeader,
+    const input = action === 'save' ? { base_url: baseURL, model: doubaoForm && model.trim() || null, protocol, auth_header: authHeader,
       api_key: key.current?.value ?? '', expected_revision: saved.revision } : { expected_revision: saved.revision }
     try {
       const reply = await trackOperation(action === 'save' ? 'provider_connection_saved' : action === 'check' ? 'provider_connection_tested' : 'provider_connection_forgotten',
@@ -144,6 +150,10 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
           onChange={e => updateDraft({ baseURL: e.target.value })} autoComplete="off" spellCheck={false} /></div>}
         {backend === 'cursor' && <small>{t('connections.cursorHelp')}{' '}<a href="https://grok.com/dashboard/api-keys" onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal('https://grok.com/dashboard/api-keys') }}>{t('connections.readMore')}</a></small>}
         {backend === 'opencode' && <small>{t('connections.openCodeEndpointHelp')}{' '}<a href="https://opencode.ai/docs/zen/" onClick={event => { event.preventDefault(); void window.agentsDock.native.openExternal('https://opencode.ai/docs/zen/') }}>{t('connections.readMore')}</a></small>}
+        {doubao && <div className="provider-connection-presets">
+          <button type="button" className="quiet-button" disabled={busy} onClick={() => { updateDraft({ baseURL: doubao.baseURL, protocol: doubao.protocol, authHeader: 'bearer' }); setModel(model || DOUBAO_DEFAULT_MODEL) }}>{t('connections.useDoubao')}</button>
+          <small>{t('connections.doubaoHelp')}</small>
+        </div>}
         {backend !== 'cursor' && <>
         <div className="provider-connection-field"><label htmlFor={`${id}-protocol`}>{t('connections.protocol')} <span aria-hidden="true" className="provider-field-requirement">{t('connections.required')}</span></label>
           <select id={`${id}-protocol`} aria-label={t('connections.protocol')} required value={protocol} disabled={busy || backend === 'claude' || backend === 'gemini'} onChange={e => updateDraft({ protocol: e.target.value as ConnectionProtocol, authHeader: e.target.value === 'anthropic' ? 'x-api-key' : 'bearer' })}>
@@ -157,6 +167,9 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
             <option value="bearer">Bearer</option>{protocol === 'anthropic' && <option value="x-api-key">x-api-key</option>}{protocol === 'gemini' && <option value="x-goog-api-key">x-goog-api-key</option>}
           </select>
         </div></>}
+        {doubaoForm && <div className="provider-connection-field"><label htmlFor={`${id}-model`}>{t('connections.model')} <span aria-hidden="true" className="provider-field-requirement">{t('connections.optional')}</span></label>
+          <input id={`${id}-model`} aria-label={t('connections.model')} value={model} maxLength={256} disabled={busy} placeholder={DOUBAO_DEFAULT_MODEL}
+            onChange={e => { setModel(e.target.value); setError(null) }} autoComplete="off" spellCheck={false} /></div>}
         <div className="provider-connection-field"><label htmlFor={`${id}-key`}>{t('connections.key')} <span aria-hidden="true" className="provider-field-requirement">{t('connections.required')}</span></label>
         <input id={`${id}-key`} aria-label={t('connections.key')} required type="password" ref={attachKey} maxLength={4096} disabled={busy} onChange={e => setHasKey(Boolean(e.target.value.trim()))} autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-1p-ignore data-lpignore="true" /></div>
         {backend !== 'cursor' && <small>{t('connections.chooseModelLater')}</small>}
@@ -167,12 +180,4 @@ export function ProviderConnectionSettings({ backend, ...props }: Props & { back
       </form>}
     </div>
   </section>
-}
-
-export function EndpointSetupHelp() {
-  useLocale()
-  return <details className="app-settings-provider-context">
-    <summary>{t('connections.startTitle')}</summary><p>{t('connections.startHelp')}</p>
-    <button type="button" className="quiet-button" onClick={() => void window.agentsDock.native.openExternal('https://openrouter.ai/settings/keys')}>{t('connections.openRouter')}</button>
-  </details>
 }

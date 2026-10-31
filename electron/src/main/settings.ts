@@ -349,7 +349,7 @@ export class SettingsStore {
   }
 
   removeProfile(profileId: string, replacementProfileId?: string): void {
-    const profile = this.requireProfile(profileId)
+    this.requireProfile(profileId)
     if (this.value.profiles.length === 1) throw new Error('AgentsDock must keep at least one server profile.')
     const next = cloneSettings(this.value)
     next.profiles = next.profiles.filter(candidate => candidate.id !== profileId)

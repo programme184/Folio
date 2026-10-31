@@ -73,7 +73,6 @@ import type {
   TeamSkillVersionsQuery
 } from '../shared/team-network'
 import {
-  TEAM_NETWORK_MAX_PAGE_ITEMS,
   parseTeamNetworkBulletinQuery,
   parseTeamNetworkCreatePassiveRequestInput,
   parseTeamNetworkDeleteBulletinInput,

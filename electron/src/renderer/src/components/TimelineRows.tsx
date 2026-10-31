@@ -1948,12 +1948,6 @@ function CrossChatView({ item, sessionId, profileScope }: { item: SystemItem; se
   </article>
 }
 
-function crossChatAuthorizationLabel(kind: Event['handoff_authorization_kind'] | Event['exchange_authorization_kind']): string | null {
-  if (kind === 'configured_route') return t('timeline.ui.agentAuthoredSameServerAccess')
-  if (kind === 'explicit_prompt') return t('timeline.ui.userAddressed')
-  return null
-}
-
 function crossChatTitle(event: Event, counterpartTitle: string, currentSessionId: string): string {
   const status = String(event.handoff_status || event.status || event.type).toLocaleLowerCase()
   const source = event.source_session_id?.trim() || ''
@@ -2032,7 +2026,7 @@ function digestStatusText(event: Event): string {
 function JobView({ item, sessionId, profileScope, pinnedItemIds }: { item: JobItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinnedItemIds: ReadonlySet<string> }) {
   useLocale()
   const selection = useMemo(() => jobDisplaySelection(item), [item])
-  const { latest, latestSource, previous, updates } = selection
+  const { latest, latestSource, previous } = selection
   const presentation = useMemo(() => jobResultPresentation(latest), [latest])
   const latestStatusSource = item.latestStatus ?? latest
   const latestStatus = useMemo(

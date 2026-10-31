@@ -574,6 +574,11 @@ export interface AgentsDockAPI {
     translate(text: string): Promise<string>
     loadMarks(key: string): Promise<PaperMark[]>
     saveMarks(key: string, marks: PaperMark[]): Promise<PaperMark[]>
+    listNotes(path: string): Promise<string[]>
+    readNote(path: string, name: string): Promise<string>
+    createNote(path: string, name: string): Promise<void>
+    writeNote(path: string, name: string, body: string): Promise<void>
+    removeNote(path: string, name: string): Promise<void>
   }
   workspace: {
     info(sessionId: string): Promise<WorkspaceInfo>

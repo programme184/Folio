@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import type { Session } from '@shared/types'
 import { useAppStore } from '../store/app-store'
-import { hasMainProviderConversation, paperSideChatAvailable, usePaperAsk } from './paper-ask'
+import { hasMainProviderConversation, paperSideChatAvailable, paperUseSideChat, usePaperAsk } from './paper-ask'
 
 const scope = { profileId: 'profile-a', profileGeneration: 3, serverIdentity: 'server-a' }
 const capability = {
@@ -21,19 +21,15 @@ const codex = (codexThreadId?: string): Session => ({
   ...(codexThreadId === undefined ? {} : { codex_thread_id: codexThreadId })
 })
 
-let ask: ReturnType<typeof vi.fn>
 let sendPromptForSession: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
-  ask = vi.fn().mockImplementation((_scope, sessionId, input) => Promise.resolve({
-    request_id: input.request_id, session_id: sessionId, backend: 'codex', answer: 'Side answer'
-  }))
   sendPromptForSession = vi.fn().mockResolvedValue(true)
   Object.defineProperty(window, 'agentsDock', {
     configurable: true,
     value: {
       sharedChat: false,
-      sideQuestions: { ask, cancel: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }
+      sideQuestions: { ask: vi.fn(), cancel: vi.fn(), close: vi.fn().mockResolvedValue(undefined) }
     } as unknown as AgentsDockAPI
   })
   useAppStore.setState({
@@ -58,6 +54,11 @@ describe('paper chat routing', () => {
     expect(hasMainProviderConversation({ ...codex(), session_id: 'legacy-thread' })).toBe(true)
   })
 
+  it('uses Side chat only while the main conversation is running', () => {
+    expect(paperUseSideChat(health, codex('thread-a'), true)).toBe(true)
+    expect(paperUseSideChat(health, codex('thread-a'), false)).toBe(false)
+  })
+
   it('sends Explain into the main conversation when Codex has no main thread', async () => {
     const { result } = renderHook(() => usePaperAsk(codex(), scope))
 
@@ -69,18 +70,18 @@ describe('paper chat routing', () => {
     expect(sendPromptForSession.mock.calls[0][0]).toBe('chat-a')
     expect(sendPromptForSession.mock.calls[0][2]).toBe(false)
     expect(sendPromptForSession.mock.calls[0][3]).toMatchObject({ consumeComposer: false })
-    expect(ask).not.toHaveBeenCalled()
   })
 
-  it('keeps Explain in the native Side chat after the main Codex thread exists', async () => {
-    const { result } = renderHook(() => usePaperAsk(codex('thread-a'), scope))
+  it('routes Explain to the visible chat surface supplied by the workspace', async () => {
+    const submitInChat = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => usePaperAsk(codex('thread-a'), scope, submitInChat))
 
     await act(async () => {
       await result.current.askPassage({ kind: 'explain', passage }, new AbortController().signal)
     })
 
-    expect(ask).toHaveBeenCalledOnce()
-    expect(ask.mock.calls[0][1]).toBe('chat-a')
+    expect(submitInChat).toHaveBeenCalledOnce()
+    expect(submitInChat.mock.calls[0][0]).toContain('A selected paper passage.')
     expect(sendPromptForSession).not.toHaveBeenCalled()
   })
 })

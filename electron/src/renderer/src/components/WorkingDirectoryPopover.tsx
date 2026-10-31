@@ -1,5 +1,5 @@
 // Localized display strings use semantic catalog keys.
-import { t, getLocale } from '@shared/i18n'
+import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import * as Popover from '@radix-ui/react-popover'
 import { ArrowUp, ChevronRight, Folder, FolderOpen, LoaderCircle, RotateCcw } from 'lucide-react'

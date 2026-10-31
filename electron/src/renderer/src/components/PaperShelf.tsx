@@ -1,10 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { FolderOpen, LoaderCircle, Search } from 'lucide-react'
 import { t } from '@shared/i18n'
 import { paperShelfMarkKey } from '@shared/paper-passages'
 import type { SideQuestionScope } from '@shared/side-questions'
 import type { Session } from '@shared/types'
 import { useLocale } from '../lib/i18n'
+import { shelfNoteFiles, type PaperNoteSource } from './paper-notes'
 import { usePaperAsk } from './paper-ask'
 import './PaperShelf.css'
 
@@ -31,15 +32,20 @@ export function PaperShelf({ chat, session, scope, onAsk }: {
   chat: ReactNode
   session: Session | null
   scope: SideQuestionScope | null
-  onAsk: (draft: string) => void
+  onAsk: (draft: string, submit?: boolean) => void | Promise<void>
 }) {
   useLocale()
-  const { canAsk, askPassage } = usePaperAsk(session, scope)
+  const { canAsk, askPassage } = usePaperAsk(session, scope, question => onAsk(question, true))
   const [revision, setRevision] = useState(0)
   const [listing, setListing] = useState(true)
   const [shelf, setShelf] = useState<PaperList | null>(null)
   const [listError, setListError] = useState<string | null>(null)
   const [active, setActive] = useState<string | null>(null)
+  const notes = useMemo<PaperNoteSource | null>(() => {
+    const key = active ? paperShelfMarkKey(active) : null
+    const files = active ? shelfNoteFiles(active) : null
+    return key && files ? { key, files } : null
+  }, [active])
   const [opening, setOpening] = useState(false)
   const [bytes, setBytes] = useState<Uint8Array | null>(null)
   const [documentError, setDocumentError] = useState<string | null>(null)
@@ -218,7 +224,7 @@ export function PaperShelf({ chat, session, scope, onAsk }: {
           {documentError && <p className="paper-document-status" role="alert">{documentError}</p>}
           {!opening && !bytes && !documentError && <p className="paper-document-status">{t('papers.choose')}</p>}
           {bytes && <Suspense fallback={<p className="paper-document-status" role="status">{t('papers.loading')}</p>}>
-            <PaperDocument data={bytes} documentKey={active ? paperShelfMarkKey(active) : null} canAsk={canAsk} askPassage={askPassage} onAsk={onAsk} />
+            <PaperDocument data={bytes} documentKey={active ? paperShelfMarkKey(active) : null} notes={notes} canAsk={canAsk} askPassage={askPassage} onAsk={onAsk} />
           </Suspense>}
         </div>
       </div>

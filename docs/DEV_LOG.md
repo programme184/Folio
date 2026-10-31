@@ -1,5 +1,145 @@
 # Public development log
 
+## 2026-10-31 — Fix the PDF full-screen button doing nothing
+
+- The full-screen button in the paper viewer did nothing: the app denied every web
+  permission, including the one HTML full screen requests, and the click's error
+  was swallowed. The app now allows only the full-screen permission, and only for
+  its own window; all other permissions stay denied.
+
+```text
+Source commit / app build / server version: uncommitted Electron source; no
+server change. Availability: source only.
+Test surface: isolated native app (headless, own profile) with an isolated server.
+Exercised: before the fix, clicking the button left the page windowed; after it,
+the paper viewer filled the window, the button changed to Exit full screen, the
+exit button restored the layout, and re-entering worked.
+Focused checks: permission-rule unit test; tsc --noEmit; production build.
+Remaining limitations: Escape to leave full screen was not confirmed in the
+headless window (synthetic key events do not reach the window's native handler);
+a real window should be checked. The notes panel was not exercised here.
+```
+
+## 2026-10-31 — Markdown notes and full screen for PDFs
+
+- Each PDF in the paper viewer has a Notes panel. Each note is a Markdown file
+  (`.md`) in a folder beside the PDF, named after it: `Paper.pdf` keeps its notes
+  in `Paper.notes/`. The panel lists the files on the left; edit the text and
+  switch to a rendered preview. Saves are debounced. Delete asks for a second click.
+- Papers folder PDFs use the local disk under the papers folder. Workspace PDFs
+  use the workspace file API, and the notes folder appears in the workspace tree.
+  PDFs opened from outside the workspace and artifact PDFs have no notes; a
+  read-only workspace shows the save error when a note cannot be written.
+- A full-screen button beside the zoom controls expands the PDF to the whole
+  screen (the browser full-screen API). Press it again, or Escape, to return to
+  the default layout.
+
+```text
+Source commit / app build / server version: uncommitted Electron source; no
+server code change. Availability: source only.
+Focused checks: tsc --noEmit; note file store tests (create, edit, list, delete,
+path and name containment); file-name and folder helpers; notes panel component
+test (create, debounced save, disabled without a notes source); production build.
+Remaining limitations: not yet exercised by hand in the running app (creating
+notes on a real shelf PDF and a workspace PDF, reopening after restart, full
+screen with Escape, a read-only workspace). Light theme and narrow width are not
+checked. The workspace path is covered only by typecheck, not by a server run.
+```
+
+## 2026-10-31 — Doubao (Volcengine Ark agent plan) for OpenCode and Claude Code
+
+- Configure API for OpenCode and Claude Code has a Use Doubao (Volcengine Ark)
+  preset with a prefilled model ID (`doubao-seed-2-0-mini-260428`). Connect sends
+  key and model together, so the connection verifies in one step. Reopening a saved
+  Doubao endpoint without a model prefills the same model.
+- OpenCode uses `https://ark.cn-beijing.volces.com/api/plan/v3` (Chat Completions);
+  Claude Code uses `https://ark.cn-beijing.volces.com/api/plan` (Anthropic
+  Messages, Bearer). The pay-as-you-go `/api/v3` address returned ModelNotOpen.
+- The chat bar shows "Doubao (OpenCode)" or "Doubao (Claude Code)". Each runtime holds
+  one endpoint, so saving replaces its previous one. OpenCode CLI 1.18.29 or
+  Claude Code must be installed on the server, or the entry is not offered.
+
+```text
+Source commit / app build / server version: uncommitted Electron source; no
+server code change. Availability: source only.
+Test surface: isolated native app (headless, own profile) against an isolated
+AgentsServer, rerun after the final code shrink.
+Exercised in the window: for both OpenCode and Claude Code, preset (address,
+protocol, Bearer, prefilled model), key, Connect to Connected, chat-bar entries
+"Doubao (Claude Code)" and "Doubao (OpenCode)", new chat and replies (Claude Code
+also a contextual follow-up). Earlier, before the shrink, on OpenCode: model
+switch (an out-of-plan model returned Ark's 404, shown verbatim; switching back
+recovered), paper Explain, and a saved-but-unverified record connecting in one step.
+Focused checks: tsc --noEmit; paper-notes store and parser tests; notes panel
+component test (create, debounced save, disabled without the desktop API);
+production build.
+Remaining limitations: not yet exercised by hand in the running app (creating
+a note on a real PDF, reopening it after restart, full screen with Escape).
+Light theme and narrow width are not checked.
+```
+
+## 2026-10-31 — Doubao (Volcengine Ark agent plan) for OpenCode and Claude Code
+
+- Configure API for OpenCode and Claude Code has a Use Doubao (Volcengine Ark)
+  preset with a prefilled model ID (`doubao-seed-2-0-mini-260428`). Connect sends
+  key and model together, so the connection verifies in one step. Reopening a saved
+  Doubao endpoint without a model prefills the same model.
+- OpenCode uses `https://ark.cn-beijing.volces.com/api/plan/v3` (Chat Completions);
+  Claude Code uses `https://ark.cn-beijing.volces.com/api/plan` (Anthropic
+  Messages, Bearer). The pay-as-you-go `/api/v3` address returned ModelNotOpen.
+- The chat bar shows "Doubao (OpenCode)" or "Doubao (Claude Code)". Each runtime holds
+  one endpoint, so saving replaces its previous one. OpenCode CLI 1.18.29 or
+  Claude Code must be installed on the server, or the entry is not offered.
+
+```text
+Source commit / app build / server version: uncommitted Electron source; no
+server code change. Availability: source only.
+Test surface: isolated native app (headless, own profile) against an isolated
+AgentsServer; for OpenCode, before the final code shrink.
+Exercised in the window (OpenCode): preset, key, Connect to Connected; chat-bar
+entry; new chat, follow-up, Chinese reply; model switch (an out-of-plan model
+returned Ark's 404, shown verbatim, and switching back recovered); paper
+Explain returned an explanation; a saved-but-unverified record connected in one step.
+Exercised for Claude Code: server selection and model probe against Ark returned
+verified; the form flow is covered by component tests. A Claude Code chat in the
+Folio window was not run (interrupted).
+Focused checks: tsc --noEmit; ProviderConnectionSettings, Composer,
+CustomModelSettings and doubao tests (257 pass); production build.
+Remaining limitations: dark theme, narrow width and the Ask/Translate/Side-chat
+paper paths were not run; the Claude Code model switch and paper Explain were not
+rerun. Plan addresses have no model list.
+```
+
+## 2026-10-30 — Route paper explanations to chat instead of the PDF
+
+- Paper Explain no longer renders a temporary Codex answer beneath selected
+  PDF text. When the main conversation is running, Explain opens and submits
+  into its persistent Side chat; when the main conversation is idle, it sends
+  through the main chat instead.
+- Paper Ask follows the same busy/idle destination rule but continues to place
+  a draft in the chosen composer rather than sending it automatically.
+
+```text
+Change and expected user behavior: paper explanations appear in main chat or
+Side chat, never inline over the paper; Side chat is selected only while the
+main conversation is running.
+Source commit / app build / server version: uncommitted Electron source;
+electron-vite production output built locally; no server change required.
+Test surface: focused renderer/controller fixtures and local production build.
+Actions exercised and observed outcomes: regressions verified idle main-chat
+routing, running-only Side-chat selection, persistent Side-chat submission, and
+the absence of an inline paper answer. No native app surface was available to
+Computer Use for a desktop click-through.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer tests use
+the native API/store fixtures; no live Codex provider request was sent.
+Focused regression / typecheck / production build: 43 focused Vitest tests
+passed, TypeScript passed, electron-vite build passed, and git diff check passed.
+Remaining limitations or blocked acceptance: use a disposable installed app to
+click Explain once while the main turn is running and once while idle, then
+confirm the real Codex response appears only in the selected chat surface.
+Availability: source and local Electron build output only
+```
+
 ## 2026-10-29 — Keep Codex paper questions in the main chat until it exists
 
 - A new Codex chat has no native parent thread to fork. Paper Explain now sends

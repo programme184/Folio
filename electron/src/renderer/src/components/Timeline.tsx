@@ -1252,10 +1252,6 @@ export function clearTimelineViewStates(): void {
   timelineViewStates.clear()
 }
 
-export function sameTimelineKeys(keys: string[], items: RenderTimelineItem[]): boolean {
-  return keys.length === items.length && keys.every((key, index) => key === items[index]?.key)
-}
-
 export function resolveTimelineLiveState(
   codexStatus: CodexThreadStatus | null | undefined,
   healthKnown: boolean,

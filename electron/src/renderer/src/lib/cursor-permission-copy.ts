@@ -1,5 +1,5 @@
 // Localized display strings use semantic catalog keys.
-import { t, getLocale } from '@shared/i18n'
+import { t } from '@shared/i18n'
 import type { CursorPermissionMode } from '@shared/types'
 import { SAFE_CURSOR_PERMISSION_MODES } from '@shared/cursor-permissions'
 
