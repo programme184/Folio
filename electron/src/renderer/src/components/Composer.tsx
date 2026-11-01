@@ -10,7 +10,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core'
-import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Shield, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FileCode2, Folder, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Shield, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ClaudePermissionMode, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
@@ -115,6 +115,7 @@ import {
 import { interactiveClientCapabilities, useAppStore, type PendingTurnSubmission } from '../store/app-store'
 import { useTransientClose } from '../lib/transient-close'
 import { openTeamMessageLink } from '../lib/team-message-links'
+import { hasWorkspaceDragData, insertWorkspaceFileMention, readWorkspaceDragData } from '../lib/workspace-file-mentions'
 import { applyTeamMessageComposerEdit, composerDisplayToSource, composerSourceToDisplay, projectTeamMessageComposer, type ComposerMessageLink, type ComposerNativeEditSelection } from '../lib/team-message-composer'
 import { BackendMark } from './BackendMark'
 import { CodexContextIndicator, CodexGoalBar } from './CodexControls'
@@ -257,6 +258,9 @@ function commitComposerSnapshot(
 }
 
 type ChatMentionCandidate = { kind: 'local'; id: string; session: Session }
+type FileMentionCandidate = { kind: 'file'; id: string; path: string; name: string; entryKind: 'file' | 'directory' }
+type MentionOption = ChatMentionCandidate | FileMentionCandidate
+const NO_FILE_MENTIONS: readonly FileMentionCandidate[] = []
 
 const remoteAgentRouteUnavailable = () => t('teamNetwork.mention.remoteRouteUnavailable')
 
@@ -596,7 +600,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const [teamReferences, setTeamReferences] = useState<TeamReference[]>(storedTeamReferences)
   const [mention, setMention] = useState<ChatMentionTrigger | null>(null)
   const [mentionIndex, setMentionIndex] = useState(0)
-  const [mentionCandidates, setMentionCandidates] = useState<ChatMentionCandidate[]>([])
+  const [mentionCandidates, setMentionCandidates] = useState<MentionOption[]>([])
+  const [fileMentionEntries, setFileMentionEntries] = useState<FileMentionCandidate[]>([])
+  const [fileDropActive, setFileDropActive] = useState(false)
   const [teamMention, setTeamMention] = useState<TeamMentionTrigger | null>(null)
   const [teamMentionIndex, setTeamMentionIndex] = useState(0)
   const [teamMentionCandidates, setTeamMentionCandidates] = useState<TeamMentionCandidate[]>([])
@@ -962,7 +968,34 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }, [draft, inlineReferenceSpans, scheduleEditorLayout])
   useEffect(() => observeComposerEditorWidth(textareaRef.current, scheduleEditorLayout), [scheduleEditorLayout, selectedId])
   useEffect(() => () => cancelComposerEditorLayout(textareaRef.current, editorLayoutFrameRef), [])
-  const acceptMentionCandidates = useCallback((next: ChatMentionCandidate[]) => setMentionCandidates(next), [])
+  const acceptMentionCandidates = useCallback((next: MentionOption[]) => setMentionCandidates(next), [])
+  const fileMentionQuery = mention?.kind === '@' ? mention.query : null
+  useEffect(() => {
+    if (fileMentionQuery === null || !selectedId) {
+      setFileMentionEntries([])
+      return
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      const search = window.agentsDock.workspace?.search
+      if (!search) return
+      void search(selectedId, fileMentionQuery.trim(), 8)
+        .then(page => {
+          if (cancelled) return
+          setFileMentionEntries(page.entries
+            .filter(entry => entry.kind === 'file' || entry.kind === 'directory')
+            .map(entry => ({
+              kind: 'file' as const,
+              id: `file-${entry.path}`,
+              path: entry.path,
+              name: entry.name,
+              entryKind: entry.kind === 'directory' ? 'directory' as const : 'file' as const
+            })))
+        })
+        .catch(() => { if (!cancelled) setFileMentionEntries([]) })
+    }, 120)
+    return () => { cancelled = true; window.clearTimeout(timer) }
+  }, [fileMentionQuery, selectedId])
 
   useEffect(() => {
     mountedRef.current = true
@@ -1840,6 +1873,35 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       setWorkingDirectoryOpen(true)
     }
   }
+  const insertWorkspacePath = (path: string, entryKind: 'file' | 'directory', span?: { start: number; end: number }) => {
+    const field = textareaRef.current
+    const source = draftRef.current
+    const caret = field ? composerDisplayToSource(messageProjection, field.selectionStart) : source.length
+    const start = span?.start ?? caret
+    const end = span?.end ?? caret
+    const inserted = insertWorkspaceFileMention(source, start, end, path, entryKind)
+    const shifted = reconcileChatReferences(source, inserted.text, referencesRef.current)
+    const shiftedTeam = reconcileTeamReferences(source, inserted.text, teamReferencesRef.current)
+    const nextReferences = validComposerReferences(
+      inserted.text,
+      shifted,
+      shiftedTeam,
+      (text, candidates) => validChatReferences(text, candidates, selectedId)
+    )
+    draftRef.current = inserted.text
+    draftDirtyRef.current = true
+    pendingCaretRef.current = inserted.caret
+    setDraft(inserted.text)
+    useAppStore.getState().setDraftForSession(session!.id, inserted.text)
+    storeReferences(nextReferences.chatReferences)
+    storeTeamReferences(nextReferences.teamReferences)
+    setMention(null)
+    setMentionCandidates([])
+  }
+  const chooseFileMention = (target: FileMentionCandidate) => {
+    if (!mention) return
+    insertWorkspacePath(target.path, target.entryKind, { start: mention.start, end: mention.end })
+  }
   const chooseMention = (target: ChatMentionCandidate) => {
     if (!mention || !crossChatSupported) return
     const action: ChatReferenceAction = 'route'
@@ -2015,6 +2077,21 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           placeholder={t("ui.Composer.Composer.message_2f77668")}
           aria-label={sessionId === undefined ? t("ui.Composer.Composer.message_2f77668") : t("ui.Composer.Composer.message_0429845", { "title": String(session.title) })}
           spellCheck
+          className={fileDropActive ? 'composer-file-drop-active' : undefined}
+          onDragOver={event => {
+            if (!hasWorkspaceDragData(event.dataTransfer)) return
+            event.preventDefault()
+            event.dataTransfer.dropEffect = 'copy'
+            if (!fileDropActive) setFileDropActive(true)
+          }}
+          onDragLeave={() => setFileDropActive(false)}
+          onDrop={event => {
+            setFileDropActive(false)
+            const payload = readWorkspaceDragData(event.dataTransfer)
+            if (!payload) return
+            event.preventDefault()
+            insertWorkspacePath(payload.path, payload.kind)
+          }}
           aria-autocomplete="list"
           aria-expanded={Boolean(commandPaletteVisible || teamMention || mention)}
           aria-controls={commandPaletteVisible ? commandPaletteId : teamMention ? teamMentionPaletteId : mention ? mentionPaletteId : undefined}
@@ -2227,7 +2304,8 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
               if (event.key === 'Enter' || event.key === 'Tab') {
                 event.preventDefault()
                 const target = mentionCandidates[mentionIndex]
-                if (target && crossChatSupported) chooseMention(target)
+                if (target?.kind === 'file') chooseFileMention(target)
+                else if (target && crossChatSupported) chooseMention(target)
                 return
               }
             }
@@ -2293,7 +2371,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         grantsLoading={grantsLoading}
         grantsError={grantsError}
         revokingRouteIds={revokingAgentRouteIds}
+        fileEntries={mention.kind === '@' ? fileMentionEntries : NO_FILE_MENTIONS}
         onCandidates={acceptMentionCandidates}
+        onSelectFile={chooseFileMention}
         onSelect={chooseMention}
         onRevoke={(routeId, revision) => selectedId
           ? useAppStore.getState().revokeAgentRoute(selectedId, routeId, revision)
@@ -3169,8 +3249,10 @@ function ChatMentionPalette({
   grantsLoading,
   grantsError,
   revokingRouteIds,
+  fileEntries,
   onCandidates,
   onSelect,
+  onSelectFile,
   onRevoke
 }: {
   id: string
@@ -3188,8 +3270,10 @@ function ChatMentionPalette({
   grantsLoading: boolean
   grantsError: string | null
   revokingRouteIds: ReadonlySet<string>
-  onCandidates: (sessions: ChatMentionCandidate[]) => void
+  fileEntries: readonly FileMentionCandidate[]
+  onCandidates: (options: MentionOption[]) => void
   onSelect: (session: ChatMentionCandidate) => void
+  onSelectFile: (file: FileMentionCandidate) => void
   onRevoke: (routeId: string, expectedRevision: string) => Promise<boolean>
 }) {
   useLocale()
@@ -3222,14 +3306,14 @@ function ChatMentionPalette({
       .some(value => value?.toLocaleLowerCase().includes(query)))
   ))
 
-  useEffect(() => onCandidates(candidates), [candidates, onCandidates])
+  useEffect(() => onCandidates([...candidates, ...fileEntries]), [candidates, fileEntries, onCandidates])
   useEffect(() => {
     optionRefs.current[selectedIndex]?.scrollIntoView?.({ block: 'nearest' })
   }, [selectedIndex])
 
   return <div id={id} className="chat-mention-palette" role="listbox" aria-label={t("ui.Composer.ChatMentionPalette.chats_ef5b404")}>
     {!supported
-      ? <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")}</strong><small>{t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")}</small></span></div>
+      ? fileEntries.length > 0 ? null : <div className="chat-mention-empty"><AlertTriangle size={14} /><span><strong>{t("ui.Composer.ChatMentionPalette.server_update_required_4a5a2af")}</strong><small>{t("ui.Composer.ChatMentionPalette.cross_chat_handoffs_are_unavailable_on_thi_85df9b0")}</small></span></div>
       : <>
         {candidates.map((candidate, index) => {
           const grant = grantByTarget.get(candidate.session.id)
@@ -3288,11 +3372,26 @@ function ChatMentionPalette({
         })}
         {maximumReferencesSelected && <div className="chat-mention-empty" role="status"><span><strong>{t('ui.composer.maximumChats', { count: MAX_CHAT_REFERENCES })}</strong><small>{t("ui.Composer.ChatMentionPalette.remove_a_chat_reference_before_selecting_a_3e5b219")}</small></span></div>}
         {localSupported && remainingNewRouteCapacity === 0 && <div className="chat-mention-empty" role="status"><span><strong>{t("ui.Composer.ChatMentionPalette.route_access_limit_reached_c3ab676")}</strong><small>{t("ui.Composer.ChatMentionPalette.granted_chats_remain_available_revoke_a_ro_d9c4c32")}</small></span></div>}
-        {!candidates.length && !detachedGrants.length && !grantsLoading && <div className="chat-mention-empty"><span><strong>{t("ui.Composer.ChatMentionPalette.no_matching_chats_27e7713")}</strong><small>{t("ui.Composer.ChatMentionPalette.try_a_title_folder_or_session_id_50d6f13")}</small></span></div>}
+        {!candidates.length && !detachedGrants.length && !grantsLoading && !fileEntries.length && <div className="chat-mention-empty"><span><strong>{t("ui.Composer.ChatMentionPalette.no_matching_chats_27e7713")}</strong><small>{t("ui.Composer.ChatMentionPalette.try_a_title_folder_or_session_id_50d6f13")}</small></span></div>}
         {localSupported && grantsLoading && <div className="chat-mention-grant-status"><LoaderCircle className="spin" size={13} />{" "}{t("ui.Composer.ChatMentionPalette.refreshing_granted_routes_3e0e5e6")}</div>}
         {localSupported && grantsError && <div className="chat-mention-grant-status error"><AlertTriangle size={13} /> {grantsError}</div>}
         {localSupported && grantedRoutes.length > 0 && <div className="chat-mention-grant-note">{t("ui.Composer.ChatMentionPalette.revoke_removes_this_chat_s_granted_cross_c_53849c4")}</div>}
       </>}
+    {fileEntries.map((entry, fileIndex) => {
+      const index = candidates.length + fileIndex
+      return <button
+        key={entry.id}
+        ref={node => { optionRefs.current[index] = node }}
+        id={`${id}-${entry.id}`}
+        type="button"
+        role="option"
+        aria-selected={index === selectedIndex}
+        className={`chat-mention-option chat-mention-file${index === selectedIndex ? ' selected' : ''}`}
+        title={entry.path}
+        onMouseDown={event => event.preventDefault()}
+        onClick={() => onSelectFile(entry)}
+      >{entry.entryKind === 'directory' ? <Folder size={15} /> : <FileCode2 size={15} />}<span><strong>{entry.name}</strong><small>{entry.path}</small></span></button>
+    })}
   </div>
 }
 

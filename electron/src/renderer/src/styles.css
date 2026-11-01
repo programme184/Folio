@@ -3648,3 +3648,6 @@ button.tool-event-toggle:hover { background: #242424; }
 :root[data-theme="light"] .ports-row { border-color: var(--border); }
 :root[data-theme="light"] .ports-remote code { color: #334044; background: var(--surface-2); border-color: var(--border); }
 :root[data-theme="light"] .ports-empty-icon { color: var(--muted); background: var(--surface-2); }
+
+.chat-mention-file { min-height: 38px; }
+.composer-file-drop-active { outline: 2px dashed var(--accent, #4c8dff); outline-offset: 2px; border-radius: var(--radius-control); }

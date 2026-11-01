@@ -1,5 +1,29 @@
 # Public development log
 
+## 2026-11-01 — Reference workspace files with `@` and by dragging
+
+- Typing `@` in the message box now also lists matching files and folders from the
+  chat's workspace (up to 8, searched after a short pause). Choosing one inserts a
+  plain `@path` mention (paths with spaces are quoted). The existing `@chat`
+  references are unchanged, and files still appear when the server does not support
+  cross-chat handoffs.
+- Files and folders in the Files panel can be dragged into the message box; the
+  mention is inserted at the caret.
+
+```text
+Source commit / app build / server version: uncommitted Electron source;
+electron-vite build; AgentsServer from the same tree. Availability: source only.
+Test surface: isolated native app with its own profile, against an isolated server
+inside a private network namespace (no contact with any real server).
+Exercised: `@` list, filtering, arrow/Enter/Tab/Esc, second use, mid-text insertion,
+real file and folder drags (drop highlight clears), per-chat drafts when switching
+chats, one search request per typing burst and none without `@`, dark theme, zh-CN.
+Focused checks: tsc --noEmit; Composer, workspace and lib unit tests.
+Remaining limitations: not tried while a turn is running (no provider in the test
+environment); the app layout itself overflows below ~420 px width, unchanged.
+Folder results depend on the server's workspace search, which returned only files.
+```
+
 ## 2026-10-31 — Play video files in the workspace file viewer
 
 - Opening an `.mp4`, `.m4v`, `.mov` or `.webm` file from the workspace tree or the

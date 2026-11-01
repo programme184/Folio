@@ -20,6 +20,7 @@ import {
   useRef,
   useState
 } from 'react'
+import { setWorkspaceDragData } from '../lib/workspace-file-mentions'
 import { createPortal } from 'react-dom'
 import { requestNativeFileOpen } from '../lib/file-actions'
 import { useWorkspaceFilesHost, workspaceFilesKey } from './WorkspaceFilesContext'
@@ -4484,7 +4485,7 @@ function DirectoryRows({
       if (entry.kind === 'directory') {
         const open = expanded.has(entry.path)
         return <div key={entry.path}>
-          <button type="button" data-workspace-entry-path={entry.path} className="workspace-editor-tree-row workspace-editor-folder" style={{ paddingLeft: `${8 + depth * 13}px` }} title={entry.path} aria-expanded={open} onClick={() => onToggle(entry.path)}>
+          <button type="button" draggable data-workspace-entry-path={entry.path} className="workspace-editor-tree-row workspace-editor-folder" style={{ paddingLeft: `${8 + depth * 13}px` }} title={entry.path} aria-expanded={open} onClick={() => onToggle(entry.path)} onDragStart={event => setWorkspaceDragData(event.dataTransfer, { path: entry.path, kind: 'directory' })}>
             <ChevronRight className={open ? 'workspace-editor-chevron-open' : ''} size={12} aria-hidden="true" />
             <Folder size={13} aria-hidden="true" />
             <span>{entry.name}</span>
@@ -4500,6 +4501,8 @@ function DirectoryRows({
         ref={active ? activeRowRef : undefined}
         type="button"
         key={entry.path}
+        draggable
+        onDragStart={event => setWorkspaceDragData(event.dataTransfer, { path: entry.path, kind: 'file' })}
         data-workspace-entry-path={entry.path}
         className={`workspace-editor-tree-row workspace-editor-tree-file${active ? ' workspace-editor-tree-file-active' : ''}`}
         style={{ paddingLeft: `${21 + depth * 13}px` }}
