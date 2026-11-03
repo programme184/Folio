@@ -10,6 +10,15 @@ function App() {
 export default App;
 `
 
+const themedSource = `
+import { Stack, Text, useHostTheme } from "cursor/canvas";
+function Layer() {
+  const theme = useHostTheme();
+  return <div style={{ border: \`1px solid \${theme.stroke.tertiary}\`, background: theme.fill.tertiary }}><Text>Layer</Text></div>;
+}
+export default function App() { return <Stack><Layer /></Stack>; }
+`
+
 describe('WorkspaceCanvasViewer', () => {
   beforeEach(() => {
     Object.defineProperty(window, 'agentsDock', {
@@ -50,6 +59,17 @@ describe('WorkspaceCanvasViewer', () => {
     expect(documentSource).toContain("unitlessStyles.has(key)")
     expect(documentSource).toContain('.cv-callout { padding: 15px 17px; color: var(--cv-text);')
     expect(documentSource).toContain('--cv-bg: #f6f7f9; --cv-surface: #ffffff;')
+  })
+
+  it('provides the documented host theme token groups to canvas components', async () => {
+    render(<WorkspaceCanvasViewer source={themedSource} label="Themed Canvas" />)
+
+    await screen.findByTitle('Themed Canvas')
+    const documentSource = vi.mocked(window.agentsDock.workspace.createCanvasPreview).mock.calls[0]?.[0]
+    expect(documentSource).toContain("tertiary: 'var(--cv-stroke-tertiary)'")
+    expect(documentSource).toContain("tertiary: 'var(--cv-fill-tertiary)'")
+    expect(documentSource).toContain('tokens,')
+    expect(documentSource).toContain("brand: 'cursor'")
   })
 
   it('reports malformed TSX instead of creating a runnable frame', () => {

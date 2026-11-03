@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-11-03 — Support Canvas host theme tokens
+
+- The native Canvas runtime now exposes the documented `useHostTheme()` token
+  groups, including `stroke`, `fill`, `text`, `bg`, `accent` and `diff`, plus
+  palette, radius and typography metadata. Canvases that use semantic values
+  such as `theme.stroke.tertiary` no longer fail with an undefined-property
+  runtime error.
+- The reported HOI research Canvas opened from its real chat link in an
+  isolated native Electron run with 3,659 visible characters, one card, three
+  tables, a resolved tertiary border, no alert and no horizontal overflow.
+  The focused viewer regression, TypeScript check and production build pass.
+  Source only at this checkpoint; no package was published and no server
+  update is required.
+
 ## 2026-11-03 — Recover Folio when a concurrent build removes its renderer
 
 - A development Folio window no longer remains black when it starts during the

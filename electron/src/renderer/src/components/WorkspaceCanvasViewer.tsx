@@ -115,17 +115,26 @@ function canvasDocument(code: string, light: boolean): string {
 <style>
 :root {
   --cv-bg: #111315; --cv-surface: #181b1f; --cv-surface-2: #20242a;
-  --cv-text: #f0f2f4; --cv-muted: #aeb4bc; --cv-faint: #7d858f; --cv-border: #30353c;
+  --cv-text: #f0f2f4; --cv-muted: #b1b6bd; --cv-faint: #9198a1; --cv-quaternary: #686f78;
+  --cv-border: #30353c; --cv-stroke-secondary: #292e34; --cv-stroke-tertiary: #25292f;
+  --cv-fill-primary: #3e4248; --cv-fill-secondary: #34383e; --cv-fill-tertiary: #292d32; --cv-fill-quaternary: #25282d;
   --cv-accent: #8ab4f8; --cv-info: #82b5ff; --cv-warning: #e8bc72;
   --cv-success: #76c893; --cv-danger: #f08a84;
+  --cv-control: #3478c8; --cv-control-hover: #3d85d7; --cv-on-accent: #ffffff;
+  --cv-diff-inserted: #173c2a; --cv-diff-removed: #442326; --cv-diff-added: #2d9d5b; --cv-diff-removed-strip: #d95757;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--cv-text); background: var(--cv-bg); color-scheme: dark;
 }
 :root[data-theme="light"] {
   --cv-bg: #f6f7f9; --cv-surface: #ffffff; --cv-surface-2: #f0f2f5;
-  --cv-text: #1f2328; --cv-muted: #59636e; --cv-faint: #818b98; --cv-border: #d8dee6;
+  --cv-text: #1f2328; --cv-muted: #59636e; --cv-faint: #76808c; --cv-quaternary: #9aa3ad;
+  --cv-border: #d8dee6; --cv-stroke-secondary: #e0e5eb; --cv-stroke-tertiary: #e7ebf0;
+  --cv-fill-primary: #dfe4ea; --cv-fill-secondary: #e7ebef; --cv-fill-tertiary: #eef1f4; --cv-fill-quaternary: #f2f4f6;
   --cv-accent: #0969da; --cv-info: #0969da; --cv-warning: #8a5b00;
-  --cv-success: #1a7f37; --cv-danger: #cf222e; color-scheme: light;
+  --cv-success: #1a7f37; --cv-danger: #cf222e;
+  --cv-control: #0969da; --cv-control-hover: #075bbd; --cv-on-accent: #ffffff;
+  --cv-diff-inserted: #dafbe1; --cv-diff-removed: #ffebe9; --cv-diff-added: #1a7f37; --cv-diff-removed-strip: #cf222e;
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 html, body, #canvas-root { min-height: 100%; margin: 0; }
@@ -246,13 +255,65 @@ h3 { font-size: 15px; font-weight: 680; }
   const Link = ({ children, href = '#', ...props }) => h('a', { ...props, href: String(href).startsWith('javascript:') ? '#' : href, className: classNames('cv-link', props.className) }, children);
   const Spacer = ({ size = 8 }) => h('div', { 'aria-hidden': 'true', style: { height: typeof size === 'number' ? size + 'px' : size } });
   const Stat = ({ label, value, tone, ...props }) => h('div', props, h('div', { className: classNames('cv-stat-value', tone && 'cv-tone-' + tone) }, value), h('div', { className: 'cv-stat-label' }, label));
-  const useHostTheme = () => ({
-    bg: { editor: 'var(--cv-bg)', primary: 'var(--cv-bg)', secondary: 'var(--cv-surface)', tertiary: 'var(--cv-surface-2)' },
-    fg: { primary: 'var(--cv-text)', secondary: 'var(--cv-muted)', muted: 'var(--cv-faint)' },
-    border: { default: 'var(--cv-border)', muted: 'var(--cv-border)' },
-    accent: { primary: 'var(--cv-accent)' },
-    colors: { bg: { primary: 'var(--cv-bg)', secondary: 'var(--cv-surface)' }, fg: { primary: 'var(--cv-text)', secondary: 'var(--cv-muted)' } }
-  });
+  const useHostTheme = () => {
+    const tokens = {
+      bg: { editor: 'var(--cv-bg)', chrome: 'var(--cv-surface-2)', elevated: 'var(--cv-surface)' },
+      text: {
+        primary: 'var(--cv-text)', secondary: 'var(--cv-muted)', tertiary: 'var(--cv-faint)',
+        quaternary: 'var(--cv-quaternary)', link: 'var(--cv-accent)', onAccent: 'var(--cv-on-accent)'
+      },
+      stroke: {
+        primary: 'var(--cv-border)', secondary: 'var(--cv-stroke-secondary)',
+        tertiary: 'var(--cv-stroke-tertiary)', focused: 'var(--cv-accent)'
+      },
+      fill: {
+        primary: 'var(--cv-fill-primary)', secondary: 'var(--cv-fill-secondary)',
+        tertiary: 'var(--cv-fill-tertiary)', quaternary: 'var(--cv-fill-quaternary)'
+      },
+      accent: { primary: 'var(--cv-accent)', control: 'var(--cv-control)', controlHover: 'var(--cv-control-hover)' },
+      diff: {
+        insertedLine: 'var(--cv-diff-inserted)', removedLine: 'var(--cv-diff-removed)',
+        stripAdded: 'var(--cv-diff-added)', stripRemoved: 'var(--cv-diff-removed-strip)'
+      },
+      category: {
+        gray: 'var(--cv-faint)', purple: '#9b78d0', green: 'var(--cv-success)', yellow: 'var(--cv-warning)',
+        cyan: '#2aa5b3', pink: '#cf6fa1', blue: 'var(--cv-info)', orange: '#c97832', red: 'var(--cv-danger)'
+      }
+    };
+    const lightTheme = document.documentElement.dataset.theme === 'light';
+    return {
+      ...tokens,
+      kind: lightTheme ? 'light' : 'dark',
+      brand: 'cursor',
+      tokens,
+      palette: {
+        foreground: tokens.text.primary, foregroundSecondary: tokens.text.secondary,
+        foregroundTertiary: tokens.text.tertiary, foregroundQuaternary: tokens.text.quaternary,
+        editor: tokens.bg.editor, chrome: tokens.bg.chrome, sidebar: tokens.bg.chrome, elevated: tokens.bg.elevated,
+        fillPrimary: tokens.fill.primary, fillSecondary: tokens.fill.secondary,
+        fillTertiary: tokens.fill.tertiary, fillQuaternary: tokens.fill.quaternary,
+        strokePrimary: tokens.stroke.primary, strokeSecondary: tokens.stroke.secondary,
+        strokeTertiary: tokens.stroke.tertiary, strokeFocused: tokens.stroke.focused,
+        accent: tokens.accent.primary, buttonBackground: tokens.accent.control,
+        buttonForeground: tokens.text.onAccent, buttonHoverBackground: tokens.accent.controlHover,
+        link: tokens.text.link, diffInsertedLine: tokens.diff.insertedLine,
+        diffRemovedLine: tokens.diff.removedLine, diffStripAdded: tokens.diff.stripAdded,
+        diffStripRemoved: tokens.diff.stripRemoved
+      },
+      radius: { none: 0, xs: 2, sm: 4, md: 6, lg: 8, xl: 12, full: 9999 },
+      typography: {
+        fontFamily: 'inherit',
+        h1: { fontSize: '24px', lineHeight: '30px', fontWeight: 590 },
+        h2: { fontSize: '18px', lineHeight: '24px', fontWeight: 590 },
+        h3: { fontSize: '16px', lineHeight: '22px', fontWeight: 590 },
+        body: { fontSize: '14px', lineHeight: '20px', fontWeight: 400 },
+        small: { fontSize: '12px', lineHeight: '16px', fontWeight: 400 }
+      },
+      chart: { palette: {}, sequence: [] },
+      fg: { primary: tokens.text.primary, secondary: tokens.text.secondary, muted: tokens.text.tertiary },
+      border: { default: tokens.stroke.primary, muted: tokens.stroke.tertiary }
+    };
+  };
   const useState = initial => {
     const index = hookCursor++;
     if (!(index in hooks)) hooks[index] = typeof initial === 'function' ? initial() : initial;
