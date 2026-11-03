@@ -2,14 +2,8 @@ export const PROJECT_WORKSPACES_PREFERENCE_KEY = 'projectWorkspaces:v1'
 export const PROJECT_DIRECTORY_LIMIT = 32
 export const PROJECT_PATH_LIMIT = 4096
 
-export interface ProjectSSHWorkspace {
-  host: string
-  path: string
-}
-
 export interface ProjectWorkspace {
   directories: string[]
-  ssh_workspace?: ProjectSSHWorkspace
 }
 
 export type ProjectWorkspaceMap = Record<string, ProjectWorkspace>
@@ -41,17 +35,6 @@ export function normalizeProjectDirectories(value: unknown): string[] {
   return directories
 }
 
-export function normalizeProjectSSHWorkspace(value: unknown): ProjectSSHWorkspace | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const candidate = value as { host?: unknown; path?: unknown }
-  if (typeof candidate.host !== 'string' || typeof candidate.path !== 'string') return null
-  const host = candidate.host.trim()
-  const path = candidate.path.trim()
-  if (!/^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(host) || host.startsWith('-')) return null
-  if (!path.startsWith('/') || path.length > PROJECT_PATH_LIMIT || /[\u0000-\u001f\u007f]/.test(path)) return null
-  return { host, path: path === '/' ? '/' : path.replace(/\/+$/, '') }
-}
-
 export function normalizeProjectWorkspaces(value: unknown): ProjectWorkspaceMap {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
   const workspaces: ProjectWorkspaceMap = {}
@@ -63,21 +46,10 @@ export function normalizeProjectWorkspaces(value: unknown): ProjectWorkspaceMap 
         ? (workspace as { directories?: unknown }).directories
         : undefined
     )
-    const sshWorkspace = normalizeProjectSSHWorkspace(
-      workspace && typeof workspace === 'object' && 'ssh_workspace' in workspace
-        ? (workspace as { ssh_workspace?: unknown }).ssh_workspace
-        : undefined
-    )
-    if (!directories.length && !sshWorkspace) continue
-    workspaces[name] = { directories, ...(sshWorkspace ? { ssh_workspace: sshWorkspace } : {}) }
+    if (!directories.length) continue
+    workspaces[name] = { directories }
   }
   return workspaces
-}
-
-export function projectSSHWorkspace(workspaces: ProjectWorkspaceMap, folder: string | null | undefined): ProjectSSHWorkspace | null {
-  const name = folder?.trim()
-  if (!name) return null
-  return workspaces[name]?.ssh_workspace ?? null
 }
 
 export function projectDirectories(workspaces: ProjectWorkspaceMap, folder: string | null | undefined): string[] {

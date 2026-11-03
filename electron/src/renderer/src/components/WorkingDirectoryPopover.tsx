@@ -2,7 +2,7 @@
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import * as Popover from '@radix-ui/react-popover'
-import { ArrowUp, ChevronRight, Folder, FolderOpen, LoaderCircle, Network, RotateCcw } from 'lucide-react'
+import { ArrowUp, ChevronRight, Folder, FolderOpen, LoaderCircle, RotateCcw } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { Session, WorkingDirectoryCompletion } from '@shared/types'
 import { parentDirectory } from '../lib/working-directory-path'
@@ -29,7 +29,7 @@ export function cwdChipLabel(cwd?: string | null): string {
  * Clicking a folder navigates into it; the currently-open directory is the
  * selection, confirmed with "Choose".
  */
-export function WorkingDirectoryPopover({ session, onConfigure }: { session: Session; onConfigure?: () => void }) {
+export function WorkingDirectoryPopover({ session }: { session: Session }) {
   useLocale()
   const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
@@ -77,7 +77,7 @@ export function WorkingDirectoryPopover({ session, onConfigure }: { session: Ses
   }
 
   useEffect(() => {
-    if (!open || session.workspace_transport === 'ssh') return
+    if (!open) return
     void load(session.cwd?.trim() || defaultCwd || '')
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -115,12 +115,7 @@ export function WorkingDirectoryPopover({ session, onConfigure }: { session: Ses
     await choose(detected.resolved_path || detected.base_path || draft)
   }
 
-  const sshWorkspace = session.workspace_transport === 'ssh'
-  const sshPath = session.ssh_workspace_path?.trim() || ''
-  const sshHost = session.ssh_workspace_host?.trim() || 'SSH'
-  const chipTitle = sshWorkspace
-    ? `SSH workspace: ${sshHost}:${sshPath}`
-    : session.cwd?.trim() ? `Working directory: ${session.cwd.trim()}` : 'Set the working directory for this chat'
+  const chipTitle = session.cwd?.trim() ? `Working directory: ${session.cwd.trim()}` : 'Set the working directory for this chat'
 
   return <Popover.Root open={open} onOpenChange={nextOpen => {
     if (!nextOpen) {
@@ -131,14 +126,12 @@ export function WorkingDirectoryPopover({ session, onConfigure }: { session: Ses
   }}>
     <Popover.Trigger asChild>
       <button type="button" className="composer-context-control cwd-pill" title={chipTitle} aria-label={chipTitle}>
-        {sshWorkspace ? <Network size={13} /> : <FolderOpen size={13} />}<span>{sshWorkspace ? `${sshHost}:${cwdChipLabel(sshPath)}` : cwdChipLabel(session.cwd)}</span>
+        <FolderOpen size={13} /><span>{cwdChipLabel(session.cwd)}</span>
       </button>
     </Popover.Trigger>
     <Popover.Portal>
       <Popover.Content className="cwd-popover" side="top" align="start" sideOffset={8} collisionPadding={12} onOpenAutoFocus={event => event.preventDefault()}>
-        {sshWorkspace
-          ? <div className="cwd-popover-empty"><strong>{t('ui.WorkingDirectoryPopover.ssh_workspace')}</strong><code>{sshHost}:{sshPath}</code><p>{t('ui.WorkingDirectoryPopover.ssh_workspace_hint')}</p>{onConfigure && <button type="button" className="quiet-button" onClick={() => { setOpen(false); onConfigure() }}>{t('ui.WorkingDirectoryPopover.change_workspace')}</button>}</div>
-          : !completionAvailable
+        {!completionAvailable
           ? <div className="cwd-popover-empty">{t("ui.WorkingDirectoryPopover.WorkingDirectoryPopover.folder_browsing_needs_a_newer_agentsserver_5e4747d")}</div>
           : <>
             {workspaceFolders.length > 0 && <div className="cwd-popover-workspace" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>

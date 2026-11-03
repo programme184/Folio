@@ -387,40 +387,6 @@ class AgentTerminalContextTests(unittest.TestCase):
             self.assertIn("Always verify the deployment target before editing.", prompt)
         self.assertEqual(codex_prompt[-1], "Check the current status.")
 
-    def test_ssh_workspace_keeps_provider_local_and_routes_project_commands(self) -> None:
-        session = {
-            "id": "sess-123",
-            "workspace_transport": "ssh",
-            "ssh_workspace_host": "ubuntu@Synria",
-            "ssh_workspace_path": "/home/ubuntu/Synria/geom_dev",
-        }
-        claude_command = agent_server.build_claude_cmd(
-            "sess-123",
-            {**session, "backend": "claude"},
-            Path("/tmp/manifest.json"),
-        )
-        claude_prompt = claude_command[claude_command.index("--append-system-prompt") + 1]
-        codex_command = agent_server.build_codex_cmd(
-            "sess-123",
-            {**session, "backend": "codex"},
-            "Inspect the project.",
-            Path("/tmp/manifest.json"),
-        )
-        codex_prompt = codex_developer_instructions(codex_command)
-
-        for prompt in (claude_prompt, codex_prompt):
-            self.assertIn("[SSH workspace]", prompt)
-            self.assertIn('"ubuntu@Synria"', prompt)
-            self.assertIn('"/home/ubuntu/Synria/geom_dev"', prompt)
-            self.assertIn("agent runtime, provider login, settings, history, and tools run on this AgentsServer", prompt)
-            self.assertIn("OpenSSH", prompt)
-
-    def test_ssh_workspace_rejects_options_and_relative_paths(self) -> None:
-        with self.assertRaisesRegex(Exception, "SSH workspace host"):
-            agent_server.clean_ssh_workspace("ssh", "-oProxyCommand=bad", "/project")
-        with self.assertRaisesRegex(Exception, "absolute remote path"):
-            agent_server.clean_ssh_workspace("ssh", "Synria", "relative/project")
-
     def test_steering_history_never_enters_privileged_provider_context(self) -> None:
         provider_prompt = agent_server.build_turn_provider_prompt(
             "sess-123",
@@ -572,30 +538,6 @@ class SessionSystemPromptPersistenceTests(unittest.IsolatedAsyncioTestCase):
             cleared = await store.update("sess-123", {"system_prompt": None})
 
         self.assertIsNone(cleared["system_prompt"])
-
-    async def test_session_store_saves_and_clears_ssh_workspace(self) -> None:
-        store = agent_server.SessionStore()
-        store.sessions["sess-123"] = {
-            "id": "sess-123",
-            "title": "Remote project",
-            "folder": "General",
-            "backend": "codex",
-            "workspace_transport": "local",
-        }
-
-        with patch.object(store, "save", AsyncMock()):
-            remote = await store.update("sess-123", {
-                "workspace_transport": "ssh",
-                "ssh_workspace_host": "Synria",
-                "ssh_workspace_path": "/home/ubuntu/Synria/geom_dev",
-            })
-            self.assertEqual(remote["workspace_transport"], "ssh")
-            self.assertEqual(remote["ssh_workspace_host"], "Synria")
-            local = await store.update("sess-123", {"workspace_transport": "local"})
-
-        self.assertEqual(local["workspace_transport"], "local")
-        self.assertIsNone(local["ssh_workspace_host"])
-        self.assertIsNone(local["ssh_workspace_path"])
 
 
 if __name__ == "__main__":

@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   normalizeProjectDirectories,
-  normalizeProjectSSHWorkspace,
   normalizeProjectWorkspaces,
   projectDirectories,
-  projectSSHWorkspace,
   renameProjectWorkspace,
   withoutProject
 } from './project-workspaces'
@@ -29,18 +27,6 @@ describe('project workspaces', () => {
       Bad: { directories: ['../outside'] },
       Notes: null
     })).toEqual({ Humanoid: { directories: ['/work/humanoid'] } })
-  })
-
-  it('normalizes an SSH workspace without treating its remote path as local', () => {
-    expect(normalizeProjectSSHWorkspace({ host: ' ubuntu@Synria ', path: ' /home/ubuntu/project/ ' }))
-      .toEqual({ host: 'ubuntu@Synria', path: '/home/ubuntu/project' })
-    expect(normalizeProjectSSHWorkspace({ host: '-oProxyCommand=bad', path: '/project' })).toBeNull()
-    expect(normalizeProjectSSHWorkspace({ host: 'Synria', path: 'relative' })).toBeNull()
-    const workspaces = normalizeProjectWorkspaces({
-      Remote: { directories: [], ssh_workspace: { host: 'Synria', path: '/home/ubuntu/project' } }
-    })
-    expect(projectDirectories(workspaces, 'Remote')).toEqual([])
-    expect(projectSSHWorkspace(workspaces, 'Remote')).toEqual({ host: 'Synria', path: '/home/ubuntu/project' })
   })
 
   it('renames and removes a project without changing its directories', () => {

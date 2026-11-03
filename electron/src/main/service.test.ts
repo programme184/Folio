@@ -124,6 +124,51 @@ describe('embedded pane services', () => {
   })
 })
 
+describe('local chat execution across server groups', () => {
+  it('keeps every chat request on loopback and filters local sessions by the selected server profile', async () => {
+    const { settings } = profileSettings('http://127.0.0.1:7850')
+    settings.updateProfile('a', { serverIdentity: 'local-server', serverSetupComplete: true })
+    settings.updateProfile('b', { serverIdentity: 'remote-server', serverSetupComplete: true })
+    const cache = new LocalCache(':memory:')
+    const stored: Session[] = [{ id: 'local-old', title: 'Local old', backend: 'codex', archived: false }]
+    cache.putSessions('remote-server', [{ id: 'legacy-remote', title: 'Old remote cache', backend: 'codex', archived: false } as Session])
+    const urls: string[] = []
+    const clients: ReturnType<typeof fakeClient>[] = []
+    const clientFactory = (url: string) => {
+      urls.push(url)
+      const client = fakeClient({
+        health: async () => ({ ok: true, server_identity: 'local-server', active: [], active_sessions: [] }),
+        sessions: async () => stored,
+        createSession: async input => {
+          const session = { id: 'remote-new', title: input.title, folder: input.folder, cwd: input.cwd, backend: input.backend, archived: false } as Session
+          stored.push(session)
+          return session
+        },
+        sendTurn: async sessionId => ({ session: stored.find(session => session.id === sessionId)! })
+      })
+      clients.push(client)
+      return client as unknown as AgentServerClient
+    }
+    const service = new AppService({ settings, cache, clientFactory, localChatExecution: true })
+    cleanup.push(() => { service.stop(); cache.close() })
+
+    expect((await service.listSessions()).map(session => session.id)).toEqual(['local-old'])
+    const remoteBootstrap = await service.switchServer('b')
+    expect(remoteBootstrap.sessions).toEqual([])
+    expect(await service.listSessions()).toEqual([])
+    await service.createSession({ title: 'Remote group', folder: 'General', cwd: '/work/local', backend: 'codex' })
+    await service.sendTurn({ sessionId: 'remote-new', prompt: 'hello', fileIds: [] })
+    expect((await service.listSessions()).map(session => session.id)).toEqual(['remote-new'])
+    expect(settings.getProfile('b')?.serverIdentity).toBe('remote-server')
+
+    await service.switchServer('a')
+    expect((await service.listSessions()).map(session => session.id)).toEqual(['local-old'])
+    expect(urls).toEqual(Array(urls.length).fill('http://127.0.0.1:7850'))
+    expect(clients.some(client => client.createSession.mock.calls.length > 0)).toBe(true)
+    expect(clients.some(client => client.sendTurn.mock.calls.length > 0)).toBe(true)
+  })
+})
+
 describe('durable send request identity', () => {
   it('reuses identity after a lost response and a service restart, then rotates after acceptance', async () => {
     const receipts = new Map<string, unknown>()
@@ -3552,7 +3597,8 @@ interface FakeClientOptions {
   markUnread?: (sessionId: string) => Promise<Session>
   sessions?: () => Promise<Session[]>
   jobs?: () => Promise<Job[]>
-  createSession?: () => Promise<Session>
+  createSession?: AgentServerClient['createSession']
+  sendTurn?: AgentServerClient['sendTurn']
   listLocalSessions?: () => Promise<LocalSessionCandidate[]>
   bulkImportSessions?: (items: BulkImportSessionItem[]) => Promise<BulkImportSessionResult[]>
   runJob?: () => Promise<JobRunNowResult>
@@ -3650,6 +3696,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     sessions: vi.fn(options.sessions ?? (async () => [])),
     jobs: vi.fn(options.jobs ?? (async () => [])),
     createSession: vi.fn(options.createSession ?? (async () => ({ id: 'created', title: 'Created', backend: 'codex' }))),
+    sendTurn: vi.fn(options.sendTurn ?? (async sessionId => ({ session: { id: sessionId, title: 'Sent', backend: 'codex' } as Session }))),
     listLocalSessions: vi.fn(options.listLocalSessions ?? (async () => [])),
     bulkImportSessions: vi.fn(options.bulkImportSessions ?? (async () => [])),
     runJob: vi.fn(options.runJob ?? (async () => ({

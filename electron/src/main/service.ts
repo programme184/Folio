@@ -211,6 +211,7 @@ import {
 } from './secure-peer-contract'
 
 const INITIAL_SEMANTIC_ITEM_LIMIT = 48
+const LOCAL_SESSION_PROFILE_BINDINGS_KEY = 'localSessionProfileBindings:v1'
 const HISTORY_PAGE_SEMANTIC_ITEM_LIMIT = 120
 const LEGACY_TIMELINE_EVENT_LIMIT = 480
 const LEGACY_BOUNDARY_BACKFILL_EVENT_LIMIT = 1_000
@@ -375,6 +376,8 @@ export interface AppServiceOptions {
   initialProfileId?: string
   /** Avoid duplicate discovery and inactive-profile polling for an embedded pane service. */
   embeddedPane?: boolean
+  /** Production keeps chat execution and storage on the loopback AgentsServer; tests can opt in explicitly. */
+  localChatExecution?: boolean
 }
 
 export class AppService {
@@ -413,6 +416,7 @@ export class AppService {
   private rendererTargets = new Set<WebContents>()
   private readonly embeddedPane: boolean
   private readonly persistProfileSelection: boolean
+  private readonly localChatExecution: boolean
   private focusedSessionId: string | null = null
   private seenEmergencyAlertIds = new Set<string>()
   private notifiedEmergencyAlertIds = new Set<string>()
@@ -495,6 +499,7 @@ export class AppService {
   constructor(options: AppServiceOptions = {}) {
     this.embeddedPane = options.embeddedPane === true
     this.persistProfileSelection = !this.embeddedPane
+    this.localChatExecution = options.localChatExecution ?? (!options.settings && !options.clientFactory)
     this.localServerDiscovery = options.localServerDiscovery ?? (options.settings || options.clientFactory ? async () => [] : discoverLocalServers)
     appLog('startup', 'loading settings')
     this.settings = options.settings ?? new SettingsStore()
@@ -535,8 +540,9 @@ export class AppService {
     if (!active) throw new Error(`Unknown server profile: ${options.initialProfileId}`)
     this.activeProfileId = active.id
     this.serverId = profileNamespace(active)
-    const activeServerUrl = this.settings.serverUrl(active.id)
-    this.client = this.clientFactory(activeServerUrl, this.settings.accessToken(active.id))
+    const execution = this.executionConnection(active.id)
+    const activeServerUrl = execution.serverUrl
+    this.client = this.clientFactory(activeServerUrl, execution.accessToken)
     this.scope = {
       profileId: active.id,
       generation: this.profileGeneration,
@@ -561,6 +567,83 @@ export class AppService {
     }
     this.setProfileRuntime(active.id, { connectionState: 'cached', lastConnectionCheckedAt: null })
     appLog('startup', 'server client ready', { profileId: active.id, generation: this.profileGeneration, serverId: this.serverId })
+  }
+
+  private executionConnection(selectedProfileId: string): { profileId: string; serverUrl: string; accessToken: string } {
+    if (!this.localChatExecution) {
+      return {
+        profileId: selectedProfileId,
+        serverUrl: this.settings.serverUrl(selectedProfileId),
+        accessToken: this.settings.accessToken(selectedProfileId)
+      }
+    }
+    const loopback = this.settings.listProfiles()
+      .filter(profile => {
+        try { return isLoopbackHostname(new URL(profile.serverUrl).hostname) } catch { return false }
+      })
+      .sort((left, right) => {
+        const leftPreferred = new URL(left.serverUrl).port === '7850' ? 0 : 1
+        const rightPreferred = new URL(right.serverUrl).port === '7850' ? 0 : 1
+        return leftPreferred - rightPreferred
+      })[0]
+    if (!loopback) throw new Error('Add the local AgentsServer at 127.0.0.1 before opening chats.')
+    return {
+      profileId: loopback.id,
+      serverUrl: this.settings.serverUrl(loopback.id),
+      accessToken: this.settings.accessToken(loopback.id)
+    }
+  }
+
+  private localSessionBindings(): Record<string, string> {
+    const value = this.cache.preference<unknown>('desktop', LOCAL_SESSION_PROFILE_BINDINGS_KEY, {})
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => (
+      Boolean(entry[0]) && typeof entry[1] === 'string' && Boolean(entry[1])
+    )))
+  }
+
+  private bindLocalSession(sessionId: string, profileId = this.activeProfileId): void {
+    if (!this.localChatExecution || !sessionId) return
+    const bindings = this.localSessionBindings()
+    if (bindings[sessionId] === profileId) return
+    this.cache.putPreference('desktop', LOCAL_SESSION_PROFILE_BINDINGS_KEY, { ...bindings, [sessionId]: profileId })
+  }
+
+  private unbindLocalSession(sessionId: string): void {
+    if (!this.localChatExecution || !sessionId) return
+    const bindings = this.localSessionBindings()
+    if (!Object.hasOwn(bindings, sessionId)) return
+    delete bindings[sessionId]
+    this.cache.putPreference('desktop', LOCAL_SESSION_PROFILE_BINDINGS_KEY, bindings)
+  }
+
+  private sessionsForProfile(profileId: string, sessions: Session[]): Session[] {
+    if (!this.localChatExecution) return sessions
+    const bindings = this.localSessionBindings()
+    const localProfileId = this.executionConnection(profileId).profileId
+    let changed = false
+    const visible = sessions.filter(session => {
+      let owner = bindings[session.id]
+      if (!owner && profileId === localProfileId) {
+        owner = profileId
+        bindings[session.id] = owner
+        changed = true
+      }
+      return owner === profileId
+    })
+    if (changed) this.cache.putPreference('desktop', LOCAL_SESSION_PROFILE_BINDINGS_KEY, bindings)
+    return visible
+  }
+
+  private healthForProfile(profileId: string, health: Health): Health {
+    if (!this.localChatExecution) return health
+    const bindings = this.localSessionBindings()
+    const localProfileId = this.executionConnection(profileId).profileId
+    const visible = (sessionId: string) => bindings[sessionId] === profileId
+      || !bindings[sessionId] && profileId === localProfileId
+    const active = (health.active ?? []).filter(visible)
+    const activeSessions = (health.active_sessions ?? []).filter(visible)
+    return { ...health, active, active_sessions: activeSessions }
   }
 
   addWindow(window: BrowserWindow): void {
@@ -783,15 +866,15 @@ export class AppService {
     const intent = ++this.profileSelectionIntent
     const profileId = this.settings.getActiveProfileId()
     const revision = this.settings.connectionRevision(profileId)
-    const token = value.accessToken === '__KEEP__'
+    const token = this.localChatExecution ? '' : value.accessToken === '__KEEP__'
       ? await this.settings.accessTokenForConnectionAsync(profileId)
       : value.accessToken
     this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = this.clientFactory(normalizeServerURL(value.serverUrl), token)
+    const nextClient = this.localChatExecution ? undefined : this.clientFactory(normalizeServerURL(value.serverUrl), token)
     // Commit and retire the old scope together; an auth await between them
     // would let old-server health bind its identity to the newly saved URL.
     try { this.settings.update(value) }
-    catch (error) { nextClient.dispose(); throw error }
+    catch (error) { nextClient?.dispose(); throw error }
     const scope = this.activateProfile(profileId, false, true, nextClient)
     const health = await this.readActivityHealth(scope, () => scope.client.health())
     if (!this.isCurrentScope(scope)) throw staleProfileError()
@@ -1698,11 +1781,11 @@ export class AppService {
     const before = this.settings.getProfile(profileId)
     if (!before) throw new Error(`Unknown server profile: ${profileId}`)
     const nextServerUrl = patch.serverUrl === undefined ? this.settings.serverUrl(profileId) : normalizeServerURL(patch.serverUrl)
-    const nextAccessToken = patch.accessToken === undefined || patch.accessToken === '__KEEP__'
+    const nextAccessToken = this.localChatExecution ? '' : patch.accessToken === undefined || patch.accessToken === '__KEEP__'
       ? await this.settings.accessTokenForConnectionAsync(profileId)
       : patch.accessToken ?? ''
     this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = this.clientFactory(nextServerUrl, nextAccessToken)
+    const nextClient = this.localChatExecution ? undefined : this.clientFactory(nextServerUrl, nextAccessToken)
     const resettingIdentity = patch.resetServerIdentity === true
     const retryingRetiredCleanup = this.pendingProfileAuthorityNamespaces.has(profileId)
     const resettingActiveProfile = resettingIdentity && profileId === this.activeProfileId
@@ -1730,7 +1813,7 @@ export class AppService {
       }
       this.assertProfileSelection(profileId, intent, revision)
     } catch (error) {
-      nextClient.dispose()
+      nextClient?.dispose()
       throw error
     }
     const scope = this.activateProfile(
@@ -1878,14 +1961,14 @@ export class AppService {
     this.requireProfileNotRemoving(profileId)
     const revision = this.settings.connectionRevision(profileId)
     this.assertProfileSelection(profileId, intent, revision)
-    const token = await this.settings.accessTokenForConnectionAsync(profileId)
+    const token = this.localChatExecution ? '' : await this.settings.accessTokenForConnectionAsync(profileId)
     this.assertProfileSelection(profileId, intent, revision)
     const pendingNamespaces = this.pendingProfileAuthorityNamespaces.get(profileId)
     const cleanupError = pendingNamespaces
       ? await this.cleanupRetiredProfileAuthority(profileId, pendingNamespaces)
       : null
     this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = force || pendingNamespaces || profileId !== this.activeProfileId
+    const nextClient = !this.localChatExecution && (force || pendingNamespaces || profileId !== this.activeProfileId)
       ? this.clientFactory(this.settings.serverUrl(profileId), token)
       : undefined
     const scope = this.activateProfile(
@@ -2664,7 +2747,8 @@ export class AppService {
   async listSessions(): Promise<Session[]> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const sessions = mergePolledSessionSummaries(this.sessions, await scope.client.sessions())
+    const incoming = this.sessionsForProfile(scope.profileId, await scope.client.sessions())
+    const sessions = mergePolledSessionSummaries(this.sessions, incoming)
     this.assertCurrentScope(scope)
     this.disposeUnavailablePortTunnels(this.sessions, sessions)
     this.sessions = sessions
@@ -2682,9 +2766,9 @@ export class AppService {
     this.requirePerChatCodexProvider(input.codex_provider)
     this.requirePerChatProviderConnection(input.provider_connection)
     this.requirePerChatSubagentLimit(input.subagent_limit)
-    this.requireSSHWorkspace(input.workspace_transport)
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
+    this.bindLocalSession(session.id, scope.profileId)
     this.upsertSession(scope, session)
     return session
   }
@@ -2696,9 +2780,9 @@ export class AppService {
     this.requirePerChatCodexProvider(input.codex_provider)
     if (input.provider_connection === 'custom') throw new Error('Import native conversations with their native login.')
     this.requirePerChatSubagentLimit(input.subagent_limit)
-    this.requireSSHWorkspace(input.workspace_transport)
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
+    this.bindLocalSession(session.id, scope.profileId)
     this.upsertSession(scope, session)
     return session
   }
@@ -2759,6 +2843,9 @@ export class AppService {
       }
     }
     if (results.some(result => result.ok)) {
+      for (const result of results) {
+        if (result.ok && result.session_id) this.bindLocalSession(result.session_id, scope.profileId)
+      }
       try {
         await this.listSessions()
       } catch (error) {
@@ -2781,7 +2868,6 @@ export class AppService {
     this.requirePerChatCodexProvider(patch.codex_provider)
     this.requirePerChatProviderConnection(patch.provider_connection)
     this.requirePerChatSubagentLimit(patch.subagent_limit)
-    this.requireSSHWorkspace(patch.workspace_transport)
     const session = await scope.client.updateSession(sessionId, patch)
     this.assertCurrentScope(scope)
     if (session.archived) {
@@ -2799,13 +2885,6 @@ export class AppService {
     }
     if (this.health?.capabilities?.subagent_limit_v1?.version !== 1) {
       throw new Error('Update AgentsServer to set a per-chat sub-agent limit.')
-    }
-  }
-
-  private requireSSHWorkspace(transport: unknown): void {
-    if (transport !== 'ssh') return
-    if (this.health?.capabilities?.ssh_workspace_v1?.available !== true) {
-      throw new Error('Update AgentsServer to keep agents local while using an SSH workspace.')
     }
   }
 
@@ -2844,6 +2923,7 @@ export class AppService {
     const removed = await scope.client.deleteSession(sessionId)
     this.assertCurrentScope(scope)
     if (removed) {
+      this.unbindLocalSession(sessionId)
       this.portTunnels.disposeSession(sessionId)
       this.sessions = this.sessions.filter(session => session.id !== sessionId)
       this.cache.removeSession(scope.namespace, sessionId)
@@ -2862,6 +2942,7 @@ export class AppService {
     const removed = await scope.client.discardEmptySession(sessionId, updatedAt)
     this.assertCurrentScope(scope)
     if (removed) {
+      this.unbindLocalSession(sessionId)
       this.cache.removeSession(scope.namespace, sessionId)
       this.sessions = this.sessions.filter(session => session.id !== sessionId)
       this.emitSessions(scope, this.sessions)
@@ -2875,7 +2956,8 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const response = await scope.client.forkSession(sessionId)
     this.assertCurrentScope(scope)
-    if (response.sessions) this.sessions = response.sessions
+    this.bindLocalSession(response.session.id, scope.profileId)
+    if (response.sessions) this.sessions = this.sessionsForProfile(scope.profileId, response.sessions)
     else this.sessions = insertAfter(this.sessions, response.session, sessionId)
     this.cache.putSessions(scope.namespace, this.sessions)
     this.emitSessions(scope, this.sessions)
@@ -2887,8 +2969,8 @@ export class AppService {
     await this.ensureValidatedScope(scope)
     const sessions = await scope.client.reorderSession(sessionId, relativeTo, placement, targetFolder)
     this.assertCurrentScope(scope)
-    this.sessions = sessions
-    this.cache.putSessions(scope.namespace, sessions)
+    this.sessions = this.sessionsForProfile(scope.profileId, sessions)
+    this.cache.putSessions(scope.namespace, this.sessions)
     this.emitSessions(scope, this.sessions)
     return this.sessions
   }
@@ -3407,10 +3489,11 @@ export class AppService {
       if (removedSessionId) {
         sessions = this.sessions.filter(session => session.id !== removedSessionId)
       } else if (snapshot) {
-        sessions = reconcileEmergencySnapshot(this.sessions, incoming)
+        sessions = reconcileEmergencySnapshot(this.sessions, this.sessionsForProfile(scope.profileId, incoming))
       } else {
         const update = incoming[0]
         if (!update) return
+        if (!this.sessionsForProfile(scope.profileId, [update]).length) return
         const existing = this.sessions.find(session => session.id === update.id)
         const merged = mergeSessionSummaries(existing ? [existing] : [], [update])[0]
         sessions = existing
@@ -5604,7 +5687,8 @@ export class AppService {
     if (!this.isCurrentScope(activeScope)) return
 
     if (sessions.status === 'fulfilled') {
-      const mergedSessions = mergePolledSessionSummaries(this.sessions, sessions.value)
+      const visibleSessions = this.sessionsForProfile(activeScope.profileId, sessions.value)
+      const mergedSessions = mergePolledSessionSummaries(this.sessions, visibleSessions)
       const changed = !jsonEqual(this.sessions, mergedSessions)
       this.disposeUnavailablePortTunnels(this.sessions, mergedSessions)
       this.sessions = mergedSessions
@@ -5616,11 +5700,15 @@ export class AppService {
       this.refreshProfileUnread(activeScope)
     }
     if (jobs.status === 'fulfilled') {
-      const changed = !jsonEqual(this.jobs, jobs.value)
-      this.jobs = jobs.value
+      const visibleSessionIds = new Set(this.sessions.map(session => session.id))
+      const visibleJobs = this.localChatExecution
+        ? jobs.value.filter(job => visibleSessionIds.has(job.session_id))
+        : jobs.value
+      const changed = !jsonEqual(this.jobs, visibleJobs)
+      this.jobs = visibleJobs
       if (changed) {
-        this.cache.putJobs(activeScope.namespace, jobs.value)
-        this.emitJobs(activeScope, jobs.value)
+        this.cache.putJobs(activeScope.namespace, visibleJobs)
+        this.emitJobs(activeScope, visibleJobs)
       }
     }
     const durationMs = Date.now() - started
@@ -5790,12 +5878,15 @@ export class AppService {
     }
     const profile = this.settings.getProfile(scope.profileId)
     if (!profile) throw new Error(`Unknown server profile: ${scope.profileId}`)
+    const projectedLocalExecution = this.localChatExecution
+      && this.executionConnection(scope.profileId).profileId !== scope.profileId
+    health = this.healthForProfile(scope.profileId, health)
     const previousIdentity = profile.serverIdentity?.trim() || null
     const identity = health.server_identity?.trim() || null
-    if (previousIdentity && identity !== previousIdentity) {
+    if (!projectedLocalExecution && previousIdentity && identity !== previousIdentity) {
       throw new Error(`Server identity changed from ${previousIdentity} to ${identity ?? 'an unverified server'}. Confirm the change before reconnecting this profile.`)
     }
-    if (identity) {
+    if (!projectedLocalExecution && identity) {
       const duplicate = this.settings.listProfiles().find(candidate => candidate.id !== scope.profileId && candidate.serverIdentity === identity)
       if (duplicate) throw new Error(`Server identity ${identity} already belongs to “${duplicate.name}”.`)
     }
@@ -5803,7 +5894,7 @@ export class AppService {
     health = this.activityHealth.accept(this.activityScope(scope), health, this.healthActivityRequests.get(health))
     this.adoptedHealthSnapshots.set(originalHealth, health)
     this.noteServerInstanceForRuntime(health)
-    if (identity && identity !== scope.namespace) {
+    if (!projectedLocalExecution && identity && identity !== scope.namespace) {
       this.flushEventCache()
       this.settings.setProfileServerIdentity(scope.profileId, identity)
       try {
@@ -5817,9 +5908,9 @@ export class AppService {
       }
       scope = this.replaceScopeNamespace(scope, identity)
     }
-    this.settings.markProfileServerSetupComplete(scope.profileId, identity)
+    if (!projectedLocalExecution) this.settings.markProfileServerSetupComplete(scope.profileId, identity)
     const serverVersion = health.server_version?.trim() || null
-    if (serverVersion) {
+    if (serverVersion && !projectedLocalExecution) {
       // Revalidate lazily on the next opened chat; never clear cached content
       // or fan a server upgrade out into requests for every saved transcript.
       this.cache.recordServerVersion(scope.namespace, serverVersion)
@@ -5827,8 +5918,8 @@ export class AppService {
     }
     this.health = health
     this.validatedGeneration = scope.generation
-    this.onServerReachable?.(scope.profileId, health)
-    if (identity) {
+    if (!projectedLocalExecution) this.onServerReachable?.(scope.profileId, health)
+    if (identity && !projectedLocalExecution) {
       const verifiedScope = scope
       try {
         this.mailHints.ensure({ profileId: scope.profileId, profileGeneration: scope.generation,
@@ -6399,8 +6490,15 @@ export class AppService {
     this.profileSelectionIntent += 1
 
     this.invalidateProfileHealthProbe(profileId)
-    const nextServerUrl = this.settings.serverUrl(profileId)
-    const nextClient = preparedClient ?? this.clientFactory(nextServerUrl, this.settings.accessToken(profileId))
+    const execution = this.localChatExecution ? this.executionConnection(profileId) : null
+    const nextServerUrl = execution?.serverUrl ?? this.settings.serverUrl(profileId)
+    let nextClient: AgentServerClient
+    if (this.localChatExecution) {
+      preparedClient?.dispose()
+      nextClient = this.clientFactory(nextServerUrl, execution!.accessToken)
+    } else {
+      nextClient = preparedClient ?? this.clientFactory(nextServerUrl, this.settings.accessToken(profileId))
+    }
     if (persist) {
       try { this.settings.setActiveProfile(profileId) }
       catch (error) {
@@ -6623,7 +6721,7 @@ export class AppService {
   }
 
   private loadScopeCache(scope: ConnectionScope): void {
-    this.sessions = this.cache.sessions(scope.namespace)
+    this.sessions = this.sessionsForProfile(scope.profileId, this.cache.sessions(scope.namespace))
     this.seenEmergencyAlertIds = new Set<string>()
     for (const session of this.sessions) {
       const alertId = session.emergency_alert?.status === 'active'
@@ -6631,12 +6729,18 @@ export class AppService {
         : ''
       if (alertId) rememberEmergencyAlertId(this.seenEmergencyAlertIds, alertId)
     }
-    this.jobs = this.cache.jobs(scope.namespace)
+    const visibleSessionIds = new Set(this.sessions.map(session => session.id))
+    this.jobs = this.localChatExecution
+      ? this.cache.jobs(scope.namespace).filter(job => visibleSessionIds.has(job.session_id))
+      : this.cache.jobs(scope.namespace)
     const cachedRuntime = this.cache.preference(scope.namespace, RUNTIME_CATALOG_CACHE_KEY, null as RuntimeCatalog | null)
     this.runtimeCatalog = runtimeCatalogHasSelectableModels(cachedRuntime) ? cachedRuntime : null
     this.runtimeRefreshNextAt = this.runtimeCatalog ? Date.now() + RUNTIME_CATALOG_REFRESH_MS : 0
     this.health = null
-    this.focusedSessionId = this.cache.preference(scope.namespace, 'selectedSessionId', null as string | null)
+    const cachedFocusedSessionId = this.cache.preference(scope.namespace, 'selectedSessionId', null as string | null)
+    this.focusedSessionId = cachedFocusedSessionId && this.sessions.some(session => session.id === cachedFocusedSessionId)
+      ? cachedFocusedSessionId
+      : null
   }
 
   private loadCachedBootstrap(scope: ConnectionScope): ProfileBootstrapPayload {
@@ -6651,9 +6755,15 @@ export class AppService {
       }
     }
     if (!resetPending && !this.sessions.length && cacheValue(() => this.cache.serverSummary(scope.namespace).sessionCount, 0)) {
-      this.sessions = cacheValue(() => this.cache.sessions(scope.namespace), [])
+      this.sessions = this.sessionsForProfile(scope.profileId, cacheValue(() => this.cache.sessions(scope.namespace), []))
     }
-    if (!resetPending && !this.jobs.length) this.jobs = cacheValue(() => this.cache.jobs(scope.namespace), [])
+    if (!resetPending && !this.jobs.length) {
+      const cachedJobs = cacheValue(() => this.cache.jobs(scope.namespace), [])
+      const visibleSessionIds = new Set(this.sessions.map(session => session.id))
+      this.jobs = this.localChatExecution
+        ? cachedJobs.filter(job => visibleSessionIds.has(job.session_id))
+        : cachedJobs
+    }
     this.profileTransitionWarning = null
     return {
       settings: this.settings.publicSettings(),

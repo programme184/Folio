@@ -1,30 +1,28 @@
 # Public development log
 
-## 2026-11-03 — Local agents can use an SSH workspace
+## 2026-11-03 — Server selection groups local chats
 
-- Chats can now keep their agent, sign-in, settings and history on the selected
-  AgentsServer while using an SSH host and absolute remote path as the project
-  workspace. New-chat defaults and forks preserve that workspace selection.
-- The composer identifies the SSH workspace, and the native Files/Changes views
-  explicitly remain unavailable instead of showing the server's local runtime
-  directory. Remote project work is performed by the agent through OpenSSH.
-- Test surface: isolated production Electron app, disposable authenticated
-  AgentsServer and real local Codex. The SSH workspace was configured through
-  the UI; two read-only prompts reached the remote directory and returned the
-  expected path and basename. Server regressions, focused renderer regressions,
-  TypeScript checking and the Electron production build pass. Source only; no
-  package was installed or published, and no server was deployed.
-
-## 2026-11-03 — Folder presets support SSH workspaces
-
-- New Folder and Change Folders now offer local directories or an SSH host and
-  remote path. Creating a chat from an SSH-backed Folder automatically keeps
-  the agent on the selected AgentsServer and applies that remote workspace.
-- Focused workspace, dialog and new-chat regressions pass with TypeScript and
-  the production Electron build. An isolated native Electron app exercised the
-  SSH option, validation and Folder persistence through the real client/server
-  preference boundary; its disposable Folder was removed afterward. Source
-  only; no package was published and no server deployment is required.
+- Selecting a saved server now changes the local project/chat group without
+  moving agent execution or chat storage away from the loopback AgentsServer.
+  Codex and Claude login, projects, files, terminals and turns continue through
+  `127.0.0.1:7850`; the selected server profile is retained only as the group's
+  identity and preference namespace.
+- New chats, imports and forks are durably assigned to the selected group. The
+  app filters local sessions, active-session health and jobs by that assignment,
+  and does not expose cached chats from the formerly contacted remote server.
+  The earlier SSH-workspace UI and server prompt contract were removed.
+- Test surface: isolated native production Electron app with copied connection
+  metadata, the real loopback AgentsServer and real local Codex. Clicking from
+  the local group to another saved server showed an empty group; creating and
+  sending a disposable chat returned `LOCAL_GROUP_OK` from local Codex. Switching
+  local → saved server retained the separate counts and reply. The disposable
+  chat was deleted and isolated state removed. The focused service regression,
+  262 workspace/folder/composer component tests, TypeScript check, Python syntax
+  compile and Electron production build pass. The broader service suite retains
+  two known runtime-catalog call-count failures outside this change; the Python
+  unit environment lacked `croniter`. The unpacked Linux candidate was checked
+  with isolated state and installed locally with an `app.asar` rollback copy;
+  no package was published and no server was deployed.
 
 ## 2026-11-03 — Workspace Files supports multiple simultaneous roots
 

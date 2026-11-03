@@ -6382,9 +6382,6 @@ class CreateSessionRequest(BaseModel):
     effort: str | None = None
     subagent_limit: int | None = Field(default=None, strict=True, ge=1)
     system_prompt: str | None = Field(default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS)
-    workspace_transport: Literal["local", "ssh"] | None = None
-    ssh_workspace_host: str | None = Field(default=None, max_length=255)
-    ssh_workspace_path: str | None = Field(default=None, max_length=MAX_WORKSPACE_PATH_CHARS)
     pinned: bool | None = None
     archived: bool | None = None
     provider_session_id: str | None = None
@@ -6462,9 +6459,6 @@ class UpdateSessionRequest(BaseModel):
     effort: str | None = None
     subagent_limit: int | None = Field(default=None, strict=True, ge=1)
     system_prompt: str | None = Field(default=None, max_length=MAX_SESSION_SYSTEM_PROMPT_CHARS)
-    workspace_transport: Literal["local", "ssh"] | None = None
-    ssh_workspace_host: str | None = Field(default=None, max_length=255)
-    ssh_workspace_path: str | None = Field(default=None, max_length=MAX_WORKSPACE_PATH_CHARS)
     pinned: bool | None = None
     archived: bool | None = None
     claude_permission_mode: Literal[
@@ -6493,9 +6487,6 @@ SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
     "model",
     "effort",
     "system_prompt",
-    "workspace_transport",
-    "ssh_workspace_host",
-    "ssh_workspace_path",
     "claude_permission_mode",
     "codex_approval_policy",
     "codex_sandbox_mode",
@@ -9092,65 +9083,6 @@ def clean_session_system_prompt(value: Any) -> str | None:
     return clean
 
 
-SSH_WORKSPACE_HOST_RE = re.compile(
-    r"^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$"
-)
-
-
-def clean_ssh_workspace(
-    transport: Any,
-    host: Any,
-    path: Any,
-) -> tuple[str, str | None, str | None]:
-    mode = str(transport or "local").strip().lower()
-    if mode not in {"local", "ssh"}:
-        raise HTTPException(status_code=400, detail="workspace_transport must be local or ssh")
-    if mode == "local":
-        return mode, None, None
-    clean_host = str(host or "").strip()
-    clean_path = str(path or "").strip()
-    if not SSH_WORKSPACE_HOST_RE.fullmatch(clean_host) or clean_host.startswith("-"):
-        raise HTTPException(
-            status_code=400,
-            detail="SSH workspace host must be a host, user@host, or SSH config alias",
-        )
-    if (
-        not clean_path
-        or len(clean_path) > MAX_WORKSPACE_PATH_CHARS
-        or not PurePosixPath(clean_path).is_absolute()
-        or any(ord(char) < 32 or ord(char) == 127 for char in clean_path)
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="SSH workspace path must be an absolute remote path without control characters",
-        )
-    return mode, clean_host, clean_path
-
-
-def ssh_workspace_prompt(sess: dict[str, Any]) -> str:
-    if sess.get("workspace_transport") != "ssh":
-        return ""
-    _mode, host, path = clean_ssh_workspace(
-        "ssh", sess.get("ssh_workspace_host"), sess.get("ssh_workspace_path")
-    )
-    return (
-        "[SSH workspace]\n"
-        "The agent runtime, provider login, settings, history, and tools run on this AgentsServer machine. "
-        "The project itself is on a separate SSH host.\n"
-        f"SSH destination: {json.dumps(host)}\n"
-        f"Remote project directory: {json.dumps(path)}\n"
-        "Treat that remote directory as the project root. Do not inspect or edit the local runtime working directory "
-        "as though it were the project. Use the installed OpenSSH client for project inspection and commands, and "
-        "pass the destination as one argument so it cannot be interpreted as an option. Start remote commands by "
-        "changing to the exact project directory. Preserve remote permissions and concurrent user work. For edits, "
-        "prefer a remote apply_patch command when available; otherwise fetch only the exact file to a private temporary "
-        "copy, edit it locally, verify the remote source has not changed, and replace it atomically. Never copy remote "
-        "credentials or unrelated files into the local workspace. Local file links are not valid for remote-only files; "
-        "publish or explicitly copy a requested artifact before linking it.\n"
-        "[End SSH workspace]"
-    )
-
-
 class UpdateJobRequest(BaseModel):
     title: str | None = Field(
         default=None,
@@ -10853,12 +10785,6 @@ class SessionStore:
                 session_cwd,
                 status_code=400,
             )
-        workspace_transport, ssh_workspace_host, ssh_workspace_path = clean_ssh_workspace(
-            req.workspace_transport
-            or ("ssh" if req.ssh_workspace_host or req.ssh_workspace_path else "local"),
-            req.ssh_workspace_host,
-            req.ssh_workspace_path,
-        )
         provider_id = req.provider_session_id or req.session_id
         claude_session_id = req.claude_session_id or (provider_id if backend == BACKEND_CLAUDE else None)
         codex_thread_id = req.codex_thread_id or (provider_id if backend == BACKEND_CODEX else None)
@@ -10953,9 +10879,6 @@ class SessionStore:
             "model": model,
             "effort": effort,
             "system_prompt": clean_session_system_prompt(req.system_prompt),
-            "workspace_transport": workspace_transport,
-            "ssh_workspace_host": ssh_workspace_host,
-            "ssh_workspace_path": ssh_workspace_path,
             "session_id": active_provider_id,
             "claude_session_id": claude_session_id,
             "codex_thread_id": codex_thread_id,
@@ -11091,17 +11014,6 @@ class SessionStore:
             prospective_backend = str(
                 runtime_preview.get("backend") or DEFAULT_BACKEND
             ).lower()
-            if {"workspace_transport", "ssh_workspace_host", "ssh_workspace_path"}.intersection(patch):
-                workspace_transport, ssh_workspace_host, ssh_workspace_path = clean_ssh_workspace(
-                    patch.get("workspace_transport", sess.get("workspace_transport") or "local"),
-                    patch.get("ssh_workspace_host", sess.get("ssh_workspace_host")),
-                    patch.get("ssh_workspace_path", sess.get("ssh_workspace_path")),
-                )
-                patch.update({
-                    "workspace_transport": workspace_transport,
-                    "ssh_workspace_host": ssh_workspace_host,
-                    "ssh_workspace_path": ssh_workspace_path,
-                })
             backend_changed = prospective_backend != current_backend
             provider_changed = runtime_preview["codex_provider"] != codex_provider.session_choice(sess.get("codex_provider"))
             provider_changed = provider_changed or runtime_preview["provider_connection"] != (sess.get("provider_connection") or "default")
@@ -11271,9 +11183,6 @@ class SessionStore:
                 sess["subagent_limit"] = patch["subagent_limit"]
             if "system_prompt" in patch:
                 sess["system_prompt"] = clean_session_system_prompt(patch["system_prompt"])
-            for key in ("workspace_transport", "ssh_workspace_host", "ssh_workspace_path"):
-                if key in patch:
-                    sess[key] = patch[key]
             if {"cwd", "backend", "provider_connection"}.intersection(patch):
                 sess.pop("gemini_permission_modes", None)
             for key in ("model", "effort"):
@@ -52518,8 +52427,7 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     public = {
         k: sess.get(k)
         for k in (
-            "id", "title", "folder", "cwd", "workspace_transport", "ssh_workspace_host",
-            "ssh_workspace_path", "backend", "model", "effort", "codex_provider",
+            "id", "title", "folder", "cwd", "backend", "model", "effort", "codex_provider",
             *detail_fields,
             "codex_thread_status",
             "codex_pending_interaction_count", "codex_needs_user_action",
@@ -61064,17 +60972,13 @@ def discover_runtime_backend_catalog(backend: str, *, force_runtime_probe: bool 
 
 def session_prompt_addendum(sess: dict[str, Any]) -> str:
     custom_prompt = str(sess.get("system_prompt") or "").strip()
-    workspace_prompt = ssh_workspace_prompt(sess)
-    if not custom_prompt and not workspace_prompt:
+    if not custom_prompt:
         return ""
-    blocks = [workspace_prompt] if workspace_prompt else []
-    if custom_prompt:
-        blocks.append(
-            "[Per-chat system instructions]\n"
-            f"{custom_prompt}\n"
-            "[End per-chat system instructions]"
-        )
-    return "\n" + "\n\n".join(blocks) + "\n\n"
+    return (
+        "\n[Per-chat system instructions]\n"
+        f"{custom_prompt}\n"
+        "[End per-chat system instructions]\n\n"
+    )
 
 
 def codex_thread_instructions(session_id: str, sess: dict[str, Any]) -> str:
@@ -83934,13 +83838,6 @@ async def health() -> dict[str, Any]:
                 "version": 1,
                 "max_results": MAX_WORKING_DIRECTORY_COMPLETIONS,
             },
-            "ssh_workspace_v1": {
-                "available": True,
-                "required": False,
-                "version": 1,
-                "message": "Agents can run locally while project commands use an SSH workspace.",
-                "action": None,
-            },
             "pinned_items": {
                 "available": True,
                 "required": False,
@@ -93244,9 +93141,6 @@ async def _fork_session_locked(
             effort=parent.get("effort"),
             subagent_limit=parent.get("subagent_limit"),
             system_prompt=parent.get("system_prompt"),
-            workspace_transport=parent.get("workspace_transport") or "local",
-            ssh_workspace_host=parent.get("ssh_workspace_host"),
-            ssh_workspace_path=parent.get("ssh_workspace_path"),
             claude_permission_mode=effective_claude_permission_mode(parent),
             cursor_permission_mode=effective_cursor_permission_mode(parent),
             opencode_permission_mode=effective_opencode_permission_mode(parent),

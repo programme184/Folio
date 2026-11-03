@@ -341,7 +341,7 @@ export function WorkspaceEditor({
   const [changesVisited, setChangesVisited] = useState(false)
   const changesOpenRef = useRef(changesOpen)
   changesOpenRef.current = changesOpen
-  const gitAvailable = Boolean(profileScope && window.agentsDock.workspaceGit && !window.agentsDock.sharedChat && session.workspace_transport !== 'ssh')
+  const gitAvailable = Boolean(profileScope && window.agentsDock.workspaceGit && !window.agentsDock.sharedChat)
   const instanceId = useId().replace(/:/g, '')
   const preferenceKey = `workspace-editor:${session.id}`
   const cwd = session.cwd ?? ''
