@@ -1,5 +1,79 @@
 # Public development log
 
+## 2026-11-03 — Linux server credentials remain readable after restart
+
+- Folio now selects the Linux desktop credential store before Electron becomes
+  ready. GNOME and launchers without a desktop hint use libsecret; KDE retains
+  Chromium's KWallet detection. A normal restart therefore cannot silently fall
+  back to the insecure `basic_text` backend and report that a saved server token
+  cannot be read.
+- An explicitly selected password-store backend remains untouched, and Folio's
+  existing fail-closed rejection of `basic_text` is unchanged.
+
+```text
+Change and expected user behavior: restart Folio and reconnect to a saved server
+without re-entering its token.
+Source commit / app build / server version: uncommitted Electron source; local
+Linux package; AgentsServer 1.0.11.
+Test surface: focused launcher regression and actual installed app.
+Real boundaries exercised: GNOME libsecret token persistence, production IPC and
+the authenticated Synria AgentsServer connection across a normal app restart.
+Focused regression / typecheck / production build: 42 focused tests pass;
+`tsc --noEmit`; Electron production build and compiled-output verification pass;
+local Linux package built successfully.
+Actions exercised and observed outcomes: reproduced the unreadable-token failure,
+then completed two cold starts without a desktop hint or password-store argument;
+both read the saved libsecret token and reached Synria `online` on server 1.0.11.
+Availability: source and local installed package; not published.
+```
+
+## 2026-11-03 — Per-pane server selection in split workspaces
+
+- Each empty workspace pane now shows a compact server selector before its chat
+  search. It lists every saved server with its connection state, unread count and
+  host, and retains the existing Add Server and Server Settings actions.
+- The compact control truncates its label at narrow widths while keeping the full
+  accessible server/state label and keyboard shortcut.
+- Selecting another server in one split pane no longer replaces the other panes.
+  A cross-server pane now owns an isolated renderer state, AgentsServer client,
+  event stream and poller. Both panes remain fully interactive at the same time;
+  sending, files, terminals, provider events and media stay routed to the pane's
+  originating profile and generation. Closing or replacing the pane retires those
+  resources without changing the sidebar's selected server.
+
+```text
+Source commit / app build / server version: `d4c656c2`; electron-vite production
+build and local Linux unpacked package; no server change.
+Availability: installed locally at `~/.local/lib/folio/app` with automatic
+updates disabled; the immediately previous app is retained as
+`app.before-concurrent-server-panes`.
+Test surface: isolated native Electron source app and packaged candidate with
+two disposable live AgentsServer instances, plus component/main-service fixtures.
+Exercised: opened the empty-pane selector through native keyboard input, saw all
+three profiles plus Add/Manage actions, switched Alpha -> Gamma through production
+IPC, confirmed both empty panes expose the selector in a two-pane layout, and
+checked light/dark presentation at 1040 px and 640 px widths. In the reported
+two-pane workflow, mounted distinct Alpha and Beta chats from two real isolated
+servers, observed both live composers together, and used each pane's native chat
+menu to pin its own chat. Both server APIs reported only their corresponding
+mutation while the durable desktop-wide active profile remained Alpha. Repeated
+the Beta mutation in the packaged candidate (unpin, then pin) and observed the
+corresponding server state after each action without changing Alpha.
+Focused checks: component/workspace, IPC and dual-service regressions pass;
+tsc --noEmit; production build and compiled-output verification pass.
+Remaining limitations: the installed app refreshed its existing active server
+through production transport, but an explicit live-profile switch was not performed
+to avoid changing the user's workspace; selector switching was exercised with
+isolated profiles. Provider turns were not launched in the disposable chats, so
+native provider execution parity remains covered by the unchanged existing chat
+path rather than a new paid/provider run. The disposable server did not expose a
+working tmux backend, so the embedded terminal control rendered but its live shell
+boundary was not accepted there. The full pre-existing suite currently has 71
+unrelated failures on this checkout (including existing localization/style
+contracts and Team Hub ownership fixtures); an affected-service subset retains two
+pre-existing Codex runtime-catalog call-count failures.
+```
+
 ## 2026-11-01 — Reference workspace files with `@` and by dragging
 
 - Typing `@` in the message box now also lists matching files and folders from the
