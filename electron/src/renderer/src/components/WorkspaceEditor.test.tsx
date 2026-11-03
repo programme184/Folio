@@ -186,6 +186,7 @@ describe('WorkspaceEditor', () => {
             writable: false,
             scope: 'absolute'
           })),
+          openCanvas: vi.fn().mockResolvedValue(true),
           writeAbsolute: vi.fn().mockImplementation((_sessionId: string, path: string, content: string) => Promise.resolve({
             ...workspaceFile(path, content, 'rev-absolute-2'),
             root: '/',
@@ -407,8 +408,9 @@ describe('WorkspaceEditor', () => {
       act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
         detail: { sessionId: projectSession.id, path: localCanvas, resolve: true }
       })))
-      expect(await screen.findByRole('textbox', { name: `Contents of ${localCanvas}` })).toBeVisible()
-      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, localCanvas)
+      await waitFor(() => expect(window.agentsDock.workspace.openCanvas).toHaveBeenCalledWith(localCanvas))
+      expect(screen.queryByRole('textbox', { name: `Contents of ${localCanvas}` })).not.toBeInTheDocument()
+      expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas)
       expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas, true)
       expect(useAppStore.getState().sessions[0]?.cwd).toBe('/work/project')
     } finally {

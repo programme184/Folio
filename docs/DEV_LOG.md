@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-11-03 — Open managed Canvas artifacts in their visual host
+
+- Links to managed `.canvas.tsx` artifacts now open in Cursor's native Canvas
+  host instead of adding a source-code tab to AgentsDock. Ordinary TypeScript
+  and TSX files continue to use the built-in source editor.
+- The handoff is restricted to the local managed Canvas directory shape. A
+  focused main-process regression, all 156 workspace-editor tests, TypeScript
+  checks and the production Electron build pass. Native Canvas rendered the
+  reported artifact with its visual sections and no runtime alert. Installed-app
+  boundary acceptance is recorded after packaging; no server update is required.
+
 ## 2026-11-03 — Keep local generated files local in remote groups
 
 - Absolute file reads now carry an explicit remote-workspace intent instead of

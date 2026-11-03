@@ -389,6 +389,7 @@ const api: AgentsDockAPI = {
     search: (sessionId, query, limit) => ipcRenderer.invoke('workspace:search', sessionId, query, limit),
     read: (sessionId, path) => ipcRenderer.invoke('workspace:read', sessionId, path),
     readAbsolute: (sessionId, path, remoteWorkspace) => ipcRenderer.invoke('workspace:read-absolute', sessionId, path, remoteWorkspace),
+    openCanvas: path => ipcRenderer.invoke('workspace:open-canvas', path),
     writeAbsolute: (sessionId, path, content, expectedRevision) => ipcRenderer.invoke('workspace:write-absolute', sessionId, path, content, expectedRevision),
     overwriteAbsolute: (sessionId, path, content) => ipcRenderer.invoke('workspace:overwrite-absolute', sessionId, path, content),
     previewAvailable: (scope, sessionId, path) => ipcRenderer.invoke('workspace:preview-available', scope, sessionId, path),

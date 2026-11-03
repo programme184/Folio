@@ -450,6 +450,7 @@ export function registerIpc(
   handle('workspace:search', (sessionId, query, limit) => service.workspaceSearch(sessionId, query, limit))
   handle('workspace:read', (sessionId, path) => service.workspaceFile(sessionId, path))
   handle('workspace:read-absolute', (sessionId, path, remoteWorkspace) => service.absoluteFile(sessionId, path, remoteWorkspace === true))
+  handle('workspace:open-canvas', path => service.openCanvas(path))
   handle('workspace:write-absolute', (sessionId, path, content, expectedRevision) => service.writeAbsoluteFile(sessionId, path, content, expectedRevision))
   handle('workspace:overwrite-absolute', (sessionId, path, content) => service.overwriteAbsoluteFile(sessionId, path, content))
   handle('workspace:preview-available', (scope, sessionId, path) => service.workspacePreviewAvailable(scope, sessionId, path))

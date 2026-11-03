@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import QRCode from 'qrcode'
 import { parseServerConnectionLink } from '../shared/server-connection-link'
@@ -7557,6 +7557,24 @@ describe('workspace file scope safety', () => {
     expect(a.writeAbsoluteFile).not.toHaveBeenCalled()
     expect(a.writeWorkspaceFile).not.toHaveBeenCalled()
     expect(a.removeWorkspaceEntry).not.toHaveBeenCalled()
+  })
+
+  it('opens only managed Cursor canvases in the native Canvas host', async () => {
+    const { service } = createProfileService({
+      'http://a.test:7850': [fakeClient()],
+      'http://b.test:7850': [fakeClient()]
+    })
+    const canvasPath = join(homedir(), '.cursor', 'projects', 'empty-window', 'canvases', 'analysis.canvas.tsx')
+    const target = new URL('cursor://file/')
+    target.pathname = canvasPath.replace(/\\/g, '/')
+
+    await expect(service.openCanvas(canvasPath)).resolves.toBe(true)
+    expect(electronHarness.shellOpenExternal).toHaveBeenCalledWith(target.toString())
+
+    electronHarness.shellOpenExternal.mockClear()
+    await expect(service.openCanvas(join(homedir(), 'project', 'analysis.canvas.tsx'))).resolves.toBe(false)
+    await expect(service.openCanvas(join(homedir(), '.cursor', 'projects', 'empty-window', 'nested', 'canvases', 'analysis.canvas.tsx'))).resolves.toBe(false)
+    expect(electronHarness.shellOpenExternal).not.toHaveBeenCalled()
   })
 
   it('enables revision-checked absolute edits only with workspace capability v6', async () => {

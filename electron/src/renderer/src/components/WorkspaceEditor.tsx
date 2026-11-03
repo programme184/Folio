@@ -375,7 +375,8 @@ export function WorkspaceEditor({
   const memoryMatches = memory?.sessionId === session.id && memory.cwd === cwd
   const memoryFiles = memoryMatches
     ? memory.openFiles.filter(file => (
-      !file.artifact || agentFileBelongsToSession(file.artifact, session.id)
+      !isManagedCursorCanvasPath(file.path)
+      && (!file.artifact || agentFileBelongsToSession(file.artifact, session.id))
     ))
     : []
   const memoryPaths = new Set(memoryFiles.map(file => file.path))
@@ -2551,6 +2552,24 @@ export function WorkspaceEditor({
         return
       }
       setWorkspaceError(message)
+    }
+    if (isManagedCursorCanvasPath(path)) {
+      try {
+        if (await window.agentsDock.workspace.openCanvas(path)) {
+          setPaletteError(null)
+          setWorkspaceError(null)
+          if (paletteLease) commitPaletteSelection(paletteLease)
+          else {
+            paletteOpenRef.current = false
+            setPaletteOpen(false)
+            setPaletteQuery('')
+          }
+          return true
+        }
+      } catch (error) {
+        reportOpenError(errorMessage(error))
+        return false
+      }
     }
     if (!absoluteReadsAvailable) {
       const message = t('editor.updateAgentsserverToOpenExplicitAbsolutePathsOutsideTheWorkspace')
@@ -5349,6 +5368,10 @@ function equalStringSets(previous: Set<string>, next: Set<string>): boolean {
 
 function workspacePathIsWithin(path: string, parent: string): boolean {
   return path === parent || path.startsWith(`${parent}/`)
+}
+
+function isManagedCursorCanvasPath(path: string): boolean {
+  return /(?:^|\/)\.cursor\/projects\/[^/]+\/canvases\/[^/]+\.canvas\.tsx$/i.test(path.replace(/\\/g, '/'))
 }
 
 function editorViewStateKey(group: EditorGroupId, path: string): string {
