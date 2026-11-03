@@ -11,8 +11,11 @@
   isolated native Electron run with 3,659 visible characters, one card, three
   tables, a resolved tertiary border, no alert and no horizontal overflow.
   The focused viewer regression, TypeScript check and production build pass.
-  Source only at this checkpoint; no package was published and no server
-  update is required.
+  The local package built from `c868f5e9` was installed and the desktop
+  restarted. A second isolated run of that installed package restored the same
+  Canvas with the tertiary border, 3,659 characters, three tables, no alert and
+  no horizontal overflow. No package was published and no server update is
+  required.
 
 ## 2026-11-03 — Recover Folio when a concurrent build removes its renderer
 
