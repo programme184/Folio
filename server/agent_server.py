@@ -28682,13 +28682,55 @@ def terminal_login_command(shell: str, path: str | None = None) -> str:
     )
 
 
-def configure_terminal_session_shell(name: str, shell: str, path: str) -> None:
+TERMINAL_REMOTE_HOST_RE = re.compile(
+    r"^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$"
+)
+
+
+def clean_terminal_remote_host(value: Any) -> str | None:
+    host = str(value or "").strip()
+    if not host:
+        return None
+    if not TERMINAL_REMOTE_HOST_RE.fullmatch(host) or host.startswith("-"):
+        raise HTTPException(
+            status_code=400,
+            detail="remote terminal host must be an SSH alias, host, or user@host",
+        )
+    return host
+
+
+def terminal_remote_command(shell: str, path: str, remote_host: str) -> str:
+    ssh = shutil.which("ssh", path=path)
+    if not ssh:
+        raise HTTPException(status_code=503, detail="OpenSSH is required for remote terminals")
+    return (
+        f"SHELL={shlex.quote(shell)} PATH={shlex.quote(path)} "
+        f"exec {shlex.quote(ssh)} {shlex.quote(remote_host)}"
+    )
+
+
+def terminal_default_command(shell: str, path: str, remote_host: str | None = None) -> str:
+    if remote_host:
+        return terminal_remote_command(shell, path, remote_host)
+    return terminal_login_command(shell)
+
+
+def configure_terminal_session_shell(
+    name: str,
+    shell: str,
+    path: str,
+    remote_host: str | None = None,
+) -> None:
     """Scope shell defaults to one AgentsDock session, never the shared tmux server."""
-    login_command = terminal_login_command(shell)
+    default_command = terminal_default_command(shell, path, remote_host)
     run_tmux(["set-environment", "-t", name, "SHELL", shell])
     run_tmux(["set-environment", "-t", name, "PATH", path])
     run_tmux(["set-option", "-t", name, "default-shell", shell])
-    run_tmux(["set-option", "-t", name, "default-command", login_command])
+    run_tmux(["set-option", "-t", name, "default-command", default_command])
+    if remote_host:
+        run_tmux(["set-option", "-t", name, "@agentsdock_remote_host", remote_host])
+    else:
+        run_tmux(["set-option", "-u", "-t", name, "@agentsdock_remote_host"], check=False)
 
 
 def terminal_dimensions(columns: int | None = None, rows: int | None = None) -> tuple[int, int]:
@@ -28717,6 +28759,7 @@ def _ensure_terminal_session_locked(
     *,
     columns: int | None = None,
     rows: int | None = None,
+    remote_host: str | None = None,
 ) -> dict[str, Any]:
     sess = STORE.sessions.get(session_id)
     if not sess:
@@ -28727,7 +28770,9 @@ def _ensure_terminal_session_locked(
     name = terminal_session_name(session_id)
     shell = resolve_terminal_login_shell()
     path = terminal_session_path()
+    remote_host = clean_terminal_remote_host(remote_host)
     created = False
+    existing_remote_host = ""
     if not tmux_session_exists(name):
         # Keep the shared daemon outside agents-server.service when this is the
         # first tmux use on a Linux systemd-user installation.
@@ -28747,7 +28792,8 @@ def _ensure_terminal_session_locked(
                 str(lines),
                 "-c",
                 workdir,
-                terminal_login_command(shell, path),
+                terminal_remote_command(shell, path, remote_host)
+                if remote_host else terminal_login_command(shell, path),
             ])
             created = True
         except HTTPException:
@@ -28758,11 +28804,26 @@ def _ensure_terminal_session_locked(
                 raise
     else:
         scrub_tmux_global_secret_environment()
+        existing_remote_host = run_tmux(
+            ["show-options", "-qv", "-t", name, "@agentsdock_remote_host"],
+            check=False,
+        ).stdout.strip()
     # The tmux daemon may predate AgentsServer and carry a stale SHELL/PATH
     # from an SSH tunnel or service. Keep all repairs scoped to this Dock-owned
     # session. This also corrects future windows/panes in pre-existing sessions
     # without interrupting a user's currently running pane.
-    configure_terminal_session_shell(name, shell, path)
+    configure_terminal_session_shell(name, shell, path, remote_host)
+    if remote_host and not created and existing_remote_host != remote_host:
+        # Preserve an existing local or differently-routed window. Add and
+        # select the requested SSH terminal so upgrades never destroy work.
+        run_tmux([
+            "new-window",
+            "-t",
+            name,
+            "-n",
+            remote_host,
+            terminal_remote_command(shell, path, remote_host),
+        ])
     # These are session-scoped defaults. Existing user-created windows and
     # panes remain untouched while newly created panes keep useful history.
     run_tmux(["set-option", "-t", name, "history-limit", "100000"], check=False)
@@ -28790,14 +28851,13 @@ def ensure_terminal_session(
     *,
     columns: int | None = None,
     rows: int | None = None,
+    remote_host: str | None = None,
 ) -> dict[str, Any]:
     with terminal_session_lock(session_id):
-        return _ensure_terminal_session_locked(
-            session_id,
-            cwd,
-            columns=columns,
-            rows=rows,
-        )
+        options: dict[str, Any] = {"columns": columns, "rows": rows}
+        if remote_host:
+            options["remote_host"] = remote_host
+        return _ensure_terminal_session_locked(session_id, cwd, **options)
 
 
 def spawn_terminal_client(
@@ -28805,8 +28865,15 @@ def spawn_terminal_client(
     cwd: str | None,
     columns: int,
     rows: int,
+    remote_host: str | None = None,
 ) -> tuple[subprocess.Popen[bytes], int, str]:
-    snapshot = ensure_terminal_session(session_id, cwd, columns=columns, rows=rows)
+    snapshot = ensure_terminal_session(
+        session_id,
+        cwd,
+        columns=columns,
+        rows=rows,
+        remote_host=remote_host,
+    )
     name = str(snapshot["name"])
     workdir = existing_cwd(snapshot.get("cwd") or cwd or STORE.sessions[session_id].get("cwd") or DEFAULT_CWD)
     master_fd, slave_fd = pty.openpty()
@@ -29012,6 +29079,7 @@ class TerminalAttachmentRegistry:
         cwd: str | None,
         columns: int,
         rows: int,
+        remote_host: str | None = None,
     ) -> tuple[subprocess.Popen[bytes], int, str]:
         """Spawn and bind one reserved attachment without a cancellation leak."""
 
@@ -29021,14 +29089,11 @@ class TerminalAttachmentRegistry:
                 raise TerminalAttachmentAdmissionClosed(
                     "terminal attachment admission is closed"
                 )
+            spawn_args: tuple[Any, ...] = (session_id, cwd, columns, rows)
+            if remote_host:
+                spawn_args += (remote_host,)
             spawn_task = asyncio.create_task(
-                asyncio.to_thread(
-                    spawn_terminal_client,
-                    session_id,
-                    cwd,
-                    columns,
-                    rows,
-                )
+                asyncio.to_thread(spawn_terminal_client, *spawn_args)
             )
             entry["spawn_task"] = spawn_task
 
@@ -98768,6 +98833,7 @@ async def session_terminal(
     columns: int = 120,
     rows: int = 36,
     cwd: str | None = None,
+    remote_host: str | None = None,
 ) -> None:
     selected_subprotocol = websocket_endpoint_subprotocol(
         ws,
@@ -98802,6 +98868,7 @@ async def session_terminal(
             cwd,
             cols,
             lines,
+            remote_host,
         )
         await ws.send_json({
             "type": "ready",

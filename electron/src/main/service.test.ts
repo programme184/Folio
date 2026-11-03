@@ -158,11 +158,27 @@ describe('local chat execution across server groups', () => {
     expect(await service.listSessions()).toEqual([])
     await service.createSession({ title: 'Remote group', folder: 'General', cwd: '/work/local', backend: 'codex' })
     await service.sendTurn({ sessionId: 'remote-new', prompt: 'hello', fileIds: [] })
+    await service.connectTerminal('b', remoteBootstrap.profileGeneration, 'remote-new', {
+      cwd: '/work/local', columns: 80, rows: 24
+    })
     expect((await service.listSessions()).map(session => session.id)).toEqual(['remote-new'])
     expect(settings.getProfile('b')?.serverIdentity).toBe('remote-server')
+    expect(clients.some(client => client.terminal.mock.calls.some(call => (
+      call[0] === 'remote-new'
+      && call[1]?.cwd === null
+      && call[1]?.remoteHost === 'B'
+    )))).toBe(true)
 
-    await service.switchServer('a')
+    const localBootstrap = await service.switchServer('a')
     expect((await service.listSessions()).map(session => session.id)).toEqual(['local-old'])
+    await service.connectTerminal('a', localBootstrap.profileGeneration, 'local-old', {
+      cwd: '/work/local', columns: 80, rows: 24
+    })
+    expect(clients.some(client => client.terminal.mock.calls.some(call => (
+      call[0] === 'local-old'
+      && call[1]?.cwd === '/work/local'
+      && call[1]?.remoteHost === null
+    )))).toBe(true)
     expect(urls).toEqual(Array(urls.length).fill('http://127.0.0.1:7850'))
     expect(clients.some(client => client.createSession.mock.calls.length > 0)).toBe(true)
     expect(clients.some(client => client.sendTurn.mock.calls.length > 0)).toBe(true)
@@ -3661,7 +3677,7 @@ interface FakeClientOptions {
     onSessions: (sessions: Session[], snapshot: boolean, removedSessionId?: string) => void,
     onState: (connected: boolean, error?: string) => void
   ) => () => void
-  terminal?: () => { write(data: string): void; resize(columns: number, rows: number): void; scroll(delta: number): void; close(): void }
+  terminal?: AgentServerClient['terminal']
   portTunnelSocket?: (sessionId: string, remotePort: number) => WebSocket
 }
 

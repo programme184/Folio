@@ -1846,7 +1846,7 @@ describe('AgentServerClient live stream', () => {
     const stopStream = client.stream('chat with spaces', 0, () => {}, () => {})
     const terminal = client.terminal(
       'chat with spaces',
-      { columns: 100, rows: 30 },
+      { columns: 100, rows: 30, remoteHost: 'ubuntu@Synria' },
       () => {},
       () => {}
     )
@@ -1859,6 +1859,7 @@ describe('AgentServerClient live stream', () => {
     expect(eventsSocket.protocols).toEqual(['agentsdock-events-v1', tokenProtocol])
     expect(terminalSocket.url.protocol).toBe('wss:')
     expect(terminalSocket.url.pathname).toBe('/api/sessions/chat%20with%20spaces/terminal/ws')
+    expect(terminalSocket.url.searchParams.get('remote_host')).toBe('ubuntu@Synria')
     expect(terminalSocket.url.searchParams.get('token')).toBeNull()
     expect(terminalSocket.protocols).toEqual(['agentsdock-terminal-v1', tokenProtocol])
 

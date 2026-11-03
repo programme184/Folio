@@ -1,5 +1,22 @@
 # Public development log
 
+## 2026-11-03 — Remote groups open SSH terminals
+
+- Chat history, projects and provider execution remain on the loopback
+  AgentsServer, while the Terminal for a non-loopback server group now opens a
+  persistent SSH shell using the matching server-profile name as a validated
+  local SSH alias. The loopback group continues to open a local login shell.
+- Existing local terminal windows are preserved during migration. The first
+  remote open adds and selects an SSH window, and future windows inherit the
+  same remote target. Host input rejects SSH options and shell metacharacters.
+- Focused Electron routing/client regressions and 36 server terminal/WebSocket
+  tests pass; TypeScript and the Electron production build pass. An isolated
+  real AgentsServer accepted the production terminal WebSocket for a disposable
+  chat, connected through the configured SSH alias and returned the remote
+  hostname. Isolated state and the disposable tmux session were removed. The
+  unpacked Linux candidate was installed locally with an `app.asar` rollback
+  copy; no package was published and no remote server was changed.
+
 ## 2026-11-03 — Server selection groups local chats
 
 - Selecting a saved server now changes the local project/chat group without

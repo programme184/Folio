@@ -280,6 +280,115 @@ class TerminalShellInitializationTests(unittest.TestCase):
             commands,
         )
 
+    def test_new_remote_terminal_uses_validated_ssh_alias(self) -> None:
+        session_id = "remote-terminal-shell-test"
+        session_name = agent_server.terminal_session_name(session_id)
+        calls: list[list[str]] = []
+
+        def fake_tmux(args: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.dict(
+            agent_server.STORE.sessions,
+            {session_id: {"id": session_id, "cwd": "/workspace", "archived": False}},
+        ), patch.object(
+            agent_server,
+            "tmux_session_exists",
+            return_value=False,
+        ), patch.object(
+            agent_server,
+            "existing_cwd",
+            return_value="/workspace",
+        ), patch.object(
+            agent_server,
+            "resolve_terminal_login_shell",
+            return_value="/bin/bash",
+        ), patch.object(
+            agent_server,
+            "terminal_session_path",
+            return_value="/home/user/.local/bin:/usr/bin:/bin",
+        ), patch.object(
+            agent_server.shutil,
+            "which",
+            return_value="/usr/bin/ssh",
+        ), patch.object(
+            agent_server,
+            "run_tmux",
+            side_effect=fake_tmux,
+        ), patch.object(
+            agent_server,
+            "terminal_snapshot",
+            return_value={"name": session_name},
+        ):
+            agent_server.ensure_terminal_session(session_id, remote_host="Synria")
+
+        new_session = next(args for args in calls if args[0] == "new-session")
+        self.assertEqual(
+            new_session[-1],
+            "SHELL=/bin/bash PATH=/home/user/.local/bin:/usr/bin:/bin "
+            "exec /usr/bin/ssh Synria",
+        )
+        self.assertIn(
+            ["set-option", "-t", session_name, "@agentsdock_remote_host", "Synria"],
+            calls,
+        )
+        self.assertFalse(any(args[0] == "new-window" for args in calls))
+
+    def test_existing_local_terminal_preserves_its_window_and_selects_remote_ssh(self) -> None:
+        session_id = "existing-local-to-remote-test"
+        session_name = agent_server.terminal_session_name(session_id)
+        calls: list[list[str]] = []
+
+        def fake_tmux(args: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+            calls.append(args)
+            if args[-1:] == ["@agentsdock_mouse_initialized"]:
+                return subprocess.CompletedProcess(args, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+        with patch.dict(
+            agent_server.STORE.sessions,
+            {session_id: {"id": session_id, "cwd": "/workspace", "archived": False}},
+        ), patch.object(
+            agent_server,
+            "tmux_session_exists",
+            return_value=True,
+        ), patch.object(
+            agent_server,
+            "resolve_terminal_login_shell",
+            return_value="/bin/bash",
+        ), patch.object(
+            agent_server,
+            "terminal_session_path",
+            return_value="/usr/bin:/bin",
+        ), patch.object(
+            agent_server.shutil,
+            "which",
+            return_value="/usr/bin/ssh",
+        ), patch.object(
+            agent_server,
+            "run_tmux",
+            side_effect=fake_tmux,
+        ), patch.object(
+            agent_server,
+            "terminal_snapshot",
+            return_value={},
+        ):
+            agent_server.ensure_terminal_session(session_id, remote_host="Synria")
+
+        self.assertIn(
+            [
+                "new-window", "-t", session_name, "-n", "Synria",
+                "SHELL=/bin/bash PATH=/usr/bin:/bin exec /usr/bin/ssh Synria",
+            ],
+            calls,
+        )
+        self.assertFalse(any(args[0] in {"kill-session", "respawn-pane"} for args in calls))
+
+    def test_remote_terminal_rejects_ssh_options(self) -> None:
+        with self.assertRaisesRegex(agent_server.HTTPException, "remote terminal host"):
+            agent_server.clean_terminal_remote_host("-oProxyCommand=bad")
+
     def test_existing_session_is_reconfigured_without_respawning_active_pane(self) -> None:
         session_id = "existing-terminal-shell-test"
         calls: list[list[str]] = []

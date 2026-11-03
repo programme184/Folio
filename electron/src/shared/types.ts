@@ -1363,6 +1363,8 @@ export type TerminalConnectionState = 'connecting' | 'connected' | 'reconnecting
 
 export interface TerminalConnectOptions {
   cwd?: string | null
+  /** Main-process supplied SSH alias for a remote server group. */
+  remoteHost?: string | null
   columns: number
   rows: number
 }

@@ -2038,6 +2038,7 @@ export class AgentServerClient {
       url.searchParams.set('columns', String(columns))
       url.searchParams.set('rows', String(rows))
       if (options.cwd) url.searchParams.set('cwd', options.cwd)
+      if (options.remoteHost) url.searchParams.set('remote_host', options.remoteHost)
       const protocols = authenticatedWebSocketProtocols(
         configuration,
         url,

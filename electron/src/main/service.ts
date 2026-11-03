@@ -5096,9 +5096,18 @@ export class AppService {
     this.disconnectTerminal(sessionId)
     const lease = (this.terminalLeases.get(sessionId) ?? 0) + 1
     this.terminalLeases.set(sessionId, lease)
+    const profile = this.settings.getProfile(profileId)
+    if (!profile) throw new Error(`Unknown server profile: ${profileId}`)
+    const executionProfileId = this.executionConnection(profileId).profileId
+    const remoteHost = this.localChatExecution && executionProfileId !== profileId
+      ? profile.name.trim()
+      : null
     const connection = scope.client.terminal(
       sessionId,
-      options,
+      {
+        ...options,
+        ...(remoteHost ? { cwd: null, remoteHost } : { remoteHost: null })
+      },
       data => {
         if (this.isCurrentScope(scope) && this.terminalLeases.get(sessionId) === lease) {
           this.emit('terminal:data', { sessionId, data, profileId: scope.profileId, profileGeneration: scope.generation })
