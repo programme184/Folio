@@ -159,7 +159,8 @@ describe('local chat execution across server groups', () => {
     await service.createSession({ title: 'Remote group', folder: 'General', cwd: '/work/local', backend: 'codex' })
     await service.sendTurn({ sessionId: 'remote-new', prompt: 'hello', fileIds: [] })
     await service.absoluteWorkspaceEntries('remote-new', '/remote/project')
-    await service.absoluteFile('remote-new', '/remote/project/README.md')
+    await service.absoluteFile('remote-new', '/remote/project/README.md', true)
+    await service.absoluteFile('remote-new', '/home/ubuntu/.cursor/generated.canvas.tsx')
     await service.connectTerminal('b', remoteBootstrap.profileGeneration, 'remote-new', {
       cwd: '/work/local', columns: 80, rows: 24
     })
@@ -170,6 +171,9 @@ describe('local chat execution across server groups', () => {
     )))).toBe(true)
     expect(clients.some(client => client.absoluteFile.mock.calls.some(call => (
       call[0] === 'remote-new' && call[1] === '/remote/project/README.md' && call[2] === 'B'
+    )))).toBe(true)
+    expect(clients.some(client => client.absoluteFile.mock.calls.some(call => (
+      call[0] === 'remote-new' && call[1] === '/home/ubuntu/.cursor/generated.canvas.tsx' && call[2] === undefined
     )))).toBe(true)
     expect(clients.some(client => client.terminal.mock.calls.some(call => (
       call[0] === 'remote-new'

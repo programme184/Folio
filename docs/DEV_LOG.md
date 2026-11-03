@@ -1,5 +1,16 @@
 # Public development log
 
+## 2026-11-03 — Keep local generated files local in remote groups
+
+- Absolute file reads now carry an explicit remote-workspace intent instead of
+  routing every absolute path through the selected group's SSH alias. Files
+  inside the configured remote project roots still use SSH, while local Canvas
+  artifacts and other paths outside those roots use the loopback AgentsServer.
+- Focused service and editor regressions cover both routes, including a local
+  `.cursor` Canvas path in a multi-root Synria-style project. TypeScript and the
+  production Electron build pass. Installed-app acceptance is recorded after
+  packaging below; no package is published and no remote server is changed.
+
 ## 2026-11-03 — Remote groups browse project files over SSH
 
 - Multi-root Files for a non-loopback server group now enumerates and reads the

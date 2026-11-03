@@ -401,7 +401,15 @@ describe('WorkspaceEditor', () => {
 
       fireEvent.click(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
       expect(await screen.findByRole('textbox', { name: 'Contents of /work/notes/notes.md' })).toBeVisible()
-      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, '/work/notes/notes.md')
+      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, '/work/notes/notes.md', true)
+
+      const localCanvas = '/home/dev/.cursor/projects/empty-window/canvases/analysis.canvas.tsx'
+      act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+        detail: { sessionId: projectSession.id, path: localCanvas, resolve: true }
+      })))
+      expect(await screen.findByRole('textbox', { name: `Contents of ${localCanvas}` })).toBeVisible()
+      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, localCanvas)
+      expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas, true)
       expect(useAppStore.getState().sessions[0]?.cwd).toBe('/work/project')
     } finally {
       act(() => useAppStore.setState(previousState))

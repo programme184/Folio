@@ -352,6 +352,15 @@ export function WorkspaceEditor({
   })
   const multiRootExplorer = capabilityVersion >= 7 && workspaceFolders.length > 1
   const workspaceFoldersKey = workspaceFolders.join('\0')
+  const absolutePathUsesWorkspaceHost = (path: string): boolean => {
+    const roots = workspaceFolders.length ? workspaceFolders : cwd ? [cwd] : []
+    return roots.some(root => workspacePathIsWithin(path, root))
+  }
+  const readAbsolutePath = (path: string): Promise<WorkspaceFile> => (
+    absolutePathUsesWorkspaceHost(path)
+      ? window.agentsDock.workspace.readAbsolute(session.id, path, true)
+      : window.agentsDock.workspace.readAbsolute(session.id, path)
+  )
   const registeredFilesHost = useWorkspaceFilesHost(workspaceFilesKey(profileScope, session.id, cwd))
   // The host key already binds the explorer to one server, session, and cwd.
   // Do not additionally gate its portal on pane focus: focus and the inspector
@@ -1448,7 +1457,7 @@ export function WorkspaceEditor({
         return
       }
       const disk = existing.origin === 'external'
-        ? await window.agentsDock.workspace.readAbsolute(session.id, path)
+        ? await readAbsolutePath(path)
         : await window.agentsDock.workspace.read(session.id, path)
       logWorkspaceFile('restored tab read completed', {
         sessionId: session.id,
@@ -2605,7 +2614,7 @@ export function WorkspaceEditor({
     const startedAt = performance.now()
     logWorkspaceFile('absolute read requested', { sessionId: session.id, path, openRequest })
     try {
-      const file = await window.agentsDock.workspace.readAbsolute(session.id, path)
+      const file = await readAbsolutePath(path)
       if (
         !mountedRef.current
         || !isCurrentWorkspaceFileOperation(path, operation)
@@ -3099,7 +3108,7 @@ export function WorkspaceEditor({
         return
       }
       const disk = file.origin === 'external'
-        ? await window.agentsDock.workspace.readAbsolute(session.id, path)
+        ? await readAbsolutePath(path)
         : await window.agentsDock.workspace.read(session.id, path)
       if (
         !mountedRef.current

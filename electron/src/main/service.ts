@@ -4755,10 +4755,13 @@ export class AppService {
     return file
   }
 
-  async absoluteFile(sessionId: string, path: string): Promise<WorkspaceFile> {
+  async absoluteFile(sessionId: string, path: string, remoteWorkspace = false): Promise<WorkspaceFile> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const file = await scope.client.absoluteFile(sessionId, path, this.remoteSSHHost(scope.profileId))
+    const remoteHost = remoteWorkspace ? this.remoteSSHHost(scope.profileId) : null
+    const file = remoteHost
+      ? await scope.client.absoluteFile(sessionId, path, remoteHost)
+      : await scope.client.absoluteFile(sessionId, path)
     this.assertCurrentScope(scope)
     return {
       ...file,
