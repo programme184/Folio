@@ -417,7 +417,10 @@ describe('ServerOnboardingDialog', () => {
       configurable: true,
       value: {
         settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
-        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }) },
+        setup: {
+          capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }),
+          configuredSSHHosts: vi.fn().mockResolvedValue(['Synria', 'jump', 'A800', 'RTX6000'])
+        },
         native: { openExternal },
         events: { on: vi.fn().mockReturnValue(() => undefined) }
       } as unknown as AgentsDockAPI
@@ -428,6 +431,10 @@ describe('ServerOnboardingDialog', () => {
 
     const guide = await screen.findByRole('button', { name: /No SSH key\? Install from the server terminal/ })
     const sshHost = screen.getByPlaceholderText('user@server or SSH alias')
+    expect(sshHost).toHaveAttribute('list', 'agentsdock-configured-ssh-hosts')
+    expect(document.querySelector('datalist option[value="Synria"]')).toBeInTheDocument()
+    expect(document.querySelector('datalist option[value="A800"]')).toBeInTheDocument()
+    expect(screen.getByText(/Choose a host loaded from ~\/.ssh\/config/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Remote machine/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: /This computer/ })).toHaveAttribute('aria-pressed', 'false')
     expect(guide.compareDocumentPosition(sshHost) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -756,15 +763,40 @@ describe('ServerOnboardingDialog', () => {
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    await user.click(await screen.findByRole('button', { name: /This computer/ }))
-    await user.click(screen.getByRole('button', { name: 'Install here' }))
+    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
+    const password = screen.getByLabelText('SSH password (optional, used once)')
+    await user.type(password, 'one time secret')
+    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('macOS could not restart AgentsServer. Running as root is not required.')
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ sshPassword: 'one time secret' }))
+    expect(password).toHaveValue('')
     expect(useAppStore.getState().error).toBeNull()
     expect(screen.getByRole('heading', { name: 'Set up AgentsServer' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry setup' })).toBeEnabled()
     expect(screen.getByRole('status')).toHaveTextContent('Setup needs attention')
     expect(screen.getByRole('status')).toHaveTextContent('0s')
+  })
+
+  it('explains how to repair an unsafe existing server install directory', async () => {
+    const run = vi.fn().mockRejectedValue(new Error('The AgentsServer install layout is group/world writable: /home/test/.local/share/agents-server'))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false }) },
+        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
+        events: { on: vi.fn().mockReturnValue(() => undefined) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, error: null })
+    const user = userEvent.setup()
+    render(<ServerOnboardingDialog />)
+
+    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
+    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('chmod -R go-w ~/.local/share/agents-server')
+    expect(screen.getByRole('alert')).not.toHaveTextContent('/home/test')
   })
 
   it('cancels an active setup and keeps progress visible for retry', async () => {

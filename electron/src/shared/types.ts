@@ -1954,6 +1954,8 @@ export interface PublicServerSettings {
 export interface ServerSetupInput {
   target: 'local' | 'ssh'
   sshHost?: string
+  /** One-shot remote login secret. It is never persisted and is cleared after dispatch. */
+  sshPassword?: string
   port?: number
   track?: ServerUpdateTrack
   /** Explicitly designate a fresh install as the Team Network host. Omit during updates to preserve the existing role. */

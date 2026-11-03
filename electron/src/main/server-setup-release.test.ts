@@ -116,4 +116,18 @@ describe('guided setup signed release discovery', () => {
     await expect(resolveServerSetupRelease('stable', controller.signal, f.fetcher)).rejects.toThrow('Cancelled by user')
     expect(f.fetcher).not.toHaveBeenCalled()
   })
+
+  it('turns release network failures and timeouts into actionable setup errors', async () => {
+    const failed = vi.fn<typeof fetch>().mockRejectedValue(new TypeError('fetch failed'))
+    await expect(resolveServerSetupRelease('stable', undefined, failed)).rejects.toThrow(
+      'Could not reach the AgentsServer release service. Check this computer’s network or proxy'
+    )
+
+    const stalled = vi.fn<typeof fetch>(async (_input, init) => await new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    }))
+    await expect(resolveServerSetupRelease('stable', undefined, stalled, 10)).rejects.toThrow(
+      'Timed out while checking the AgentsServer release. Check this computer’s network or proxy'
+    )
+  })
 })

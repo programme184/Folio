@@ -243,6 +243,7 @@ export function registerIpc(
   handle('server-updates:start', (version, track, whenIdle) => service.startServerUpdate(version, track, whenIdle))
   handle('server-updates:cancel', scheduleId => service.cancelServerUpdate(scheduleId))
   handle('server-setup:capabilities', () => serverSetup.capabilities())
+  handle('server-setup:ssh-hosts', () => serverSetup.configuredSSHHosts())
   handle('server-setup:cancel', () => serverSetup.cancel())
   handle('server-setup:diagnostics', () => serverSetup.diagnostics())
   handle('server-setup:open-log', async () => {

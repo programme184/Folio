@@ -116,11 +116,19 @@ describe('preload session IPC bridge', () => {
 
   it('forwards the typed Team Network host choice through setup IPC unchanged', async () => {
     electronHarness.invoke.mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850' })
-    const input = { target: 'ssh' as const, sshHost: 'user@server', port: 7850, track: 'stable' as const, teamHubHost: true }
+    const input = { target: 'ssh' as const, sshHost: 'user@server', sshPassword: 'one time secret', port: 7850, track: 'stable' as const, teamHubHost: true }
 
     await electronHarness.exposed?.setup.run(input)
 
     expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:run', input)
+  })
+
+  it('reads configured SSH host aliases through a narrow setup bridge', async () => {
+    electronHarness.invoke.mockResolvedValue(['Synria', 'A800'])
+
+    await expect(electronHarness.exposed?.setup.configuredSSHHosts()).resolves.toEqual(['Synria', 'A800'])
+
+    expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:ssh-hosts')
   })
 
   it('forwards live Team Network role configuration with only the originating scope and named role', async () => {

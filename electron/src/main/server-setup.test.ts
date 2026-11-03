@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ServerSetupProgress, ServerSetupResult } from '../shared/types'
@@ -23,9 +23,11 @@ vi.mock('node:fs/promises', async importOriginal => {
 
 import {
   createLineConsumer,
+  createSSHPasswordPrompt,
   isRetryableLaunchdSetupFailure,
   localReleaseBootstrap,
   parseServerSetupResult,
+  parseSSHConfigHosts,
   parseSSHConfigHostname,
   redactServerSetupLogLine,
   remoteFallbackURL,
@@ -59,14 +61,14 @@ function deferred<T>() {
 
 type ServerSetupManagerHarness = {
   runLocal(port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown): Promise<ServerSetupResult>
-  runRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown): Promise<ServerSetupResult>
+  runRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown, sshPassword?: string): Promise<ServerSetupResult>
   runProcess(
     command: string,
     args: string[],
     stdin: string | undefined,
     progress: (value: ServerSetupProgress) => void,
     expectResult: boolean,
-    options?: { phase?: ServerSetupProgress['phase']; message?: string }
+    options?: { phase?: ServerSetupProgress['phase']; message?: string; environment?: NodeJS.ProcessEnv }
   ): Promise<ServerSetupResult | null>
   state: 'idle' | 'running' | 'failed' | 'completed' | 'cancelled'
 }
@@ -103,12 +105,26 @@ describe('server setup', () => {
     expect(validateServerSetupInput({ target: 'local', port: 7850 })).toEqual({ target: 'local', port: 7850, track: 'stable' })
     expect(validateServerSetupInput({ target: 'local', port: 7850, teamHubHost: false })).toEqual({ target: 'local', port: 7850, track: 'stable', teamHubHost: false })
     expect(validateServerSetupInput({ target: 'ssh', sshHost: 'user@server-01', port: 9000, track: 'beta', teamHubHost: true })).toEqual({ target: 'ssh', sshHost: 'user@server-01', port: 9000, track: 'beta', teamHubHost: true })
+    expect(validateServerSetupInput({ target: 'ssh', sshHost: 'user@server-01', sshPassword: 'one time secret' })).toEqual({ target: 'ssh', sshHost: 'user@server-01', sshPassword: 'one time secret', port: 7850, track: 'stable' })
     expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'user@server; reboot', port: 7850 })).toThrow(/SSH host/)
     expect(() => validateServerSetupInput({ target: 'local', port: 70000 })).toThrow(/Port/)
     expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'user@server', port: 22 })).toThrow(/HTTP API port, not the SSH port/)
     expect(() => validateServerSetupInput({ target: 'local', port: 0 })).toThrow(/1024 and 65535/)
     expect(() => validateServerSetupInput({ target: 'local', track: 'nightly' as 'stable' })).toThrow(/Stable or Beta/)
     expect(() => validateServerSetupInput({ target: 'local', teamHubHost: 'true' as unknown as boolean })).toThrow(/Team Network/)
+    expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'server', sshPassword: 'bad\nsecret' })).toThrow(/line break/)
+    expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'server', sshPassword: 42 as unknown as string })).toThrow(/valid SSH password/)
+  })
+
+  it('lists concrete SSH aliases while ignoring wildcard and negated Host patterns', () => {
+    expect(parseSSHConfigHosts(`
+Host github-ashlot2002
+  HostName github.com
+Host Synria jump
+Host *.internal !blocked A800
+Host synria # duplicate aliases are case-insensitive
+Host RTX6000
+`)).toEqual(['github-ashlot2002', 'Synria', 'jump', 'A800', 'RTX6000'])
   })
 
   it('explains the intentionally remote-only Windows server setup without exposing win32 jargon', () => {
@@ -353,6 +369,48 @@ port 22
     expect(runProcess.mock.calls.every(call => call[1].includes('BatchMode=yes'))).toBe(true)
     expect(runProcess.mock.calls.every(call => call[1].includes('ServerAliveInterval=15'))).toBe(true)
     expect(runProcess.mock.calls.every(call => call[1].includes('ServerAliveCountMax=4'))).toBe(true)
+  })
+
+  it('uses a one-shot askpass helper for password SSH without exposing the secret in arguments', async () => {
+    const manager = new ServerSetupManager() as unknown as ServerSetupManagerHarness
+    const result: ServerSetupResult = {
+      serverUrl: 'http://192.0.2.10:7850',
+      accessToken: '0123456789abcdef0123456789abcdef',
+      service: 'systemd-user',
+      tailscaleIP: ''
+    }
+    const runProcess = vi.spyOn(manager, 'runProcess')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(result)
+
+    await expect(manager.runRemote('user@server', 7850, vi.fn(), false, STABLE_RELEASE, 'one time secret')).resolves.toEqual(result)
+
+    expect(runProcess).toHaveBeenCalledTimes(2)
+    for (const call of runProcess.mock.calls) {
+      expect(call[1]).toContain('BatchMode=no')
+      expect(call[1]).toContain('PreferredAuthentications=password,keyboard-interactive')
+      expect(JSON.stringify(call.slice(0, 3))).not.toContain('one time secret')
+      const environment = call[5]?.environment
+      expect(environment).toMatchObject({ SSH_ASKPASS_REQUIRE: 'force' })
+      expect(environment?.SSH_ASKPASS).toMatch(/agentsdock-ssh-password-/)
+      expect(environment?.AGENTSDOCK_SSH_PASSWORD_FILE).toMatch(/agentsdock-ssh-password-/)
+    }
+    const promptDirectory = runProcess.mock.calls[0]?.[5]?.environment?.SSH_ASKPASS
+      ?.replace(/\/askpass$/, '')
+    expect(promptDirectory && existsSync(promptDirectory)).toBe(false)
+  })
+
+  it('creates a private askpass helper that emits only the requested password', () => {
+    const prompt = createSSHPasswordPrompt('spaces and $ymbols')
+    try {
+      expect(statSync(prompt.directory).mode & 0o777).toBe(0o700)
+      expect(statSync(prompt.environment.AGENTSDOCK_SSH_PASSWORD_FILE!).mode & 0o777).toBe(0o600)
+      expect(execFileSync(prompt.environment.SSH_ASKPASS!, [], {
+        encoding: 'utf8', env: prompt.environment
+      })).toBe('spaces and $ymbols\n')
+    } finally {
+      rmSync(prompt.directory, { recursive: true, force: true })
+    }
   })
 
   it('does not launch the remote clone or installer after preflight failure', async () => {

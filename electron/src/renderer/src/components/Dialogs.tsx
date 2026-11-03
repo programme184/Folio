@@ -727,6 +727,8 @@ export function ServerOnboardingDialog() {
   const [view, setView] = useState<'setup' | 'manual'>('setup')
   const [target, setTarget] = useState<'ssh' | 'local'>('ssh')
   const [sshHost, setSSHHost] = useState('')
+  const [sshPassword, setSSHPassword] = useState('')
+  const [configuredSSHHosts, setConfiguredSSHHosts] = useState<string[]>([])
   const [port, setPort] = useState('7850')
   const [teamHubHost, setTeamHubHost] = useState(true)
   const [hostOrigin, setHostOrigin] = useState<TeamNetworkHostOrigin | null>(null)
@@ -744,10 +746,12 @@ export function ServerOnboardingDialog() {
 
   useEffect(() => {
     let active = true
-    void Promise.all([window.agentsDock.settings.get(), window.agentsDock.setup.capabilities()]).then(([settings, setup]) => {
+    const sshHosts = window.agentsDock.setup.configuredSSHHosts?.() ?? Promise.resolve([])
+    void Promise.all([window.agentsDock.settings.get(), window.agentsDock.setup.capabilities(), sshHosts]).then(([settings, setup, hosts]) => {
       if (!active) return
       setURL(settings.serverUrl)
       setCapabilities(setup)
+      setConfiguredSSHHosts(hosts)
       if (!setup.available) setView('manual')
       setOpen(!settings.serverSetupComplete && !useAppStore.getState().connected)
     })
@@ -778,6 +782,7 @@ export function ServerOnboardingDialog() {
       setElapsedSeconds(0)
       setTarget('ssh')
       setSSHHost('')
+      setSSHPassword('')
       setPort('7850')
       if (nextIntent === 'host-team-network') {
         const origin = detail?.origin
@@ -882,13 +887,16 @@ export function ServerOnboardingDialog() {
     setInstallStartedAt(Date.now())
     setElapsedSeconds(0)
     try {
-      const result = await window.agentsDock.setup.run({
+      const setup = window.agentsDock.setup.run({
         target,
         sshHost: target === 'ssh' ? sshHost.trim() : undefined,
+        ...(target === 'ssh' && sshPassword ? { sshPassword } : {}),
         port: Number(port),
         track: intent === 'update-beta' ? 'beta' : 'stable',
         ...(intent === 'update-beta' && !teamHubHost ? {} : { teamHubHost })
       })
+      setSSHPassword('')
+      const result = await setup
       if (cancelRequestedRef.current) throw new Error('AgentsServer setup was cancelled.')
       setURL(result.serverUrl)
       setToken(result.accessToken)
@@ -896,7 +904,12 @@ export function ServerOnboardingDialog() {
       await applyConnection(initiating.activeProfileId, initiating.profileGeneration, result.serverUrl, result.accessToken)
       setOpen(false)
     } catch (error) {
-      setSetupError(cancelRequestedRef.current ? 'Setup cancelled. You can retry without losing existing chats.' : message(error))
+      const detail = message(error)
+      setSetupError(cancelRequestedRef.current
+        ? 'Setup cancelled. You can retry without losing existing chats.'
+        : detail.includes('The AgentsServer install layout is group/world writable:')
+          ? t("ui.Dialogs.ServerOnboardingDialog.unsafe_install_layout")
+          : detail)
     } finally {
       setInstalling(false)
       setCancelling(false)
@@ -1074,10 +1087,11 @@ export function ServerOnboardingDialog() {
           <div className="server-setup-divider"><span>{t("ui.Dialogs.ServerOnboardingDialog.or_install_automatically_with_existing_ssh_f08f261")}</span></div>
         </>}
         <div className={`server-setup-fields ${target === 'local' ? 'local' : ''}`}>
-          {target === 'ssh' && <label><span>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_7e873f3")}</span><div className="input-with-icon"><KeyRound size={15} /><input autoFocus value={sshHost} disabled={installing} onChange={event => setSSHHost(event.target.value)} placeholder={t("ui.Dialogs.ServerOnboardingDialog.user_server_or_ssh_alias_86bea1d")} autoCapitalize="none" autoCorrect="off" /></div></label>}
+          {target === 'ssh' && <label><span>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_7e873f3")}</span><div className="input-with-icon"><KeyRound size={15} /><input autoFocus list={configuredSSHHosts.length > 0 ? 'agentsdock-configured-ssh-hosts' : undefined} value={sshHost} disabled={installing} onChange={event => setSSHHost(event.target.value)} placeholder={t("ui.Dialogs.ServerOnboardingDialog.user_server_or_ssh_alias_86bea1d")} autoCapitalize="none" autoCorrect="off" />{configuredSSHHosts.length > 0 && <datalist id="agentsdock-configured-ssh-hosts">{configuredSSHHosts.map(host => <option key={host} value={host} />)}</datalist>}</div></label>}
           <label className="server-port-field"><span>{t("ui.Dialogs.ServerOnboardingDialog.agentsserver_port_93ea882")}</span><input name="agentsdock-server-http-port" autoComplete="off" inputMode="numeric" min={1024} max={65535} aria-invalid={port.length > 0 && !validServerPort} value={port} disabled={installing} onChange={event => setPort(event.target.value.replace(/\D/g, '').slice(0, 5))} /></label>
+          {target === 'ssh' && <label className="server-password-field"><span>{t('ui.Dialogs.ServerOnboardingDialog.ssh_password')}</span><input type="password" value={sshPassword} disabled={installing} maxLength={1024} onChange={event => setSSHPassword(event.target.value)} placeholder={t('ui.Dialogs.ServerOnboardingDialog.ssh_password_placeholder')} autoComplete="new-password" /></label>}
         </div>
-        <p className="server-setup-help">{target === 'ssh' ? t("ui.Dialogs.ServerOnboardingDialog.ssh_host_key_and_connection_port_come_from_25c52e3") : t("ui.Dialogs.ServerOnboardingDialog.agentsserver_http_api_port_default_7850_po_9ba1d3d")}</p>
+        <p className="server-setup-help">{target === 'ssh' ? <>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_key_and_connection_port_come_from_25c52e3")} {configuredSSHHosts.length > 0 && t('ui.Dialogs.ServerOnboardingDialog.ssh_config_hosts_loaded')}</> : t("ui.Dialogs.ServerOnboardingDialog.agentsserver_http_api_port_default_7850_po_9ba1d3d")}</p>
         <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>
         {installStartedAt !== null && <div className={`server-setup-status ${setupError ? 'failed' : installing ? 'running' : 'stopped'}`} role="status" aria-live="polite">
           <span className="server-setup-status-icon">{setupError ? <CircleAlert size={15} /> : installing ? <LoaderCircle className="spin" size={15} /> : <Clock3 size={15} />}</span>

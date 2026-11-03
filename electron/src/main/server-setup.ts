@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renam
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { app } from 'electron'
+import { app, net } from 'electron'
 import type {
   ServerSetupCapabilities,
   ServerSetupDiagnostics,
@@ -21,6 +21,9 @@ const LAUNCHD_STOPPING_FAILURE = 'macOS is still stopping the previous AgentsSer
 const LAUNCHD_RETRY_DELAY_MS = 600
 const SETUP_LOG_MAX_BYTES = 2 * 1024 * 1024
 const SETUP_LOG_TAIL_LINES = 100
+const electronFetch = ((input: URL | RequestInfo, init?: RequestInit) => (
+  net.fetch(input instanceof URL ? input.toString() : input, init)
+)) as typeof fetch
 const DEFAULT_TIMINGS: ServerSetupTimings = Object.freeze({
   // The packaged installer allows up to 5 minutes for uv installation and
   // 20 minutes for dependency resolution. Keep the enclosing watchdog above
@@ -52,6 +55,7 @@ export interface ServerSetupTimings {
 interface ProcessRunOptions {
   phase?: ServerSetupProgress['phase']
   message?: string
+  environment?: NodeJS.ProcessEnv
 }
 export const SERVER_SETUP_PATH_BOOTSTRAP = `AGENTSDOCK_PREFLIGHT_CONFIG_DIR="\${AGENTS_SERVER_CONFIG_DIR:-$HOME/.config/agents-server}"
 AGENTSDOCK_PREFLIGHT_ENV_FILE="$AGENTSDOCK_PREFLIGHT_CONFIG_DIR/env"
@@ -220,7 +224,7 @@ export function serverSetupCapabilities(): ServerSetupCapabilities {
   }
 }
 
-export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> & { sshHost?: string } {
+export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> & { sshHost?: string; sshPassword?: string } {
   const target = input.target
   if (target !== 'local' && target !== 'ssh') throw new Error('Choose where to install AgentsServer.')
   const track = input.track ?? 'stable'
@@ -239,7 +243,14 @@ export function validateServerSetupInput(input: ServerSetupInput): Required<Pick
   if (!sshHost || sshHost.startsWith('-') || !/^[A-Za-z0-9_.@%+:[\]-]+$/.test(sshHost)) {
     throw new Error('Enter an SSH host such as user@server or a configured SSH alias.')
   }
-  return { target, port, track, sshHost, ...hostChoice }
+  if (input.sshPassword !== undefined && typeof input.sshPassword !== 'string') {
+    throw new Error('Enter a valid SSH password.')
+  }
+  const sshPassword = input.sshPassword || undefined
+  if (sshPassword && (Buffer.byteLength(sshPassword, 'utf8') > 4096 || /[\u0000\r\n]/.test(sshPassword))) {
+    throw new Error('The SSH password is too long or contains an unsupported line break.')
+  }
+  return { target, port, track, sshHost, ...(sshPassword ? { sshPassword } : {}), ...hostChoice }
 }
 
 export function parseServerSetupResult(line: string): ServerSetupResult | null {
@@ -332,10 +343,14 @@ export class ServerSetupManager {
 
   constructor(
     private readonly timings: ServerSetupTimings = DEFAULT_TIMINGS,
-    private readonly resolveRelease: typeof resolveServerSetupRelease = resolveServerSetupRelease
+    private readonly resolveRelease: typeof resolveServerSetupRelease = (track, signal) => (
+      resolveServerSetupRelease(track, signal, electronFetch)
+    )
   ) {}
 
   capabilities(): ServerSetupCapabilities { return serverSetupCapabilities() }
+
+  configuredSSHHosts(): string[] { return configuredSSHHosts() }
 
   diagnostics(): ServerSetupDiagnostics {
     return {
@@ -379,7 +394,7 @@ export class ServerSetupManager {
       appLog('server-setup', 'setup started', { target: validated.target, port: validated.port, track: release.track, version: release.version })
       const result = validated.target === 'local'
         ? await this.runLocal(validated.port, progress, validated.teamHubHost, release)
-        : await this.runRemote(validated.sshHost!, validated.port, progress, validated.teamHubHost, release)
+        : await this.runRemote(validated.sshHost!, validated.port, progress, validated.teamHubHost, release, validated.sshPassword)
       this.throwIfCancelled()
       this.state = 'completed'
       this.updatedAt = new Date().toISOString()
@@ -441,28 +456,36 @@ export class ServerSetupManager {
     port: number,
     progress: (value: ServerSetupProgress) => void,
     teamHubHost = false,
-    release: PinnedServerRelease
+    release: PinnedServerRelease,
+    sshPassword?: string
   ): Promise<ServerSetupResult> {
     const sshConfig = createUserSSHConfig()
+    const passwordPrompt = sshPassword ? createSSHPasswordPrompt(sshPassword) : null
     try {
       const resolvedHost = await resolveSSHConfigHost(sshHost, sshConfig?.file)
       if (resolvedHost !== sshHost.slice(sshHost.lastIndexOf('@') + 1)) {
         this.recordDiagnostic(`Resolved the SSH destination to ${resolvedHost}.`, 'connect')
       }
       this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
-      await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh', sshConfig?.file), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
+      await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh', sshConfig?.file, Boolean(passwordPrompt)), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
         phase: 'connect',
-        message: `Connecting to ${sshHost}…`
+        message: `Connecting to ${sshHost}…`,
+        environment: passwordPrompt?.environment
       })
       this.throwIfCancelled()
       const result = await this.runInstaller(sshCommand(), [
-        ...remoteShellArgs(sshHost, 'sh', sshConfig?.file), String(port), teamHubHost ? 'true' : 'false'
-      ], remoteReleaseBootstrap(release), progress, { phase: 'download', message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…` })
+        ...remoteShellArgs(sshHost, 'sh', sshConfig?.file, Boolean(passwordPrompt)), String(port), teamHubHost ? 'true' : 'false'
+      ], remoteReleaseBootstrap(release), progress, {
+        phase: 'download',
+        message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…`,
+        environment: passwordPrompt?.environment
+      })
       if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
         result.serverUrl = remoteFallbackURL(sshHost, port, resolvedHost)
       }
       return result
     } finally {
+      if (passwordPrompt) rmSync(passwordPrompt.directory, { recursive: true, force: true })
       if (sshConfig) rmSync(sshConfig.directory, { recursive: true, force: true })
     }
   }
@@ -509,7 +532,7 @@ export class ServerSetupManager {
       const startedAt = Date.now()
       if (!this.overallDeadlineAt) this.overallDeadlineAt = startedAt + this.timings.overallTimeoutMs
       const child = spawn(command, args, {
-        env: { ...process.env, PATH: serverSetupProcessPath(process.env.PATH), LC_ALL: 'C', LANG: 'C' },
+        env: { ...process.env, PATH: serverSetupProcessPath(process.env.PATH), LC_ALL: 'C', LANG: 'C', ...options.environment },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: process.platform !== 'win32'
       })
@@ -700,6 +723,61 @@ export function createUserSSHConfig(home = process.env.HOME?.trim() || ''): { di
   return { directory, file }
 }
 
+/** Return concrete aliases from the user's primary SSH config without exposing other config values. */
+export function parseSSHConfigHosts(text: string): string[] {
+  const hosts: string[] = []
+  const seen = new Set<string>()
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const match = line.match(/^\s*Host\s+(.+?)\s*(?:#.*)?$/i)
+    if (!match) continue
+    for (const host of match[1].trim().split(/\s+/)) {
+      if (!host || host.startsWith('!') || /[*?]/.test(host) || !/^[A-Za-z0-9_.@%+:[\]-]+$/.test(host)) continue
+      const key = host.toLocaleLowerCase('en-US')
+      if (seen.has(key)) continue
+      seen.add(key)
+      hosts.push(host)
+    }
+  }
+  return hosts
+}
+
+export function configuredSSHHosts(home = process.env.HOME?.trim() || ''): string[] {
+  const source = home ? join(home, '.ssh', 'config') : ''
+  if (!source || !existsSync(source)) return []
+  try {
+    return parseSSHConfigHosts(readFileSync(source, 'utf8'))
+  } catch (error) {
+    appLog('server-setup', 'could not read SSH host aliases', {
+      message: error instanceof Error ? error.message : String(error)
+    })
+    return []
+  }
+}
+
+export function createSSHPasswordPrompt(password: string): { directory: string; environment: NodeJS.ProcessEnv } {
+  const directory = mkdtempSync(join(tmpdir(), 'agentsdock-ssh-password-'))
+  const helper = join(directory, 'askpass')
+  const secret = join(directory, 'secret')
+  try {
+    writeFileSync(secret, `${password}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' })
+    writeFileSync(helper, '#!/bin/sh\nexec /bin/cat "$AGENTSDOCK_SSH_PASSWORD_FILE"\n', {
+      encoding: 'utf8', mode: 0o700, flag: 'wx'
+    })
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true })
+    throw error
+  }
+  return {
+    directory,
+    environment: {
+      SSH_ASKPASS: helper,
+      SSH_ASKPASS_REQUIRE: 'force',
+      DISPLAY: process.env.DISPLAY || 'agentsdock-ssh-password:0',
+      AGENTSDOCK_SSH_PASSWORD_FILE: secret
+    }
+  }
+}
+
 export function resolveSSHConfigHost(sshHost: string, configFile?: string): Promise<string> {
   return new Promise(resolve => {
     execFile(sshCommand(), [...(configFile ? ['-F', configFile] : []), '-G', sshHost], {
@@ -713,10 +791,15 @@ export function resolveSSHConfigHost(sshHost: string, configFile?: string): Prom
   })
 }
 
-export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFile?: string): string[] {
+export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFile?: string, password = false): string[] {
   return [
     ...(configFile ? ['-F', configFile] : []),
-    '-o', 'BatchMode=yes',
+    '-o', `BatchMode=${password ? 'no' : 'yes'}`,
+    ...(password ? [
+      '-o', 'PreferredAuthentications=password,keyboard-interactive',
+      '-o', 'PubkeyAuthentication=no',
+      '-o', 'NumberOfPasswordPrompts=1'
+    ] : []),
     '-o', 'ConnectTimeout=15',
     '-o', 'ConnectionAttempts=2',
     '-o', 'ServerAliveInterval=15',

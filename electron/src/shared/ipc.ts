@@ -375,6 +375,7 @@ export interface AgentsDockAPI {
   }
   setup: {
     capabilities(): Promise<ServerSetupCapabilities>
+    configuredSSHHosts(): Promise<string[]>
     run(input: ServerSetupInput): Promise<ServerSetupResult>
     cancel(): Promise<boolean>
     diagnostics(): Promise<ServerSetupDiagnostics>

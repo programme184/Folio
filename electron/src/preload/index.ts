@@ -185,6 +185,7 @@ const api: AgentsDockAPI = {
   },
   setup: {
     capabilities: () => ipcRenderer.invoke('server-setup:capabilities'),
+    configuredSSHHosts: () => ipcRenderer.invoke('server-setup:ssh-hosts'),
     run: input => ipcRenderer.invoke('server-setup:run', input),
     cancel: () => ipcRenderer.invoke('server-setup:cancel'),
     diagnostics: () => ipcRenderer.invoke('server-setup:diagnostics'),

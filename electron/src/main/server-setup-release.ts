@@ -92,16 +92,29 @@ function verifiedRelease(bytes: Buffer, signature: Buffer, track: PinnedServerRe
 export async function resolveServerSetupRelease(
   track: PinnedServerRelease['track'],
   signal?: AbortSignal,
-  fetcher: typeof fetch = fetch
+  fetcher: typeof fetch = fetch,
+  requestTimeoutMs = 45_000
 ): Promise<PinnedServerRelease> {
   if (track !== 'stable' && track !== 'beta') throw new Error('Choose the Stable or Beta AgentsServer channel.')
-  const requestSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(45_000)])
+  const requestSignal = AbortSignal.any([...(signal ? [signal] : []), AbortSignal.timeout(requestTimeoutMs)])
   const download = async (url: string, limit: number): Promise<Buffer> => {
     requestSignal.throwIfAborted()
-    const response = await fetcher(url, {
-      signal: requestSignal,
-      headers: { 'User-Agent': 'AgentsDock-Guided-Setup', Accept: url === RELEASES_API ? 'application/vnd.github+json' : '*/*' }
-    })
+    let response: Response
+    try {
+      response = await fetcher(url, {
+        signal: requestSignal,
+        headers: { 'User-Agent': 'AgentsDock-Guided-Setup', Accept: url === RELEASES_API ? 'application/vnd.github+json' : '*/*' }
+      })
+    } catch (error) {
+      if (signal?.aborted) signal.throwIfAborted()
+      if (requestSignal.aborted) {
+        throw new Error('Timed out while checking the AgentsServer release. Check this computer’s network or proxy, then retry guided setup.')
+      }
+      if (error instanceof TypeError) {
+        throw new Error('Could not reach the AgentsServer release service. Check this computer’s network or proxy, then retry guided setup.')
+      }
+      throw error
+    }
     if (!response.ok) {
       await response.body?.cancel()
       throw new ReleaseHTTPError(response.status)

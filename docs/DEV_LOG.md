@@ -9335,6 +9335,35 @@ Forget is in the API card's three-dot menu and requires confirmation.
 Future entries should describe public-facing changes and validation without
 including credentials, user data, private infrastructure, or internal history.
 
+## 2026-11-03 — SSH config hosts in guided server setup
+
+- Guided remote setup now offers concrete host aliases from the desktop user's
+  `~/.ssh/config` while preserving free-form `user@host` and IP entry. Wildcard
+  and negated Host patterns are excluded, and only aliases cross the IPC boundary.
+- Focused parser, preload, and onboarding regressions passed (58 tests), along
+  with TypeScript checking and the production Electron compile.
+- An isolated packaged Linux app was exercised through the real renderer/preload/
+  main boundary: Settings → Server → Add server → Guided server install loaded
+  the configured aliases, and direct `user@IP` entry enabled the SSH action.
+- Guided setup release discovery now uses Electron's proxy-aware network stack.
+  Network failures and timeouts report an actionable retry message instead of
+  exposing the underlying `fetch failed` or `TimeoutError`. The exact signed
+  manifest URL returned HTTP 200 through Electron on the affected machine.
+- Remote guided setup accepts an optional one-shot SSH password. The renderer
+  clears it immediately after dispatch; the main process supplies it through a
+  private temporary askpass helper, never command arguments or diagnostics, and
+  removes the temporary files after success, failure, or cancellation. Leaving
+  it blank preserves SSH key and config behavior.
+- A real password-authenticated remote attempt reached signed archive download
+  and verification. The existing install root was writable by other users, so
+  the server installer correctly stopped before activation; the dialog now
+  replaces that path-bearing error with localized permission-repair guidance.
+- The full Electron run completed with 5,584 passing, 5 skipped, and 71 failing
+  pre-existing checks in unrelated workspace, paper, localization, Team Hub,
+  and runtime-default areas. The package and sustained headless launch succeeded;
+  visual-theme review and a remote installation were not exercised. Availability
+  is a local desktop installation and package only; nothing was published or deployed.
+
 ## Recovered Codex turns do not duplicate user messages
 
 History reconciliation now recognizes exact public Codex message items even
