@@ -13,7 +13,8 @@ import {
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
-import { ChatWorkspaceGrid } from './components/ChatWorkspaceGrid'
+import { ChatWorkspaceGrid, type CrossServerWorkspaceState } from './components/ChatWorkspaceGrid'
+import { ChatPane } from './components/ChatPane'
 import { ChatHeader, WindowFrameControls } from './components/ChatHeader'
 import { AnswerFollowUp } from './components/AnswerFollowUp'
 import { CodeReview } from './components/CodeReview'
@@ -52,11 +53,68 @@ interface ScopedReviewTarget {
 }
 
 export function App() {
-  return <WorkspaceFilesProvider><AppWorkspace /></WorkspaceFilesProvider>
+  const embedded = new URLSearchParams(window.location.search).get('embeddedPane') === '1'
+  return <WorkspaceFilesProvider>{embedded ? <EmbeddedPaneApp /> : <AppWorkspace />}</WorkspaceFilesProvider>
+}
+
+function EmbeddedPaneApp() {
+  useLocale()
+  const initialize = useAppStore(state => state.initialize)
+  const initialized = useAppStore(state => state.initialized)
+  const activeProfileId = useAppStore(state => state.activeProfileId)
+  const activeServerIdentity = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.serverIdentity ?? null)
+  const sessions = useAppStore(state => state.sessions)
+  const selectedSessionId = useAppStore(state => state.selectedSessionId)
+  const selectedSession = useAppStore(state => state.sessions.find(session => session.id === state.selectedSessionId) ?? null)
+  const error = useAppStore(state => state.error)
+  const storageFull = useAppStore(state => state.storageFull)
+  const [query, setQuery] = useState('')
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const requestedSessionId = useMemo(() => new URLSearchParams(window.location.search).get('sessionId'), [])
+
+  useEffect(() => { void initialize() }, [initialize])
+  useEffect(() => {
+    if (!initialized || !requestedSessionId || requestedSessionId === selectedSessionId
+      || !sessions.some(session => session.id === requestedSessionId)) return
+    void useAppStore.getState().selectSession(requestedSessionId)
+  }, [initialized, requestedSessionId, selectedSessionId, sessions])
+
+  if (!initialized) return <main className="embedded-pane-boot"><LoaderCircle className="spin" size={20} /></main>
+  const candidates = sessions.filter(session => !session.archived
+    && `${session.title} ${session.cwd ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
+  return <main className="embedded-pane-app">
+    <ChatFontApplier />
+    <AnswerFollowUp />
+    {selectedSession
+      ? <ChatPane pane="primary" session={selectedSession} focused split={false} terminalOpen={terminalOpen}
+        onTerminalToggle={() => setTerminalOpen(open => !open)} />
+      : <section className="embedded-pane-session-picker">
+        <strong>{t('chatWorkspace.chooseChat')}</strong>
+        <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
+          value={query} onChange={event => setQuery(event.target.value)} />
+        <div className="embedded-pane-session-list">
+          {candidates.map(session => <button type="button" key={session.id}
+            onClick={() => void useAppStore.getState().selectSession(session.id)}>
+            <strong>{session.title}</strong><small>{session.backend}</small>
+          </button>)}
+          {!candidates.length && <p>{t('chatWorkspace.noChats')}</p>}
+        </div>
+      </section>}
+    {selectedSession && <TerminalDock
+      workspaceKey={rendererWorkspaceKey(activeProfileId, activeServerIdentity)}
+      open={terminalOpen}
+      session={selectedSession}
+      onRequestClose={() => setTerminalOpen(false)}
+    />}
+    {!storageFull && error && <div className="error-toast" role="alert"><span>{error}</span><button type="button" className="icon-button"
+      aria-label={t('ui.App.App.dismiss_error_2db0466')} onClick={() => useAppStore.getState().setError(null)}><X size={16} /></button></div>}
+    <Dialogs />
+  </main>
 }
 
 function AppWorkspace() {
   useLocale()
+  const [crossServerWorkspace, setCrossServerWorkspace] = useState<CrossServerWorkspaceState | null>(null)
   const initialize = useAppStore(state => state.initialize)
   const initialized = useAppStore(state => state.initialized)
   const activeProfileId = useAppStore(state => state.activeProfileId)
@@ -587,6 +645,8 @@ function AppWorkspace() {
             ? <><ChatHeader sidebarVisible={sidebarVisible} onSidebarToggle={toggleSidebar} /><WelcomeChat /></>
             : <ChatWorkspaceGrid
               key={activeRenderKey}
+              crossServerWorkspace={crossServerWorkspace}
+              onCrossServerWorkspaceChange={setCrossServerWorkspace}
               sidebarVisible={sidebarVisible}
               terminalOpen={Boolean(terminalOpen)}
               onSidebarToggle={toggleSidebar}

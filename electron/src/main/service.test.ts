@@ -93,6 +93,37 @@ import { mailHintPending, TEAM_MAIL_HINTS_PATH, TEAM_MAIL_HINTS_PROTOCOL, type M
 
 const cleanup: Array<() => void> = []
 
+describe('embedded pane services', () => {
+  it('keeps two saved profiles live without changing the desktop-wide active profile', async () => {
+    const { settings } = profileSettings()
+    const cache = new LocalCache(':memory:')
+    const sessionA = { id: 'chat-a', title: 'A chat', backend: 'codex', archived: false } as Session
+    const sessionB = { id: 'chat-b', title: 'B chat', backend: 'codex', archived: false } as Session
+    const clientA = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-a' }),
+      sessions: async () => [sessionA]
+    })
+    const clientB = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'server-b' }),
+      sessions: async () => [sessionB]
+    })
+    const clientFactory = (url: string) => (url.includes('a.test') ? clientA : clientB) as unknown as AgentServerClient
+    const primary = new AppService({ settings, cache, clientFactory })
+    const embedded = new AppService({ settings, cache, clientFactory, initialProfileId: 'b', embeddedPane: true })
+    cleanup.push(() => { primary.stop(); embedded.stop(); cache.close() })
+
+    const [sessionsA, sessionsB] = await Promise.all([primary.listSessions(), embedded.listSessions()])
+
+    expect(sessionsA).toEqual([expect.objectContaining({ id: 'chat-a' })])
+    expect(sessionsB).toEqual([expect.objectContaining({ id: 'chat-b' })])
+    expect(primary.matchesProfileScope('a', 1)).toBe(true)
+    expect(embedded.matchesProfileScope('b', 1)).toBe(true)
+    expect(settings.getActiveProfileId()).toBe('a')
+    expect(clientA.sessions).toHaveBeenCalled()
+    expect(clientB.sessions).toHaveBeenCalled()
+  })
+})
+
 describe('durable send request identity', () => {
   it('reuses identity after a lost response and a service restart, then rotates after acceptance', async () => {
     const receipts = new Map<string, unknown>()

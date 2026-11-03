@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type PointerEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from 'react'
 import { Columns2, Columns3, Grid2X2, PanelLeft, Square } from 'lucide-react'
-import type { Session } from '@shared/types'
+import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
-import { CHAT_PANE_IDS, type ChatPane as ChatPaneId } from '../lib/chat-panes'
+import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount } from '../lib/chat-panes'
 import { notifyTimelineViewportLayout } from '../lib/workspace-layout'
 import { useAppStore } from '../store/app-store'
 import { ChatPane } from './ChatPane'
+import { ServerSelector } from './ServerSelector'
 import { ChatWorkspaceTabs } from './ChatWorkspaceTabs'
 import './ChatWorkspaceGrid.css'
 
@@ -13,7 +14,27 @@ type ResizeAxis = 'column' | 'row' | 'first' | 'second'
 
 const boundRatio = (value: number) => Math.max(25, Math.min(75, value))
 
-export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggle, onTerminalToggle, sideChat, papersOpen = false, onPapersToggle, onAskPaper }: {
+export interface CrossServerPaneState {
+  profileId: string
+  profileGeneration: number
+  serverIdentity: string | null
+  profileName: string
+  session: Session | null
+  snapshot?: SessionSnapshot
+}
+
+export interface CrossServerWorkspaceState {
+  activeProfileId: string
+  paneCount: ChatPaneCount
+  focusedPane: ChatPaneId
+  panes: Partial<Record<ChatPaneId, CrossServerPaneState>>
+  pendingProfileId?: string
+  pendingPane?: ChatPaneId
+}
+
+export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWorkspaceChange = () => undefined, sidebarVisible, terminalOpen, onSidebarToggle, onTerminalToggle, sideChat, papersOpen = false, onPapersToggle, onAskPaper }: {
+  crossServerWorkspace?: CrossServerWorkspaceState | null
+  onCrossServerWorkspaceChange?: Dispatch<SetStateAction<CrossServerWorkspaceState | null>>
   sidebarVisible: boolean
   terminalOpen: boolean
   onSidebarToggle: () => void
@@ -33,8 +54,12 @@ export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggl
   const count = useAppStore(state => state.chatPaneCount)
   const focused = useAppStore(state => state.focusedChatPane)
   const sessions = useAppStore(state => state.sessions)
+  const profiles = useAppStore(state => state.profiles)
+  const snapshots = useAppStore(state => state.snapshots)
+  const effectiveCount = crossServerWorkspace?.paneCount ?? count
+  const effectiveFocused = crossServerWorkspace?.focusedPane ?? focused
   const active = workspaces.find(workspace => workspace.id === activeId)
-  const threeColumns = count === 3 && active?.threePaneLayout === 'columns'
+  const threeColumns = effectiveCount === 3 && active?.threePaneLayout === 'columns'
   const [ratios, setRatios] = useState({
     column: (active?.columnRatio ?? 0.5) * 100, row: (active?.rowRatio ?? 0.5) * 100,
     first: (active?.threeColumnRatios?.[0] ?? 1 / 3) * 100, second: (active?.threeColumnRatios?.[1] ?? 2 / 3) * 100
@@ -56,7 +81,11 @@ export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggl
     notifyTimelineViewportLayout('begin')
     const frame = requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
     return () => cancelAnimationFrame(frame)
-  }, [count, threeColumns, activeId])
+  }, [effectiveCount, threeColumns, activeId])
+  useEffect(() => {
+    if (crossServerWorkspace && !crossServerWorkspace.pendingProfileId
+      && crossServerWorkspace.activeProfileId !== profileId) onCrossServerWorkspaceChange(null)
+  }, [crossServerWorkspace, onCrossServerWorkspaceChange, profileId])
 
   const bounds = (axis: ResizeAxis) => axis === 'first' ? [20, ratioRef.current.second - 20]
     : axis === 'second' ? [ratioRef.current.first + 20, 80] : [25, 75]
@@ -148,6 +177,78 @@ export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggl
     }}
   />
 
+  const activeProfile = profiles.find(candidate => candidate.id === profileId) ?? null
+  const captureActivePane = (pane: ChatPaneId): CrossServerPaneState | null => {
+    if (!profileId || !activeProfile) return null
+    const sessionId = panes[pane]
+    const session = sessions.find(candidate => candidate.id === sessionId) ?? null
+    return {
+      profileId,
+      profileGeneration,
+      serverIdentity,
+      profileName: activeProfile.name,
+      session,
+      ...(session && snapshots[session.id] ? { snapshot: snapshots[session.id] } : {})
+    }
+  }
+  const capturedVisiblePanes = (): Partial<Record<ChatPaneId, CrossServerPaneState>> => {
+    const captured: Partial<Record<ChatPaneId, CrossServerPaneState>> = {}
+    for (const pane of CHAT_PANE_IDS.slice(0, effectiveCount)) {
+      const existing = crossServerWorkspace?.panes[pane]
+      const next = existing?.profileId === profileId
+        ? existing.session ? captureActivePane(pane) ?? existing : existing
+        : existing ?? captureActivePane(pane)
+      if (next) captured[pane] = next
+    }
+    return captured
+  }
+  const chooseServerForPane = async (pane: ChatPaneId, targetProfileId: string) => {
+    if (!profileId) return
+    const target = profiles.find(candidate => candidate.id === targetProfileId)
+    if (!target) return
+    const next: CrossServerWorkspaceState = {
+      activeProfileId: profileId,
+      paneCount: effectiveCount,
+      focusedPane: pane,
+      panes: {
+        ...capturedVisiblePanes(),
+        [pane]: {
+          profileId: target.id,
+          profileGeneration,
+          serverIdentity: target.serverIdentity ?? null,
+          profileName: target.name,
+          session: null
+        }
+      },
+    }
+    onCrossServerWorkspaceChange(next)
+  }
+  const selectSessionForPane = async (pane: ChatPaneId, sessionId: string) => {
+    const session = sessions.find(candidate => candidate.id === sessionId)
+    if (!session) return
+    if (crossServerWorkspace) {
+      onCrossServerWorkspaceChange(current => current ? {
+        ...current,
+        focusedPane: pane,
+        panes: {
+          ...current.panes,
+          [pane]: {
+            profileId: profileId!, profileGeneration, serverIdentity,
+            profileName: activeProfile?.name ?? '', session,
+            ...(snapshots[session.id] ? { snapshot: snapshots[session.id] } : {})
+          }
+        }
+      } : current)
+    }
+    await useAppStore.getState().selectSessionInPane(sessionId, pane)
+    const snapshot = useAppStore.getState().snapshots[sessionId]
+    if (snapshot) onCrossServerWorkspaceChange(current => {
+      const assignment = current?.panes[pane]
+      return current && assignment?.profileId === profileId && assignment.session?.id === sessionId
+        ? { ...current, panes: { ...current.panes, [pane]: { ...assignment, snapshot } } }
+        : current
+    })
+  }
   return <div className="chat-grid-workspace">
     <header className="workspace-tabs-bar">
       {!sidebarVisible && <button type="button" className="icon-button" onClick={onSidebarToggle} aria-label={t('chatWorkspace.showSidebar')}><PanelLeft size={16} /></button>}
@@ -155,51 +256,92 @@ export function ChatWorkspaceGrid({ sidebarVisible, terminalOpen, onSidebarToggl
       <div className="workspace-layout-picker" role="group" aria-label={t('chatWorkspace.layout')}>
         {([1, 2, 3, 'columns', 4] as const).map(value => <button key={value} type="button" className="icon-button"
           aria-label={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })} title={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
-          aria-pressed={value === 'columns' ? threeColumns : count === value && !threeColumns}
-          onClick={() => value === 'columns' || value === 3
-            ? useAppStore.getState().setChatThreePaneLayout(value === 'columns' ? 'columns' : 'split')
-            : useAppStore.getState().setChatPaneCount(value)}>
+          aria-pressed={value === 'columns' ? threeColumns : effectiveCount === value && !threeColumns}
+          onClick={() => {
+            onCrossServerWorkspaceChange(null)
+            if (value === 'columns' || value === 3) useAppStore.getState().setChatThreePaneLayout(value === 'columns' ? 'columns' : 'split')
+            else useAppStore.getState().setChatPaneCount(value)
+          }}>
           {value === 1 ? <Square size={15} /> : value === 2 ? <Columns2 size={15} /> : value === 'columns' ? <Columns3 size={15} /> : value === 4 ? <Grid2X2 size={15} /> : <span className="three-pane-icon" aria-hidden="true"><span /><span /><span /></span>}
         </button>)}
       </div>
     </header>
-    <div ref={gridRef} className={`workspace-chat-grid chat-split-view${count >= 3 && !threeColumns ? ' short' : ''}`} data-pane-count={count} data-three-pane-layout={threeColumns ? 'columns' : 'split'}
+    <div ref={gridRef} className={`workspace-chat-grid chat-split-view${effectiveCount >= 3 && !threeColumns ? ' short' : ''}`} data-pane-count={effectiveCount} data-three-pane-layout={threeColumns ? 'columns' : 'split'}
       style={{ '--workspace-column': `${ratios.column}%`, '--workspace-row': `${ratios.row}%`,
         '--workspace-first-column': `${ratios.first}%`, '--workspace-second-column': `${ratios.second}%` } as CSSProperties}>
-      {CHAT_PANE_IDS.slice(0, count).map(pane => {
-        const session = sessions.find(candidate => candidate.id === panes[pane])
-        return <div key={session?.id ?? `empty:${pane}`} className="workspace-pane-slot" data-pane={pane}>
-          {session ? <ChatPane pane={pane} session={session} focused={focused === pane} split={count > 1}
-            sidebarVisible={sidebarVisible} terminalOpen={focused === pane && terminalOpen}
+      {CHAT_PANE_IDS.slice(0, effectiveCount).map(pane => {
+        const assignment = crossServerWorkspace?.panes[pane]
+        const inactive = assignment && assignment.profileId !== profileId
+        const sessionId = assignment ? assignment.session?.id ?? null : panes[pane]
+        const session = sessions.find(candidate => candidate.id === sessionId)
+        return <div key={`${pane}:${assignment?.profileId ?? profileId}:${sessionId ?? 'empty'}`} className="workspace-pane-slot" data-pane={pane}>
+          {inactive ? <ConcurrentServerPane pane={pane} assignment={assignment}
+            onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)} />
+            : session ? <ChatPane pane={pane} session={session} focused={effectiveFocused === pane} split={effectiveCount > 1}
+            sidebarVisible={sidebarVisible} terminalOpen={effectiveFocused === pane && terminalOpen}
             onSidebarToggle={onSidebarToggle} onTerminalToggle={onTerminalToggle} sideChat={sideChat(session)}
             papersOpen={papersOpen} onPapersToggle={onPapersToggle} onAskPaper={onAskPaper} />
-            : <EmptyChatPane pane={pane} focused={focused === pane} />}
+            : <EmptyChatPane pane={pane} focused={effectiveFocused === pane}
+              selectedProfileId={assignment?.profileId ?? profileId}
+              excludedSessionIds={new Set(Object.values(crossServerWorkspace?.panes ?? {}).flatMap(candidate => candidate?.session?.id ? [candidate.session.id] : []))}
+              onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)}
+              onSelectSession={sessionId => selectSessionForPane(pane, sessionId)} />}
         </div>
       })}
       {threeColumns ? <>{separator('first')}{separator('second')}</> : <>
-        {count >= 2 && separator('column')}
-        {count >= 3 && separator('row')}
+        {effectiveCount >= 2 && separator('column')}
+        {effectiveCount >= 3 && separator('row')}
       </>}
     </div>
   </div>
 }
 
-function EmptyChatPane({ pane, focused }: { pane: ChatPaneId; focused: boolean }) {
+function EmptyChatPane({ pane, focused, selectedProfileId, excludedSessionIds, onChooseServer, onSelectSession }: {
+  pane: ChatPaneId
+  focused: boolean
+  selectedProfileId: string | null
+  excludedSessionIds: ReadonlySet<string>
+  onChooseServer: (profileId: string) => void | Promise<void>
+  onSelectSession: (sessionId: string) => void | Promise<void>
+}) {
   const sessions = useAppStore(state => state.sessions)
-  const panes = useAppStore(state => state.chatPanes)
   const [query, setQuery] = useState('')
-  const candidates = sessions.filter(session => !session.archived && !Object.values(panes).includes(session.id)
+  const candidates = sessions.filter(session => !session.archived && !excludedSessionIds.has(session.id)
     && `${session.title} ${session.cwd}`.toLowerCase().includes(query.toLowerCase()))
   return <section className={`empty-chat-pane${focused ? ' focused' : ''}`} data-chat-pane={pane} tabIndex={-1}
     onPointerDownCapture={() => useAppStore.getState().focusChatPane(pane)} onFocusCapture={() => useAppStore.getState().focusChatPane(pane)}>
-    <strong>{t('chatWorkspace.chooseChat')}</strong>
+    <div className="empty-pane-heading">
+      <strong>{t('chatWorkspace.chooseChat')}</strong>
+      <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={selectedProfileId} onChooseProfile={onChooseServer} /></div>
+    </div>
     <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
       value={query} onChange={event => setQuery(event.target.value)} />
     <div className="empty-pane-chat-list">
-      {candidates.map(session => <button type="button" key={session.id} onClick={() => void useAppStore.getState().selectSessionInPane(session.id, pane)}>
+      {candidates.map(session => <button type="button" key={session.id} onClick={() => void onSelectSession(session.id)}>
         <span>{session.title}</span><small>{session.backend}</small>
       </button>)}
       {!candidates.length && <span>{t('chatWorkspace.noChats')}</span>}
     </div>
+  </section>
+}
+
+function ConcurrentServerPane({ pane, assignment, onChooseServer }: {
+  pane: ChatPaneId
+  assignment: CrossServerPaneState
+  onChooseServer: (profileId: string) => void | Promise<void>
+}) {
+  const source = useMemo(() => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('embeddedPane', '1')
+    url.searchParams.set('profileId', assignment.profileId)
+    if (assignment.session?.id) url.searchParams.set('sessionId', assignment.session.id)
+    else url.searchParams.delete('sessionId')
+    return url.toString()
+  }, [assignment.profileId, assignment.session?.id])
+  return <section className="concurrent-server-pane" data-chat-pane={pane} data-profile-id={assignment.profileId}>
+    <header className="concurrent-server-pane-header">
+      <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={assignment.profileId} onChooseProfile={onChooseServer} /></div>
+    </header>
+    <webview key={source} className="concurrent-server-webview" src={source} />
   </section>
 }

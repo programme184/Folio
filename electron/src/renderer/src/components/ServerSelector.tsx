@@ -11,18 +11,29 @@ import { ShortcutTooltip } from './ShortcutTooltip'
 export const ADD_SERVER_EVENT = 'agentsdock:add-server'
 export const MANAGE_SERVERS_EVENT = 'agentsdock:manage-servers'
 
-export function ServerSelector() {
+export function ServerSelector({ compact = false, selectedProfileId, onChooseProfile }: {
+  compact?: boolean
+  selectedProfileId?: string | null
+  onChooseProfile?: (profileId: string) => void | Promise<void>
+} = {}) {
   useLocale()
   const profiles = useAppStore(state => state.profiles)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const switchServer = useAppStore(state => state.switchServer)
-  const active = profiles.find(profile => profile.id === activeProfileId) ?? profiles[0] ?? null
+  const selectedId = selectedProfileId === undefined ? activeProfileId : selectedProfileId
+  const active = profiles.find(profile => profile.id === selectedId) ?? profiles[0] ?? null
   const switchingProfile = profiles.find(profile => profile.id === switchingProfileId) ?? null
   const activeHost = active ? profileHostSubtitle(active) : null
 
   const chooseProfile = (profileId: string) => {
-    if (profileId === activeProfileId || profileId === switchingProfileId) return
+    if (profileId === selectedId || profileId === switchingProfileId) return
+    if (onChooseProfile) {
+      void Promise.resolve(onChooseProfile(profileId)).catch(error => {
+        useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+      })
+      return
+    }
     void Promise.resolve(switchServer(profileId)).then(switched => {
       if (!switched || useAppStore.getState().activeProfileId !== profileId) return
       trackEvent('server_switched', { success: true })
@@ -46,7 +57,7 @@ export function ServerSelector() {
 
   return <>
     <DropdownMenu.Root>
-      <ShortcutTooltip label={t("ui.ServerSelector.ServerSelector.switch_server_6fb2a18")} shortcut={['previousServer', 'nextServer']} side="right"><DropdownMenu.Trigger className="server-selector-trigger" disabled={Boolean(switchingProfileId)} aria-label={switchingProfile
+      <ShortcutTooltip label={t("ui.ServerSelector.ServerSelector.switch_server_6fb2a18")} shortcut={['previousServer', 'nextServer']} side={compact ? 'bottom' : 'right'}><DropdownMenu.Trigger className={`server-selector-trigger${compact ? ' compact' : ''}`} disabled={Boolean(switchingProfileId)} aria-label={switchingProfile
         ? t("ui.ServerSelector.ServerSelector.switching_to_please_wait_4563ec6", { "server": String(switchingProfile.name) })
         : active
           ? t("ui.ServerSelector.ServerSelector.choose_agentsserver_35d4c4a", { "server": String(active.name), "state": String(profileConnectionLabel(active)), "unread": active.cachedUnreadCount ? t('ui.server.unreadSuffix', { count: active.cachedUnreadCount }) : '' })
@@ -54,7 +65,7 @@ export function ServerSelector() {
         <ConnectionDot state={active?.connectionState ?? 'cached'} label={active ? profileConnectionLabel(active) : undefined} />
         <span className="server-selector-copy">
           <strong>{active?.name || t("ui.ServerSelector.ServerSelector.choose_server_389e87e")}</strong>
-          {activeHost && <small>{activeHost}</small>}
+          {!compact && activeHost && <small>{activeHost}</small>}
         </span>
         {active && active.cachedUnreadCount > 0 && <UnreadBadge count={active.cachedUnreadCount} />}
         {switchingProfileId ? <LoaderCircle className="spin server-selector-spinner" size={13} /> : <ChevronDown size={13} />}
@@ -63,7 +74,7 @@ export function ServerSelector() {
         <DropdownMenu.Content className="menu-content server-selector-menu" align="start" sideOffset={5} collisionPadding={10}>
           <DropdownMenu.Label className="menu-label">{t("ui.ServerSelector.ServerSelector.servers_68d7beb")}</DropdownMenu.Label>
           {profiles.map(profile => {
-            const current = profile.id === activeProfileId
+            const current = profile.id === selectedId
             const switching = profile.id === switchingProfileId
             const host = profileHostSubtitle(profile)
             return <DropdownMenu.Item

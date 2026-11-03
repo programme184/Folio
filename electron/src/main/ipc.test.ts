@@ -63,6 +63,23 @@ describe('Team Hub IPC registration', () => {
     expect(harness.handlers.has('codex:auth:api-key')).toBe(false)
   })
 
+  it('routes an embedded pane renderer to its isolated server service', async () => {
+    const primary = { listSessions: vi.fn().mockResolvedValue([{ id: 'primary' }]) }
+    const embedded = { listSessions: vi.fn().mockResolvedValue([{ id: 'embedded' }]) }
+    registerIpc(primary as unknown as AppService, {} as AppUpdateManager, undefined, {
+      serviceForSender: senderId => senderId === 2 ? embedded as unknown as AppService : null
+    })
+    const embeddedEvent = {
+      sender: { id: 2, getURL: () => 'file:///app/out/renderer/index.html?embeddedPane=1&profileId=beta' },
+      senderFrame: { url: 'file:///app/out/renderer/index.html?embeddedPane=1&profileId=beta', parent: null }
+    }
+
+    await expect(harness.handlers.get('sessions:list')?.(trustedEvent)).resolves.toEqual([{ id: 'primary' }])
+    await expect(harness.handlers.get('sessions:list')?.(embeddedEvent)).resolves.toEqual([{ id: 'embedded' }])
+    expect(primary.listSessions).toHaveBeenCalledOnce()
+    expect(embedded.listSessions).toHaveBeenCalledOnce()
+  })
+
   it('routes synced side-chat operations through scoped native IPC', async () => {
     const methods = { readSyncedSideChat: vi.fn(), submitSyncedSideChat: vi.fn(), stopSyncedSideChat: vi.fn(), clearSyncedSideChat: vi.fn() }
     registerIpc(methods as unknown as AppService, {} as AppUpdateManager)

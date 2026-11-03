@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, powerMonitor,
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { registerIpc } from './ipc'
+import { registerIpc, registerTrustedEmbeddedRenderer } from './ipc'
 import { appLog } from './logger'
 import { reportStorageError } from './storage-health'
 import { AppService } from './service'
@@ -27,6 +27,7 @@ import {
 } from './secure-peer-deep-link'
 import {
   chromeSandboxHelperReady,
+  configureLinuxPasswordStore,
   folioDesktopNeedsNoSandbox,
   folioLinuxDesktopCommand,
   folioLinuxDesktopEntry,
@@ -35,6 +36,8 @@ import {
   unprivilegedNamespacesFromSysctl
 } from './folio-linux-identity'
 import { permissionAllowed } from './session-permissions'
+
+configureLinuxPasswordStore(process.platform, app.commandLine, process.env.XDG_CURRENT_DESKTOP)
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } }
@@ -62,6 +65,7 @@ if (!app.requestSingleInstanceLock()) {
   let teamHub: LazyTeamHubService | null = null
   let language: LanguageSettings | null = null
   let coordinatedUpdates: CoordinatedUpdateManager | null = null
+  const embeddedPaneServices = new Map<number, EmbeddedPaneRuntime>()
   const securePeerDeepLinks = new SecurePeerDeepLinkRouter()
   const showMainWindow = (): void => {
     if (!mainWindow || mainWindow.isDestroyed()) return
@@ -155,6 +159,7 @@ if (!app.requestSingleInstanceLock()) {
       appLog('main', 'app service ready')
       serverSetup = registerIpc(service, updater, teamHub, {
         language,
+        serviceForSender: senderId => embeddedPaneServices.get(senderId)?.service,
         notificationReady: () => appService.rendererReadyForNotificationRoutes(mainWindow),
         securePeerInviteReady: () => {
           const window = mainWindow
@@ -175,9 +180,12 @@ if (!app.requestSingleInstanceLock()) {
       session.defaultSession.protocol.handle('agentsdock-media', async request => {
         const resource = parseMediaURL(request.url)
         if (!service || !resource) return mediaNotFoundResponse()
+        const scopedService = [service, ...[...embeddedPaneServices.values()].map(runtime => runtime.service)]
+          .find(candidate => candidate.matchesProfileScope(resource.profileId, resource.profileGeneration))
+        if (!scopedService && !('attachmentId' in resource)) return mediaNotFoundResponse()
         try {
           if ('fileId' in resource) {
-            return await service.mediaResponse(
+            return await scopedService!.mediaResponse(
               resource.profileId,
               resource.profileGeneration,
               resource.sessionId,
@@ -189,7 +197,7 @@ if (!app.requestSingleInstanceLock()) {
             if (!teamHub) return mediaNotFoundResponse()
             return await teamHub.teamAttachmentMediaResponse(resource, request)
           }
-          return await service.workspaceMediaResponse(
+          return await scopedService!.workspaceMediaResponse(
             resource.profileId,
             resource.profileGeneration,
             resource.sessionId,
@@ -202,6 +210,7 @@ if (!app.requestSingleInstanceLock()) {
       })
       createMenu(() => mainWindow)
       mainWindow = createWindow()
+      installEmbeddedPaneHost(mainWindow, appService, embeddedPaneServices)
       installSecurePeerDeepLinkWindow(mainWindow, securePeerDeepLinks)
       service.addWindow(mainWindow)
       service.start()
@@ -239,6 +248,7 @@ if (!app.requestSingleInstanceLock()) {
       language?.refreshSystemLocale()
       if (BrowserWindow.getAllWindows().length === 0) {
         mainWindow = createWindow()
+        if (service) installEmbeddedPaneHost(mainWindow, service, embeddedPaneServices)
         installSecurePeerDeepLinkWindow(mainWindow, securePeerDeepLinks)
         service?.addWindow(mainWindow)
       } else {
@@ -258,6 +268,8 @@ if (!app.requestSingleInstanceLock()) {
     serverSetup?.cancel()
     updater.stop()
     service?.stop()
+    for (const runtime of embeddedPaneServices.values()) runtime.dispose()
+    embeddedPaneServices.clear()
     teamHub?.stop()
   })
   app.on('window-all-closed', () => app.quit())
@@ -307,6 +319,86 @@ function folioWindowIconPath(): string | undefined {
   ].find(candidate => existsSync(candidate))
 }
 
+interface EmbeddedPaneRuntime {
+  service: AppService
+  dispose(): void
+}
+
+function installEmbeddedPaneHost(
+  window: BrowserWindow,
+  primaryService: AppService,
+  runtimes: Map<number, EmbeddedPaneRuntime>
+): void {
+  const pendingProfiles: string[] = []
+  const profileForURL = (value: string): string | null => {
+    try {
+      const url = new URL(value)
+      const devURL = process.env.ELECTRON_RENDERER_URL?.trim()
+      const trustedDocument = app.isPackaged
+        ? url.protocol === 'file:' && decodeURIComponent(url.pathname).endsWith('/out/renderer/index.html')
+        : devURL
+          ? url.origin === new URL(devURL).origin
+          : url.protocol === 'file:' && decodeURIComponent(url.pathname).endsWith('/out/renderer/index.html')
+      if (!trustedDocument || url.searchParams.get('embeddedPane') !== '1') return null
+      const profileId = url.searchParams.get('profileId')?.trim() ?? ''
+      return profileId && primaryService.settings.getProfile(profileId) ? profileId : null
+    } catch {
+      return null
+    }
+  }
+
+  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    const profileId = profileForURL(params.src)
+    if (!profileId) {
+      event.preventDefault()
+      appLog('security', 'blocked an invalid embedded pane renderer', { url: params.src })
+      return
+    }
+    pendingProfiles.push(profileId)
+    webPreferences.preload = join(__dirname, '../preload/index.cjs')
+    webPreferences.nodeIntegration = false
+    webPreferences.nodeIntegrationInSubFrames = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    webPreferences.webSecurity = true
+    webPreferences.allowRunningInsecureContent = false
+    webPreferences.devTools = !app.isPackaged
+  })
+
+  window.webContents.on('did-attach-webview', (_event, contents) => {
+    const pendingProfileId = pendingProfiles.shift() ?? null
+    const profileId = profileForURL(contents.getURL()) ?? pendingProfileId
+    if (!profileId) {
+      contents.close()
+      return
+    }
+    runtimes.get(contents.id)?.dispose()
+    const paneService = new AppService({
+      settings: primaryService.settings,
+      cache: primaryService.cache,
+      initialProfileId: profileId,
+      embeddedPane: true,
+      localServerDiscovery: async () => []
+    })
+    const revokeTrust = registerTrustedEmbeddedRenderer(contents.id)
+    const detach = paneService.addWebContents(contents)
+    let disposed = false
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      runtimes.delete(contents.id)
+      detach()
+      revokeTrust()
+      paneService.stop()
+    }
+    runtimes.set(contents.id, { service: paneService, dispose })
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    contents.on('will-navigate', event => event.preventDefault())
+    contents.once('destroyed', dispose)
+    paneService.start()
+  })
+}
+
 function createWindow(): BrowserWindow {
   const platformWindowOptions = process.platform === 'darwin'
     ? {
@@ -335,6 +427,7 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
       spellcheck: true,
       devTools: !app.isPackaged,
       webSecurity: true,
@@ -364,7 +457,6 @@ function createWindow(): BrowserWindow {
     return { action: 'deny' }
   })
   window.webContents.on('will-navigate', event => event.preventDefault())
-  window.webContents.on('will-attach-webview', event => event.preventDefault())
   installWindowCloseFlush(window, {
     onTimeout: requestId => appLog('persistence', 'renderer close flush timed out', { requestId })
   })

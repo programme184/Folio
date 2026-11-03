@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  configureLinuxPasswordStore,
   folioDesktopNeedsNoSandbox,
   folioLinuxDesktopCommand,
   folioLinuxDesktopEntry,
@@ -14,6 +15,25 @@ import {
 const file = (uid: number, mode: number) => ({ uid, mode, isFile: () => true })
 
 describe('Folio linux launcher', () => {
+  it('detects a secure Linux password store without overriding an explicit backend', () => {
+    const switches = new Map<string, string>()
+    const commandLine = {
+      hasSwitch: (name: string) => switches.has(name),
+      appendSwitch: (name: string, value = '') => { switches.set(name, value) }
+    }
+    expect(configureLinuxPasswordStore('linux', commandLine, undefined)).toBe(true)
+    expect(switches.get('password-store')).toBe('gnome-libsecret')
+    switches.set('password-store', 'gnome-libsecret')
+    expect(configureLinuxPasswordStore('linux', commandLine, 'ubuntu:GNOME')).toBe(false)
+    expect(switches.get('password-store')).toBe('gnome-libsecret')
+    switches.clear()
+    expect(configureLinuxPasswordStore('linux', commandLine, 'KDE')).toBe(true)
+    expect(switches.get('password-store')).toBe('detect')
+    switches.clear()
+    expect(configureLinuxPasswordStore('darwin', commandLine, undefined)).toBe(false)
+    expect(switches.has('password-store')).toBe(false)
+  })
+
   it('treats only a root setuid chrome-sandbox as ready', () => {
     expect(sandboxHelperIsReady(file(0, 0o104755))).toBe(true)
     expect(sandboxHelperIsReady(file(0, 0o100755))).toBe(false)

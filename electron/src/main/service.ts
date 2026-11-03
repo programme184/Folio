@@ -1,7 +1,7 @@
 import type { ProviderUsageScope, ProviderUsageSnapshot, UsageBackend } from '../shared/provider-usage'
 import { customModelBackend, customModelInput, type CustomModelBackend, type CustomModelInput } from '../shared/custom-models'
 import { cliAccountBackend, type CLIAccountBackend, connectionRequest, type ConnectionBackend, type ConnectionAction, type ProviderConnectionRequest, type ProviderConnectionReply } from '../shared/provider-connections'
-import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell, type WebContents } from 'electron'
 import QRCode from 'qrcode'
 import { localOnlyServerUrl, normalizeConnectionURLs, serverConnectionLink, type ServerConnectionQr } from '../shared/server-connection-link'
 import { discoverLocalServers, type DiscoveredLocalServer } from './local-server-discovery'
@@ -371,6 +371,10 @@ export interface AppServiceOptions {
   fileUploadGrants?: FileUploadGrantRegistry
   /** Test seam for private clipboard staging/scavenging. */
   clipboardTempRoot?: string
+  /** Start a renderer-isolated service on one saved profile without changing the desktop-wide selection. */
+  initialProfileId?: string
+  /** Avoid duplicate discovery and inactive-profile polling for an embedded pane service. */
+  embeddedPane?: boolean
 }
 
 export class AppService {
@@ -406,6 +410,9 @@ export class AppService {
   private profileAuthorityOperations = new Map<string, Promise<void>>()
   private pendingProfileAuthorityNamespaces = new Map<string, string[]>()
   private windows = new Set<BrowserWindow>()
+  private rendererTargets = new Set<WebContents>()
+  private readonly embeddedPane: boolean
+  private readonly persistProfileSelection: boolean
   private focusedSessionId: string | null = null
   private seenEmergencyAlertIds = new Set<string>()
   private notifiedEmergencyAlertIds = new Set<string>()
@@ -486,6 +493,8 @@ export class AppService {
   } | null = null
 
   constructor(options: AppServiceOptions = {}) {
+    this.embeddedPane = options.embeddedPane === true
+    this.persistProfileSelection = !this.embeddedPane
     this.localServerDiscovery = options.localServerDiscovery ?? (options.settings || options.clientFactory ? async () => [] : discoverLocalServers)
     appLog('startup', 'loading settings')
     this.settings = options.settings ?? new SettingsStore()
@@ -520,7 +529,10 @@ export class AppService {
       if (retiredNamespaces.length) this.pendingProfileAuthorityNamespaces.set(profile.id, retiredNamespaces)
       if (!this.pendingProfileAuthorityNamespaces.has(profile.id)) this.reconcileStoredProfileCache(profile)
     }
-    const active = this.settings.getActiveProfile()
+    const active = options.initialProfileId
+      ? this.settings.getProfile(options.initialProfileId)
+      : this.settings.getActiveProfile()
+    if (!active) throw new Error(`Unknown server profile: ${options.initialProfileId}`)
     this.activeProfileId = active.id
     this.serverId = profileNamespace(active)
     const activeServerUrl = this.settings.serverUrl(active.id)
@@ -553,6 +565,7 @@ export class AppService {
 
   addWindow(window: BrowserWindow): void {
     this.windows.add(window)
+    this.rendererTargets.add(window.webContents)
     const stopStorageObserver = observeStorageErrors(() => {
       if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('app:storage', { full: true })
     })
@@ -580,9 +593,49 @@ export class AppService {
     window.on('closed', () => {
       stopStorageObserver()
       this.windows.delete(window)
+      this.rendererTargets.delete(window.webContents)
       this.rendererReadyWindows.delete(window)
       this.invalidateRendererFileGrants(rendererId, true)
     })
+  }
+
+  addWebContents(contents: WebContents): () => void {
+    if (contents.isDestroyed()) throw new Error('Cannot attach a destroyed renderer.')
+    this.rendererTargets.add(contents)
+    const stopStorageObserver = observeStorageErrors(() => {
+      if (!contents.isDestroyed()) contents.send('app:storage', { full: true })
+    })
+    const rendererId = contents.id
+    this.rendererGrantEpochs.set(rendererId, (this.rendererGrantEpochs.get(rendererId) ?? 0) + 1)
+    const noteKeyboard = (_event: unknown, input: { type: string }) => {
+      if (input.type === 'rawKeyDown' || input.type === 'keyDown' || input.type === 'char') this.noteForegroundInteraction()
+    }
+    const noteMouse = (_event: unknown, input: { type: string }) => {
+      if (input.type === 'mouseDown' || input.type === 'mouseWheel') this.noteForegroundInteraction()
+    }
+    const reset = () => {
+      this.rendererReadyWindows = new WeakSet<BrowserWindow>()
+      this.invalidateRendererFileGrants(rendererId, false)
+    }
+    let detached = false
+    const detach = () => {
+      if (detached) return
+      detached = true
+      stopStorageObserver()
+      this.rendererTargets.delete(contents)
+      this.invalidateRendererFileGrants(rendererId, true)
+      if (!contents.isDestroyed()) {
+        contents.removeListener('before-input-event', noteKeyboard)
+        contents.removeListener('before-mouse-event', noteMouse)
+        contents.removeListener('did-start-loading', reset)
+        contents.removeListener('destroyed', detach)
+      }
+    }
+    contents.on('before-input-event', noteKeyboard)
+    contents.on('before-mouse-event', noteMouse)
+    contents.on('did-start-loading', reset)
+    contents.on('destroyed', detach)
+    return detach
   }
 
   retryLocalStorage(): void {
@@ -622,17 +675,17 @@ export class AppService {
     if (this.running) return
     if (!this.clientAvailable) this.activateProfile(this.activeProfileId, false, true)
     this.running = true
-    if (!this.localDiscoveryStarted) {
+    if (!this.embeddedPane && !this.localDiscoveryStarted) {
       this.localDiscoveryStarted = true
       void this.discoverManagedLocalServers()
     }
     void this.runBackgroundRefresh(true, this.captureScope())
-    void this.refreshInactiveProfileHealth()
+    if (!this.embeddedPane) void this.refreshInactiveProfileHealth()
     this.pollTimer = setInterval(
       () => this.scheduleBackgroundRefresh(this.captureScope()),
       BACKGROUND_REFRESH_INTERVAL_MS
     )
-    this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
+    if (!this.embeddedPane) this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
     this.jobsPollTimer = setInterval(() => void this.refreshJobs(this.captureScope()), 30_000)
     this.scheduleSearchBackfill(1_000)
   }
@@ -679,6 +732,7 @@ export class AppService {
     this.rendererReadyWindows = new WeakSet<BrowserWindow>()
     cleanup(() => this.abortAllRendererFileOperations())
     this.rendererGrantEpochs.clear()
+    this.rendererTargets.clear()
     cleanup(() => this.disconnectAllTerminals())
     this.terminalLeases.clear()
     cleanup(() => this.portTunnels.disposeAll())
@@ -764,12 +818,18 @@ export class AppService {
   }
 
   listServers(): PublicServerProfile[] {
-    void this.refreshInactiveProfileHealth()
+    if (!this.embeddedPane) void this.refreshInactiveProfileHealth()
     return this.publicProfiles()
   }
 
   getActiveServer(): PublicServerProfile {
-    return this.settings.getActiveProfile(this.runtimeForProfile(this.activeProfileId))
+    const profile = this.settings.getProfile(this.activeProfileId, this.runtimeForProfile(this.activeProfileId))
+    if (!profile) throw new Error(`Unknown server profile: ${this.activeProfileId}`)
+    return profile
+  }
+
+  matchesProfileScope(profileId: string, profileGeneration: number): boolean {
+    return this.clientAvailable && this.activeProfileId === profileId && this.profileGeneration === profileGeneration
   }
 
   /** Main-process-only scope used to fence Team Hub discovery and requests. */
@@ -1675,7 +1735,7 @@ export class AppService {
     }
     const scope = this.activateProfile(
       profileId,
-      true,
+      this.persistProfileSelection,
       true,
       nextClient,
       undefined,
@@ -1830,7 +1890,7 @@ export class AppService {
       : undefined
     const scope = this.activateProfile(
       profileId,
-      true,
+      this.persistProfileSelection,
       force || Boolean(pendingNamespaces),
       nextClient,
       undefined,
@@ -7098,8 +7158,10 @@ export class AppService {
   }
 
   private emit<K extends keyof AppEventMap>(name: K, payload: AppEventMap[K]): void {
-    for (const window of this.windows) {
-      if (!window.isDestroyed()) window.webContents.send(name, payload)
+    for (const contents of this.rendererTargets) {
+      // Lightweight WebContents fixtures used by the service tests predate
+      // Electron's lifecycle helpers; a real target always has isDestroyed().
+      if (typeof contents.isDestroyed !== 'function' || !contents.isDestroyed()) contents.send(name, payload)
     }
   }
 

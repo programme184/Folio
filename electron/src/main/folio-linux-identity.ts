@@ -4,6 +4,29 @@ import { basename, dirname, join } from 'node:path'
 const LAUNCH_SHIM_MARK = '# folio-electron-shim'
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46])
 
+interface ElectronCommandLine {
+  hasSwitch(name: string): boolean
+  appendSwitch(name: string, value?: string): void
+}
+
+/**
+ * Select a real credential store before Electron becomes ready on Linux.
+ * Chromium's `detect` mode needs a desktop hint; launchers that omit it can
+ * silently select `basic_text` even while the Secret Service is available.
+ * Settings deliberately rejects that backend because it is only obfuscation,
+ * not secure token storage. KDE retains Chromium's KWallet detection while
+ * GNOME and desktop-hint-free launches use the freedesktop Secret Service.
+ */
+export function configureLinuxPasswordStore(
+  platform: NodeJS.Platform,
+  commandLine: ElectronCommandLine,
+  desktop = process.env.XDG_CURRENT_DESKTOP
+): boolean {
+  if (platform !== 'linux' || commandLine.hasSwitch('password-store')) return false
+  commandLine.appendSwitch('password-store', /(?:^|:)KDE(?:$|:)/i.test(desktop ?? '') ? 'detect' : 'gnome-libsecret')
+  return true
+}
+
 /** True when Chromium's setuid sandbox helper can actually run. */
 export function sandboxHelperIsReady(stat: { uid: number; mode: number; isFile: () => boolean } | null): boolean {
   return !!stat && stat.isFile() && stat.uid === 0 && (stat.mode & 0o4755) === 0o4755

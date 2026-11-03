@@ -15,6 +15,7 @@ import { createPaperNoteFiles, type PaperNoteFileStore } from './paper-note-file
 import type { PaperShelf } from './paper-shelf'
 import { translateToChinese } from './paper-translate'
 import { issueReportEnvironment } from './issue-report'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 export interface RegisterIpcOptions {
   language?: Pick<LanguageSettings, 'get' | 'set'>
@@ -23,6 +24,7 @@ export interface RegisterIpcOptions {
   papers?: PaperShelf
   paperMarks?: PaperMarkStore
   paperNoteFiles?: PaperNoteFileStore
+  serviceForSender?: (senderId: number) => AppService | null | undefined
 }
 
 export function registerIpc(
@@ -31,20 +33,36 @@ export function registerIpc(
   teamHub?: LazyTeamHubService,
   options: RegisterIpcOptions = {}
 ): ServerSetupManager {
+  const primaryService = service
+  const serviceContext = new AsyncLocalStorage<AppService>()
+  service = new Proxy(primaryService, {
+    get(target, property) {
+      const selected = serviceContext.getStore() ?? target
+      const value = Reflect.get(selected, property, selected)
+      return typeof value === 'function' ? value.bind(selected) : value
+    }
+  })
   const serverSetup = new ServerSetupManager()
   const artifactTextReads = new Map<string, AbortController>()
   const handleWithEvent = (channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown): void => {
     ipcMain.removeHandler(channel)
     ipcMain.handle(channel, (event, ...args) => {
       requireTrustedSender(event, channel)
-      try {
-        const result = listener(event, ...args)
-        if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-          return Promise.resolve(result).catch(error => { reportStorageError(error); throw error })
-        }
-        return result
-      } catch (error) { reportStorageError(error); throw error }
+      const selected = options.serviceForSender?.(event.sender.id) ?? primaryService
+      return serviceContext.run(selected, () => {
+        try {
+          const result = listener(event, ...args)
+          if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+            return Promise.resolve(result).catch(error => { reportStorageError(error); throw error })
+          }
+          return result
+        } catch (error) { reportStorageError(error); throw error }
+      })
     })
+  }
+  const withEventService = <T>(event: SenderEvent, operation: () => T): T => {
+    const selected = options.serviceForSender?.(event.sender.id) ?? primaryService
+    return serviceContext.run(selected, operation)
   }
   const handle = (channel: string, listener: (...args: any[]) => unknown): void => {
     handleWithEvent(channel, (_event, ...args) => listener(...args))
@@ -400,7 +418,7 @@ export function registerIpc(
     const controller = new AbortController()
     artifactTextReads.set(key, controller)
     try {
-      return await service.readTextFile(sessionId, file, controller.signal)
+      return await withEventService(event, () => service.readTextFile(sessionId, file, controller.signal))
     } finally {
       if (artifactTextReads.get(key) === controller) artifactTextReads.delete(key)
     }
@@ -424,7 +442,7 @@ export function registerIpc(
     requireTrustedSender(event, 'files:begin-drag')
     const window = BrowserWindow.fromWebContents(event.sender)
     if (!window) return false
-    return service.beginDrag(sessionId, file, window)
+    return withEventService(event, () => service.beginDrag(sessionId, file, window))
   })
   handle('workspace:info', sessionId => service.workspaceInfo(sessionId))
   handle('workspace:entries', (sessionId, path, offset, limit) => service.workspaceEntries(sessionId, path, offset, limit))
@@ -468,15 +486,15 @@ export function registerIpc(
   ))
   ipcMain.removeAllListeners('terminal:write')
   ipcMain.on('terminal:write', (event, profileId, profileGeneration, sessionId, data) => {
-    if (acceptTrustedSender(event, 'terminal:write')) service.writeTerminal(profileId, profileGeneration, sessionId, data)
+    if (acceptTrustedSender(event, 'terminal:write')) withEventService(event, () => service.writeTerminal(profileId, profileGeneration, sessionId, data))
   })
   ipcMain.removeAllListeners('terminal:resize')
   ipcMain.on('terminal:resize', (event, profileId, profileGeneration, sessionId, columns, rows) => {
-    if (acceptTrustedSender(event, 'terminal:resize')) service.resizeTerminal(profileId, profileGeneration, sessionId, columns, rows)
+    if (acceptTrustedSender(event, 'terminal:resize')) withEventService(event, () => service.resizeTerminal(profileId, profileGeneration, sessionId, columns, rows))
   })
   ipcMain.removeAllListeners('terminal:scroll')
   ipcMain.on('terminal:scroll', (event, profileId, profileGeneration, sessionId, delta) => {
-    if (acceptTrustedSender(event, 'terminal:scroll')) service.scrollTerminal(profileId, profileGeneration, sessionId, delta)
+    if (acceptTrustedSender(event, 'terminal:scroll')) withEventService(event, () => service.scrollTerminal(profileId, profileGeneration, sessionId, delta))
   })
   handle('pins:list', (scope, sessionId) => service.pins(scope, sessionId))
   handle('pins:put', (scope, item) => service.putPin(scope, item))
@@ -550,6 +568,14 @@ export function registerIpc(
 
 type SenderEvent = IpcMainEvent | IpcMainInvokeEvent
 
+const trustedEmbeddedRendererIds = new Set<number>()
+
+export function registerTrustedEmbeddedRenderer(senderId: number): () => void {
+  if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('Invalid embedded renderer identity.')
+  trustedEmbeddedRendererIds.add(senderId)
+  return () => { trustedEmbeddedRendererIds.delete(senderId) }
+}
+
 function artifactTextReadKey(event: SenderEvent, sessionId: unknown, requestId: unknown): string {
   if (typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 2_048 || /[\u0000-\u001f\u007f]/.test(sessionId)) {
     throw new Error('Invalid artifact text read chat.')
@@ -575,7 +601,9 @@ function requireTrustedSender(event: SenderEvent, channel: string): void {
 
 function isTrustedSender(event: SenderEvent): boolean {
   const window = BrowserWindow.fromWebContents(event.sender)
-  if (!window || window.isDestroyed() || event.senderFrame?.parent) return false
+  const embedded = trustedEmbeddedRendererIds.has(event.sender.id)
+  if ((!window || window.isDestroyed()) && !embedded) return false
+  if (event.senderFrame?.parent) return false
   const value = event.senderFrame?.url || event.sender.getURL()
   try {
     const url = new URL(value)

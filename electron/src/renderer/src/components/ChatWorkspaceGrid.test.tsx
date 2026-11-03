@@ -1,7 +1,7 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
-import type { PublicServerProfile } from '@shared/types'
+import type { PublicServerProfile, Session } from '@shared/types'
 import type { ChatWorkspace } from '../lib/chat-panes'
 import { useAppStore } from '../store/app-store'
 import { ChatWorkspaceGrid } from './ChatWorkspaceGrid'
@@ -90,6 +90,66 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Three columns' }))
     expect(screen.getByRole('separator', { name: 'Resize first column' })).toHaveAttribute('aria-valuenow', '28')
     expect(screen.getByRole('separator', { name: 'Resize last column' })).toHaveAttribute('aria-valuenow', '72')
+  })
+
+  it('offers every saved server before choosing a chat for an empty pane', async () => {
+    const switchServer = vi.fn(async (profileId: string) => {
+      useAppStore.setState({ activeProfileId: profileId })
+      return true
+    })
+    const onCrossServerWorkspaceChange = vi.fn()
+    useAppStore.setState({ profiles: [profile('a'), profile('b'), profile('c')], switchServer })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onCrossServerWorkspaceChange={onCrossServerWorkspaceChange}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+
+    const emptyPane = view.container.querySelector('[data-chat-pane="primary"]') as HTMLElement
+    const selector = within(emptyPane).getByRole('button', { name: /a, Online.*Choose AgentsServer/ })
+    expect(selector).toHaveClass('compact')
+    fireEvent.pointerDown(selector, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /c/ }))
+
+    expect(switchServer).not.toHaveBeenCalled()
+    expect(onCrossServerWorkspaceChange).toHaveBeenCalledWith(expect.objectContaining({
+      activeProfileId: 'a', focusedPane: 'primary',
+      panes: expect.objectContaining({ primary: expect.objectContaining({ profileId: 'c' }) })
+    }))
+  })
+
+  it('captures the left pane before switching the empty right pane to another server', async () => {
+    const left = { id: 'left-chat', title: 'Left chat', backend: 'codex', cwd: '/left', archived: false } as Session
+    const switchServer = vi.fn(async () => true)
+    const onCrossServerWorkspaceChange = vi.fn()
+    useAppStore.setState({
+      profiles: [profile('a'), profile('b')], sessions: [left], switchServer,
+      chatPanes: { primary: left.id, secondary: null }, chatPaneCount: 2, focusedChatPane: 'secondary',
+      chatWorkspaces: [{ ...workspace('workspace-main'), panes: { primary: left.id, secondary: null }, focusedPane: 'secondary' }]
+    })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onCrossServerWorkspaceChange={onCrossServerWorkspaceChange}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+
+    const right = view.container.querySelector('[data-pane="secondary"]') as HTMLElement
+    fireEvent.pointerDown(within(right).getByRole('button', { name: /a, Online.*Choose AgentsServer/ }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /b/ }))
+
+    expect(onCrossServerWorkspaceChange).toHaveBeenCalledWith(expect.objectContaining({
+      activeProfileId: 'a', paneCount: 2, focusedPane: 'secondary',
+      panes: {
+        primary: expect.objectContaining({ profileId: 'a', session: left }),
+        secondary: expect.objectContaining({ profileId: 'b', session: null })
+      }
+    }))
+    expect(switchServer).not.toHaveBeenCalled()
+
+    const concurrent = onCrossServerWorkspaceChange.mock.calls[0][0]
+    view.rerender(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      crossServerWorkspace={concurrent} onCrossServerWorkspaceChange={onCrossServerWorkspaceChange}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const embedded = view.container.querySelector('[data-pane="secondary"] webview')
+    expect(embedded).toHaveAttribute('src', expect.stringContaining('embeddedPane=1'))
+    expect(embedded).toHaveAttribute('src', expect.stringContaining('profileId=b'))
+    expect(within(view.container.querySelector('[data-pane="secondary"]') as HTMLElement).queryByRole('button', { name: 'Activate' })).not.toBeInTheDocument()
   })
 
   it('does not let either column divider collapse a neighboring pane', () => {

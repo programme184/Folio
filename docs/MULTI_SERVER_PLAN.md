@@ -15,12 +15,15 @@ that server's local cache before the network refresh completes.
 
 ## Product Decisions
 
-1. One server workspace is active at a time.
+1. The sidebar has one selected server workspace. Split chat panes may also bind
+   other saved servers and remain fully interactive at the same time.
 2. The full chat sidebar is not merged across servers.
 3. A permanent server selector sits above the chat sidebar.
 4. Cmd-P may search cached chats across all servers and switch automatically.
 5. Notifications carry both profile ID and session ID and switch before opening.
-6. Only the active server is continuously polled in the first release.
+6. The sidebar server and every server currently visible in a split pane keep an
+   independent client, event stream and bounded poller. Profiles that are not
+   visible retain cached status only.
 7. Inactive servers show their last cached status and unread count.
 8. Folders, ordering, archived state, selected chat, drafts, and timeline position
    remain independent per server.
@@ -247,12 +250,16 @@ opens the requested chat. It must never create another app window.
 
 ## Background Activity
 
-Initial release:
+Current behavior:
 
-- Poll and stream only the active server.
+- Poll and stream the sidebar server plus servers mounted in visible split panes.
+- Each cross-server pane runs an isolated renderer state and main-process service;
+  its requests, media, files, terminals and provider events are routed by the
+  originating renderer and fenced by profile generation.
 - Keep last-known unread counts for inactive profiles.
-- Refresh an inactive profile only when selected or opened through a
-  notification/search result.
+- Refresh a profile when selected, mounted in a pane, or opened through a
+  notification/search result. Destroying the pane retires its stream, timers,
+  terminals and client without changing the sidebar selection.
 
 Possible follow-up:
 
@@ -347,6 +354,9 @@ Add regression coverage for:
 - Repeated rapid switching does not increase listener, timer, or connection
   counts.
 - Existing single-server users migrate without setup prompts or token loss.
+- Two split panes on different servers can send, receive live events and mutate
+  their own chats concurrently without an activation step or a global server
+  switch.
 
 ## Maintenance Starting Point
 
