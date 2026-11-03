@@ -4,9 +4,10 @@ import type { AgentsDockAPI } from '@shared/ipc'
 import type { PublicServerProfile, Session } from '@shared/types'
 import type { ChatWorkspace } from '../lib/chat-panes'
 import { useAppStore } from '../store/app-store'
-import { ChatWorkspaceGrid } from './ChatWorkspaceGrid'
+import { ChatWorkspaceGrid, type CrossServerWorkspaceState } from './ChatWorkspaceGrid'
 
-vi.mock('./ChatPane', () => ({ ChatPane: () => <div /> }))
+vi.mock('./ChatPane', () => ({ ChatPane: ({ pane, focused }: { pane: string; focused: boolean }) =>
+  <div data-testid={`chat-pane-${pane}`} data-focused={String(focused)} /> }))
 
 const initialState = useAppStore.getState()
 const profile = (id: string): PublicServerProfile => ({
@@ -157,6 +158,30 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     expect(closeUpdate).toBeTypeOf('function')
     expect(closeUpdate(concurrent)).toEqual(expect.objectContaining({ paneCount: 1, focusedPane: 'primary' }))
     expect(useAppStore.getState().chatPaneCount).toBe(1)
+  })
+
+  it('uses live pane focus for file-tree ownership while a cross-server pane is mounted', () => {
+    const left = { id: 'left-chat', title: 'Left chat', backend: 'codex', cwd: '/left', archived: false } as Session
+    const right = { id: 'right-chat', title: 'Right chat', backend: 'codex', cwd: '/right', archived: false } as Session
+    useAppStore.setState({
+      profiles: [profile('a'), profile('b')], sessions: [left, right],
+      chatPanes: { primary: left.id, secondary: right.id, tertiary: null },
+      chatPaneCount: 3, focusedChatPane: 'secondary'
+    })
+    const crossServerWorkspace: CrossServerWorkspaceState = {
+      activeProfileId: 'a', paneCount: 3, focusedPane: 'tertiary',
+      panes: {
+        primary: { profileId: 'a', profileGeneration: 1, serverIdentity: 'server-a', profileName: 'a', session: left },
+        secondary: { profileId: 'a', profileGeneration: 1, serverIdentity: 'server-a', profileName: 'a', session: right },
+        tertiary: { profileId: 'b', profileGeneration: 1, serverIdentity: 'server-b', profileName: 'b', session: null }
+      }
+    }
+
+    render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false} crossServerWorkspace={crossServerWorkspace}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+
+    expect(screen.getByTestId('chat-pane-primary')).toHaveAttribute('data-focused', 'false')
+    expect(screen.getByTestId('chat-pane-secondary')).toHaveAttribute('data-focused', 'true')
   })
 
   it('does not let either column divider collapse a neighboring pane', () => {

@@ -304,7 +304,7 @@ describe('WorkspaceEditor', () => {
     }
   })
 
-  it('routes targeted opens to their pane but global commands and Files portals only to the focused pane', async () => {
+  it('routes targeted opens and global commands to their pane while Files portals follow their keyed host', async () => {
     const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
     const second = { ...session, id: 'chat-b', title: 'Chat B' }
     const panes = (focused: 'a' | 'b') => <>
@@ -326,7 +326,7 @@ describe('WorkspaceEditor', () => {
     fireEvent.change(editorB, { target: { value: 'draft b' } })
     fireEvent.keyDown(window, { key: 's', metaKey: true })
     await waitFor(() => expect(window.agentsDock.workspace.write).toHaveBeenCalledExactlyOnceWith('chat-b', 'b.ts', 'draft b', 'rev-1'))
-    expect(within(screen.getByTestId('pane-a')).queryByRole('complementary', { name: 'File explorer' })).not.toBeInTheDocument()
+    expect(within(screen.getByTestId('pane-a')).getByRole('complementary', { name: 'File explorer' })).toBeInTheDocument()
     expect(within(screen.getByTestId('pane-b')).getByRole('complementary', { name: 'File explorer' })).toBeInTheDocument()
 
     act(() => window.dispatchEvent(new Event('agentsdock:open-workspace-file')))
@@ -339,6 +339,19 @@ describe('WorkspaceEditor', () => {
     expect(within(screen.getByTestId('pane-b')).getByRole('textbox', { name: 'Contents of b.ts' })).toBeVisible()
     fireEvent.click(within(screen.getByTestId('pane-a')).getByRole('button', { name: 'Cancel' }))
     expect(editorA).toHaveValue('draft a')
+  })
+
+  it('mounts the keyed Files portal even when pane focus updates before the inspector host', async () => {
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="tabbed:chat-a" session={session} profileScope={scope}
+        available capabilityVersion={6} tabbedPane paneFocused={false} chatContent={<p>Chat A</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, session.id, session.cwd!)} />
+    </WorkspaceFilesProvider>)
+
+    expect(await screen.findByRole('complementary', { name: 'File explorer' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Open README.md' })).toBeVisible()
+    expect(window.agentsDock.workspace.entries).toHaveBeenCalledExactlyOnceWith(session.id, '', 0, 500)
   })
 
   it('rejects inactive panes and mismatched scoped requests before reading files', async () => {

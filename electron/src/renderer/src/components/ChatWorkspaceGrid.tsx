@@ -57,7 +57,6 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
   const profiles = useAppStore(state => state.profiles)
   const snapshots = useAppStore(state => state.snapshots)
   const effectiveCount = crossServerWorkspace?.paneCount ?? count
-  const effectiveFocused = crossServerWorkspace?.focusedPane ?? focused
   const active = workspaces.find(workspace => workspace.id === activeId)
   const threeColumns = effectiveCount === 3 && active?.threePaneLayout === 'columns'
   const [ratios, setRatios] = useState({
@@ -304,11 +303,11 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
             closeable={effectiveCount > 1}
             onClose={() => closeCrossServerPane(pane)}
             onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)} />
-            : session ? <ChatPane pane={pane} session={session} focused={effectiveFocused === pane} split={effectiveCount > 1}
-            sidebarVisible={sidebarVisible} terminalOpen={effectiveFocused === pane && terminalOpen}
+            : session ? <ChatPane pane={pane} session={session} focused={focused === pane} split={effectiveCount > 1}
+            sidebarVisible={sidebarVisible} terminalOpen={focused === pane && terminalOpen}
             onSidebarToggle={onSidebarToggle} onTerminalToggle={onTerminalToggle} sideChat={sideChat(session)}
             papersOpen={papersOpen} onPapersToggle={onPapersToggle} onAskPaper={onAskPaper} />
-            : <EmptyChatPane pane={pane} focused={effectiveFocused === pane}
+            : <EmptyChatPane pane={pane} focused={focused === pane}
               selectedProfileId={assignment?.profileId ?? profileId}
               excludedSessionIds={new Set(Object.values(crossServerWorkspace?.panes ?? {}).flatMap(candidate => candidate?.session?.id ? [candidate.session.id] : []))}
               onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)}

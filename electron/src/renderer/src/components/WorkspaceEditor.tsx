@@ -351,7 +351,10 @@ export function WorkspaceEditor({
     return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
   })
   const registeredFilesHost = useWorkspaceFilesHost(workspaceFilesKey(profileScope, session.id, cwd))
-  const filesHost = !tabbedPane || (paneActive && paneFocused) ? registeredFilesHost : null
+  // The host key already binds the explorer to one server, session, and cwd.
+  // Do not additionally gate its portal on pane focus: focus and the inspector
+  // host can update in separate React commits when switching split panes.
+  const filesHost = !tabbedPane || paneActive ? registeredFilesHost : null
   const filesHostRef = useRef(filesHost)
   filesHostRef.current = filesHost
   const maxEditableFileBytes = resolvedWorkspaceFileByteLimit(maxTextFileBytes)
