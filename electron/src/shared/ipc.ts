@@ -588,7 +588,8 @@ export interface AgentsDockAPI {
     search(sessionId: string, query?: string, limit?: number): Promise<WorkspaceSearchPage>
     read(sessionId: string, path: string): Promise<WorkspaceFile>
     readAbsolute(sessionId: string, path: string, remoteWorkspace?: boolean): Promise<WorkspaceFile>
-    openCanvas(path: string): Promise<boolean>
+    createCanvasPreview(html: string): Promise<string>
+    releaseCanvasPreview(url: string): Promise<void>
     writeAbsolute(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile>
     overwriteAbsolute(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     previewAvailable(scope: WorkspaceProfileScope, sessionId: string, path: string): Promise<boolean>

@@ -49,6 +49,8 @@
     "extraResources": [
       { "from": "../LICENSE", "to": "licenses/AgentsDock-LICENSE" },
       { "from": "../NOTICE", "to": "licenses/AgentsDock-NOTICE" },
+      { "from": "node_modules/typescript/LICENSE.txt", "to": "licenses/TypeScript-LICENSE.txt" },
+      { "from": "node_modules/typescript/ThirdPartyNoticeText.txt", "to": "licenses/TypeScript-ThirdPartyNotices.txt" },
       { "from": "packaging/connection-qr-NOTICES.txt", "to": "licenses/connection-qr-NOTICES.txt" },
       { "from": "packaging/tiff-preview-NOTICES.txt", "to": "licenses/tiff-preview-NOTICES.txt" }
     ],

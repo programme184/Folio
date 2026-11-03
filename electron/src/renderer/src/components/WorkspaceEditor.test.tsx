@@ -186,7 +186,8 @@ describe('WorkspaceEditor', () => {
             writable: false,
             scope: 'absolute'
           })),
-          openCanvas: vi.fn().mockResolvedValue(true),
+          createCanvasPreview: vi.fn().mockResolvedValue('agentsdock-canvas://preview/00000000-0000-4000-8000-000000000000'),
+          releaseCanvasPreview: vi.fn().mockResolvedValue(undefined),
           writeAbsolute: vi.fn().mockImplementation((_sessionId: string, path: string, content: string) => Promise.resolve({
             ...workspaceFile(path, content, 'rev-absolute-2'),
             root: '/',
@@ -405,12 +406,20 @@ describe('WorkspaceEditor', () => {
       expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, '/work/notes/notes.md', true)
 
       const localCanvas = '/home/dev/.cursor/projects/empty-window/canvases/analysis.canvas.tsx'
+      vi.mocked(window.agentsDock.workspace.readAbsolute).mockResolvedValueOnce({
+        ...workspaceFile(localCanvas, 'import { H1 } from "cursor/canvas"; export default function App() { return <H1>Local Canvas</H1> }'),
+        root: '/',
+        path: localCanvas,
+        name: 'analysis.canvas.tsx',
+        writable: true,
+        scope: 'absolute'
+      })
       act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
         detail: { sessionId: projectSession.id, path: localCanvas, resolve: true }
       })))
-      await waitFor(() => expect(window.agentsDock.workspace.openCanvas).toHaveBeenCalledWith(localCanvas))
+      await waitFor(() => expect(panel.container.querySelector('iframe.workspace-canvas-frame')).toHaveAttribute('sandbox', 'allow-scripts allow-same-origin'))
       expect(screen.queryByRole('textbox', { name: `Contents of ${localCanvas}` })).not.toBeInTheDocument()
-      expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas)
+      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, localCanvas)
       expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas, true)
       expect(useAppStore.getState().sessions[0]?.cwd).toBe('/work/project')
     } finally {

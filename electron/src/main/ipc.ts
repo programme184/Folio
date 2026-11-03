@@ -16,6 +16,7 @@ import type { PaperShelf } from './paper-shelf'
 import { translateToChinese } from './paper-translate'
 import { issueReportEnvironment } from './issue-report'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import type { CanvasPreviewStore } from './canvas-preview'
 
 export interface RegisterIpcOptions {
   language?: Pick<LanguageSettings, 'get' | 'set'>
@@ -25,6 +26,7 @@ export interface RegisterIpcOptions {
   paperMarks?: PaperMarkStore
   paperNoteFiles?: PaperNoteFileStore
   serviceForSender?: (senderId: number) => AppService | null | undefined
+  canvasPreviews?: Pick<CanvasPreviewStore, 'register' | 'release'>
 }
 
 export function registerIpc(
@@ -450,7 +452,11 @@ export function registerIpc(
   handle('workspace:search', (sessionId, query, limit) => service.workspaceSearch(sessionId, query, limit))
   handle('workspace:read', (sessionId, path) => service.workspaceFile(sessionId, path))
   handle('workspace:read-absolute', (sessionId, path, remoteWorkspace) => service.absoluteFile(sessionId, path, remoteWorkspace === true))
-  handle('workspace:open-canvas', path => service.openCanvas(path))
+  handle('workspace:create-canvas-preview', html => {
+    if (!options.canvasPreviews) throw new Error('Canvas previews are unavailable.')
+    return options.canvasPreviews.register(html)
+  })
+  handle('workspace:release-canvas-preview', url => options.canvasPreviews?.release(url))
   handle('workspace:write-absolute', (sessionId, path, content, expectedRevision) => service.writeAbsoluteFile(sessionId, path, content, expectedRevision))
   handle('workspace:overwrite-absolute', (sessionId, path, content) => service.overwriteAbsoluteFile(sessionId, path, content))
   handle('workspace:preview-available', (scope, sessionId, path) => service.workspacePreviewAvailable(scope, sessionId, path))

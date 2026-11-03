@@ -36,11 +36,14 @@ import {
   unprivilegedNamespacesFromSysctl
 } from './folio-linux-identity'
 import { permissionAllowed } from './session-permissions'
+import { CanvasPreviewStore } from './canvas-preview'
+import { createRendererLoadRecovery } from './renderer-load-recovery'
 
 configureLinuxPasswordStore(process.platform, app.commandLine, process.env.XDG_CURRENT_DESKTOP)
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } }
+  { scheme: 'agentsdock-media', privileges: { standard: true, secure: true, stream: true } },
+  { scheme: 'agentsdock-canvas', privileges: { standard: true, secure: true, bypassCSP: true, supportFetchAPI: true, corsEnabled: true, codeCache: true } }
 ])
 
 process.on('uncaughtException', error => { reportStorageError(error); appLog('fatal', 'uncaught exception', errorDetails(error)) })
@@ -102,6 +105,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     try {
+      const canvasPreviews = new CanvasPreviewStore()
       language = new LanguageSettings(app.getPath('userData'), () => app.getPreferredSystemLanguages()[0] || app.getLocale(), snapshot => {
         createMenu(() => mainWindow)
         for (const window of BrowserWindow.getAllWindows()) {
@@ -159,6 +163,7 @@ if (!app.requestSingleInstanceLock()) {
       appLog('main', 'app service ready')
       serverSetup = registerIpc(service, updater, teamHub, {
         language,
+        canvasPreviews,
         serviceForSender: senderId => embeddedPaneServices.get(senderId)?.service,
         notificationReady: () => appService.rendererReadyForNotificationRoutes(mainWindow),
         securePeerInviteReady: () => {
@@ -177,6 +182,7 @@ if (!app.requestSingleInstanceLock()) {
       appLog('main', 'IPC registered')
       session.defaultSession.setPermissionCheckHandler((webContents, permission) => permissionAllowed(permission, webContents === mainWindow?.webContents))
       session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => callback(permissionAllowed(permission, webContents === mainWindow?.webContents)))
+      session.defaultSession.protocol.handle('agentsdock-canvas', request => canvasPreviews.response(request.url))
       session.defaultSession.protocol.handle('agentsdock-media', async request => {
         const resource = parseMediaURL(request.url)
         if (!service || !resource) return mediaNotFoundResponse()
@@ -435,6 +441,15 @@ function createWindow(): BrowserWindow {
       navigateOnDragDrop: false
     }
   })
+  const rendererPath = join(__dirname, '../renderer/index.html')
+  const rendererRecovery = !app.isPackaged && !process.env.ELECTRON_RENDERER_URL
+    ? createRendererLoadRecovery({
+        rendererPath,
+        pathExists: existsSync,
+        reload: () => window.loadFile(rendererPath),
+        active: () => !window.isDestroyed()
+      })
+    : null
 
   if (process.platform !== 'darwin') window.setMenuBarVisibility(false)
   if (windowIcon) window.setIcon(windowIcon)
@@ -443,7 +458,11 @@ function createWindow(): BrowserWindow {
     window.show()
   })
   window.webContents.on('preload-error', (_event, path, error) => appLog('preload', 'failed to load', { path, error: error.stack || error.message }))
-  window.webContents.on('did-fail-load', (_event, code, description, url) => appLog('renderer', 'page load failed', { code, description, url }))
+  window.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    const recovering = rendererRecovery?.recover(code, url, isMainFrame) ?? false
+    appLog('renderer', 'page load failed', { code, description, url, recovering })
+  })
+  window.once('closed', () => rendererRecovery?.dispose())
   window.webContents.on('render-process-gone', (_event, details) => appLog('renderer', 'process gone', details))
   window.webContents.on('unresponsive', () => appLog('renderer', 'window unresponsive'))
   window.webContents.on('responsive', () => appLog('renderer', 'window responsive again'))
@@ -465,7 +484,7 @@ function createWindow(): BrowserWindow {
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
-    void window.loadFile(join(__dirname, '../renderer/index.html'))
+    void window.loadFile(rendererPath)
   }
   return window
 }

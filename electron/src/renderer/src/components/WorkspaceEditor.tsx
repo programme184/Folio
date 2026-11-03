@@ -93,6 +93,7 @@ const LazyCodeMirrorEditor = lazy(() => import('./CodeMirrorEditor').then(module
 const LazySafeHtmlMarkdownContent = lazy(() => import('./SafeHtmlMarkdownContent'))
 const LazyWorkspaceChanges = lazy(() => import('./WorkspaceChanges').then(module => ({ default: module.WorkspaceChanges })))
 const LazyWorkspacePaperViewer = lazy(() => import('./WorkspacePaperViewer').then(module => ({ default: module.WorkspacePaperViewer })))
+const LazyWorkspaceCanvasViewer = lazy(() => import('./WorkspaceCanvasViewer').then(module => ({ default: module.WorkspaceCanvasViewer })))
 const MAX_OPEN_TABS = 12
 const CHANGES_TAB_TARGET = '\0workspace-changes'
 // Servers predating the advertised workspace capability enforce 2 MiB. Keep
@@ -228,8 +229,9 @@ interface PendingOpenReservation {
 }
 type PaletteCloseReason = 'cancel' | 'commit'
 type MarkdownViewMode = 'source' | 'split' | 'preview'
-// Workspace files add video playback on top of the shared viewer kinds.
-type WorkspaceViewerKind = Exclude<InternalFileViewerKind, 'unsupported'> | 'video'
+// Workspace files add video playback and sandboxed Canvas rendering on top of
+// the shared viewer kinds.
+type WorkspaceViewerKind = Exclude<InternalFileViewerKind, 'unsupported'> | 'video' | 'canvas'
 const isMediaViewer = (kind: WorkspaceViewerKind): boolean => kind === 'image' || kind === 'pdf' || kind === 'video'
 
 interface PersistedWorkspaceSnapshot {
@@ -375,8 +377,7 @@ export function WorkspaceEditor({
   const memoryMatches = memory?.sessionId === session.id && memory.cwd === cwd
   const memoryFiles = memoryMatches
     ? memory.openFiles.filter(file => (
-      !isManagedCursorCanvasPath(file.path)
-      && (!file.artifact || agentFileBelongsToSession(file.artifact, session.id))
+      !file.artifact || agentFileBelongsToSession(file.artifact, session.id)
     ))
     : []
   const memoryPaths = new Set(memoryFiles.map(file => file.path))
@@ -2553,24 +2554,6 @@ export function WorkspaceEditor({
       }
       setWorkspaceError(message)
     }
-    if (isManagedCursorCanvasPath(path)) {
-      try {
-        if (await window.agentsDock.workspace.openCanvas(path)) {
-          setPaletteError(null)
-          setWorkspaceError(null)
-          if (paletteLease) commitPaletteSelection(paletteLease)
-          else {
-            paletteOpenRef.current = false
-            setPaletteOpen(false)
-            setPaletteQuery('')
-          }
-          return true
-        }
-      } catch (error) {
-        reportOpenError(errorMessage(error))
-        return false
-      }
-    }
     if (!absoluteReadsAvailable) {
       const message = t('editor.updateAgentsserverToOpenExplicitAbsolutePathsOutsideTheWorkspace')
       reportOpenError(message)
@@ -3915,6 +3898,10 @@ export function WorkspaceEditor({
                     />
                   </Suspense>
                   : <div className="workspace-editor-loading">{t('editor.thisPdfSourceIsUnavailable')}</div>
+                : file.viewerKind === 'canvas'
+                  ? <Suspense fallback={<div className="workspace-editor-loading">Loading Canvas…</div>}>
+                    <LazyWorkspaceCanvasViewer source={file.draft} label={editorContentLabel(file)} />
+                  </Suspense>
                 : file.viewerKind === 'markdown'
                   ? <WorkspaceMarkdownView
                     mode={markdownMode ?? 'split'}
@@ -4814,7 +4801,7 @@ function openExternalFile(file: WorkspaceFile, writesAvailable = false): OpenWor
     writable: writesAvailable && file.writable === true,
     scope: 'absolute',
     origin: 'external',
-    viewerKind: inferredViewer === 'markdown' ? 'markdown' : 'text',
+    viewerKind: inferredViewer === 'markdown' || inferredViewer === 'canvas' ? inferredViewer : 'text',
     displayPath: file.path,
     draft: file.content,
     saved: file.content,
@@ -4962,7 +4949,7 @@ function restoredExternalFile(tab: PersistedTab): OpenWorkspaceFile {
     writable: false,
     scope: 'absolute',
     origin: 'external',
-    viewerKind: viewerKind === 'markdown' ? 'markdown' : 'text',
+    viewerKind: viewerKind === 'markdown' || viewerKind === 'canvas' ? viewerKind : 'text',
     displayPath: tab.path,
     draft,
     saved: '',
@@ -5053,6 +5040,7 @@ function openArtifactPreviewFile(file: AgentFile, viewerKind: 'image' | 'pdf'): 
 }
 
 function workspaceFileViewerKind(path: string): WorkspaceViewerKind {
+  if (/\.canvas\.tsx$/i.test(path)) return 'canvas'
   if (effectiveFileContentType({ filename: fileName(path), content_type: null }).startsWith('video/')) return 'video'
   const kind = internalFileViewerKind({ filename: fileName(path), content_type: null })
   return kind === 'unsupported' ? 'text' : kind
@@ -5368,10 +5356,6 @@ function equalStringSets(previous: Set<string>, next: Set<string>): boolean {
 
 function workspacePathIsWithin(path: string, parent: string): boolean {
   return path === parent || path.startsWith(`${parent}/`)
-}
-
-function isManagedCursorCanvasPath(path: string): boolean {
-  return /(?:^|\/)\.cursor\/projects\/[^/]+\/canvases\/[^/]+\.canvas\.tsx$/i.test(path.replace(/\\/g, '/'))
 }
 
 function editorViewStateKey(group: EditorGroupId, path: string): string {

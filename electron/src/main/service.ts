@@ -12,8 +12,7 @@ import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { homedir } from 'node:os'
+import { basename, dirname, join } from 'node:path'
 import { isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitView } from '../shared/workspace-git'
@@ -4771,15 +4770,6 @@ export class AppService {
     }
   }
 
-  async openCanvas(path: string): Promise<boolean> {
-    const canvasPath = managedCursorCanvasPath(path)
-    if (!canvasPath) return false
-    const target = new URL('cursor://file/')
-    target.pathname = canvasPath.replace(/\\/g, '/')
-    await shell.openExternal(target.toString())
-    return true
-  }
-
   async writeAbsoluteFile(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
@@ -8164,23 +8154,6 @@ function rememberEmergencyAlertId(seen: Set<string>, alertId: string): void {
     if (typeof oldest !== 'string') break
     seen.delete(oldest)
   }
-}
-
-function managedCursorCanvasPath(value: string): string | null {
-  const raw = String(value ?? '').trim()
-  if (!raw || !isAbsolute(raw)) return null
-  const path = resolve(raw)
-  const projectsRoot = join(homedir(), '.cursor', 'projects')
-  const projectPath = relative(projectsRoot, path)
-  if (!projectPath || projectPath.startsWith(`..${sep}`) || isAbsolute(projectPath)) return null
-  const parts = projectPath.split(sep)
-  if (
-    parts.length !== 3
-    || !parts[0]
-    || parts[1] !== 'canvases'
-    || !/^[^/\\]+\.canvas\.tsx$/i.test(parts[2] ?? '')
-  ) return null
-  return path
 }
 
 export function sessionOwnedFilesPage(page: FilesPage, sessionId: string): FilesPage {
