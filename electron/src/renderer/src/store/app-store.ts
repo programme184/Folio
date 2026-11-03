@@ -16,11 +16,14 @@ import { turnSendErrorMessage } from '@shared/server-errors'
 import { completedPrefixForkAvailable, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import {
   normalizeProjectDirectories,
+  normalizeProjectSSHWorkspace,
   normalizeProjectWorkspaces,
   PROJECT_WORKSPACES_PREFERENCE_KEY,
   projectDirectories,
+  projectSSHWorkspace,
   renameProjectWorkspace,
   withoutProject,
+  type ProjectSSHWorkspace,
   type ProjectWorkspaceMap
 } from '@shared/project-workspaces'
 import { agentFileBelongsToSession, isolateSessionEvent, isolateSessionSnapshot } from '@shared/session-files'
@@ -312,9 +315,9 @@ interface AppState {
     options?: { allowDuringWorkspaceFlush?: boolean; onConfirmed?: (session: Session) => void }
   ): Promise<void>
   deleteFolder(folder: string): Promise<void>
-  createProject(name: string, directories: string[]): boolean
+  createProject(name: string, directories: string[], sshWorkspace?: ProjectSSHWorkspace | null): boolean
   renameProject(from: string, to: string): Promise<boolean>
-  setProjectDirectories(folder: string, directories: string[]): boolean
+  setProjectDirectories(folder: string, directories: string[], sshWorkspace?: ProjectSSHWorkspace | null): boolean
   forkSession(sessionId: string): Promise<void>
   deleteSession(sessionId: string): Promise<boolean>
   markRead(sessionId: string, force?: boolean): Promise<void>
@@ -2444,6 +2447,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const lastOpened = current.sessions.find(session => session.id === initial.selectedSessionId && !session.archived) ?? null
       const folder = requestedFolder || defaults.folder
       const directories = projectDirectories(current.projectWorkspaces ?? {}, folder)
+      const sshWorkspace = projectSSHWorkspace(current.projectWorkspaces ?? {}, folder)
       const lastOpenedCwd = lastOpened?.cwd?.trim() || ''
       const inheritedCwd = lastOpened && (lastOpened.folder?.trim() || 'General') === folder && directories.includes(lastOpenedCwd)
         ? lastOpenedCwd
@@ -2451,7 +2455,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       defaults = {
         ...defaults,
         folder,
-        cwd: inheritedCwd || directories[0] || lastOpenedCwd || defaults.cwd || defaultCwd
+        cwd: inheritedCwd || directories[0] || lastOpenedCwd || defaults.cwd || defaultCwd,
+        ...(sshWorkspace ? {
+          workspace_transport: 'ssh' as const,
+          ssh_workspace_host: sshWorkspace.host,
+          ssh_workspace_path: sshWorkspace.path
+        } : directories.length ? {
+          workspace_transport: 'local' as const,
+          ssh_workspace_host: null,
+          ssh_workspace_path: null
+        } : {})
       }
       if (defaults.backend === 'cursor' && defaults.provider_connection !== 'custom' && !cursorReady && chatChoices.includes('cursor-custom')) {
         defaults = { ...defaults, provider_connection: 'custom', model: null, effort: null }
@@ -2581,15 +2594,16 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  createProject(name, directories) {
+  createProject(name, directories, sshWorkspace) {
     const clean = name.trim()
     const paths = normalizeProjectDirectories(directories)
+    const remote = normalizeProjectSSHWorkspace(sshWorkspace)
     if (!clean || clean.toLocaleLowerCase() === 'general') {
       set({ error: t('ui.Dialogs.FolderDialog.choose_a_project_name') })
       return false
     }
-    if (!paths.length) {
-      set({ error: t('ui.Dialogs.FolderDialog.choose_at_least_one_local_folder') })
+    if (!paths.length && !remote) {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_a_workspace') })
       return false
     }
     if (projectNameTaken(get(), clean)) {
@@ -2597,7 +2611,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     }
     const folderOrder = [...get().folderOrder, clean]
-    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [clean]: { directories: paths } }
+    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [clean]: {
+      directories: remote ? [] : paths,
+      ...(remote ? { ssh_workspace: remote } : {})
+    } }
     const scope = captureWorkspaceScope(get())
     set({ folderOrder, projectWorkspaces, error: null })
     void Promise.all([
@@ -2667,15 +2684,19 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setProjectDirectories(folder, directories) {
+  setProjectDirectories(folder, directories, sshWorkspace) {
     const source = folder.trim()
     const paths = normalizeProjectDirectories(directories)
+    const remote = normalizeProjectSSHWorkspace(sshWorkspace)
     if (!source || source.toLocaleLowerCase() === 'general') return false
-    if (!paths.length) {
-      set({ error: t('ui.Dialogs.FolderDialog.choose_at_least_one_local_folder') })
+    if (!paths.length && !remote) {
+      set({ error: t('ui.Dialogs.FolderDialog.choose_a_workspace') })
       return false
     }
-    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [source]: { directories: paths } }
+    const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [source]: {
+      directories: remote ? [] : paths,
+      ...(remote ? { ssh_workspace: remote } : {})
+    } }
     const scope = captureWorkspaceScope(get())
     set({ projectWorkspaces, error: null })
     void setWorkspacePreference(scope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces).catch(() => undefined)

@@ -33,7 +33,7 @@ describe('project folder dialogs', () => {
     })
     render(<FolderDialog />)
 
-    expect(screen.getByText('This folder lives in Folio. Add the local directories it contains. One workspace can hold folders from different paths.')).toBeVisible()
+    expect(screen.getByText('This folder lives in Folio. Choose local directories or an SSH workspace; agents still run on the selected AgentsServer.')).toBeVisible()
     const create = screen.getByRole('button', { name: 'Create folder' })
     expect(create).toBeDisabled()
     await user.type(screen.getByRole('textbox', { name: 'Project name' }), 'Humanoid')
@@ -46,6 +46,32 @@ describe('project folder dialogs', () => {
     expect(useAppStore.getState().modals.folder).toBe(false)
     expect(useAppStore.getState().folderOrder).toEqual(['Humanoid'])
     expect(useAppStore.getState().projectWorkspaces.Humanoid.directories).toEqual(['/work/hand'])
+  })
+
+  it('creates a project backed by an SSH workspace', async () => {
+    const user = userEvent.setup()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { preferences: { set: vi.fn().mockResolvedValue(undefined) } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      modals: { settings: false, appSettings: false, newChat: false, resume: false, folder: true, digest: false, job: false, search: false, review: false, importChats: false },
+      folderOrder: [], projectWorkspaces: {}, sessions: [], error: null,
+      health: { ok: true, capabilities: { ssh_workspace_v1: { available: true, required: false, message: '', action: null } } }
+    })
+    render(<FolderDialog />)
+
+    await user.type(screen.getByRole('textbox', { name: 'Project name' }), 'Geometry')
+    await user.click(screen.getByRole('button', { name: 'SSH workspace' }))
+    await user.type(screen.getByRole('textbox', { name: 'SSH host' }), 'Synria')
+    await user.type(screen.getByRole('textbox', { name: 'Remote path' }), '/home/ubuntu/geom_dev')
+    await user.click(screen.getByRole('button', { name: 'Create folder' }))
+
+    expect(useAppStore.getState().projectWorkspaces.Geometry).toEqual({
+      directories: [],
+      ssh_workspace: { host: 'Synria', path: '/home/ubuntu/geom_dev' }
+    })
+    expect(useAppStore.getState().modals.folder).toBe(false)
   })
 
   it('renames a project and replaces its folders from the sidebar menu', async () => {

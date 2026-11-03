@@ -15,6 +15,17 @@
   TypeScript checking and the Electron production build pass. Source only; no
   package was installed or published, and no server was deployed.
 
+## 2026-11-03 — Folder presets support SSH workspaces
+
+- New Folder and Change Folders now offer local directories or an SSH host and
+  remote path. Creating a chat from an SSH-backed Folder automatically keeps
+  the agent on the selected AgentsServer and applies that remote workspace.
+- Focused workspace, dialog and new-chat regressions pass with TypeScript and
+  the production Electron build. An isolated native Electron app exercised the
+  SSH option, validation and Folder persistence through the real client/server
+  preference boundary; its disposable Folder was removed afterward. Source
+  only; no package was published and no server deployment is required.
+
 ## 2026-11-03 — Workspace Files supports multiple simultaneous roots
 
 - A chat assigned to a workspace with multiple folders now shows every folder

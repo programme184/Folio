@@ -1242,6 +1242,35 @@ describe('instant new chat defaults', () => {
     }))
   })
 
+  it('uses the SSH workspace configured on the target project folder', async () => {
+    const create = vi.fn().mockResolvedValue({ id: 'created', title: 'New chat', folder: 'Remote', cwd: '/srv/runtime', backend: 'codex' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        native: { analyticsDisabled: true },
+        preferences: { getScoped: vi.fn().mockResolvedValue(null), setScoped: vi.fn().mockResolvedValue(undefined) },
+        sessions: { create }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      requestNewChat,
+      profiles: [profile], activeProfileId: profile.id, profileGeneration: 1, switchingProfileId: null,
+      sessions: [{ id: 'selected', title: 'Local chat', folder: 'Local', cwd: '/srv/runtime', backend: 'codex' }],
+      selectedSessionId: 'selected', selectedFolder: 'Remote', folderOrder: ['Local', 'Remote'],
+      projectWorkspaces: { Remote: { directories: [], ssh_workspace: { host: 'Synria', path: '/home/ubuntu/project' } } },
+      health: { ok: true }, runtimeCatalog: { backends: { codex: { native_credentials_present: true, models: [], efforts: [] } } },
+      refreshSessions: vi.fn().mockResolvedValue(undefined), selectSession: vi.fn().mockResolvedValue(undefined),
+      creatingChat: false, modals: closedModals
+    })
+
+    await useAppStore.getState().requestNewChat('Remote')
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      folder: 'Remote', cwd: '/srv/runtime', workspace_transport: 'ssh',
+      ssh_workspace_host: 'Synria', ssh_workspace_path: '/home/ubuntu/project'
+    }))
+  })
+
   it('opens a collapsed folder when a left click creates a chat there', async () => {
     const stored = { version: 1, folder: 'Older', cwd: '/work/older', backend: 'claude', model: 'claude-sonnet', effort: 'high' }
     const create = vi.fn().mockResolvedValue({
