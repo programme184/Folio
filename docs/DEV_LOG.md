@@ -1,5 +1,19 @@
 # Public development log
 
+## 2026-11-03 — Recover Folio when a concurrent build removes its renderer
+
+- A development Folio window no longer remains black when it starts during the
+  short interval in which `electron-vite build` has removed and not yet restored
+  `out/renderer/index.html`. A main-frame `ERR_FILE_NOT_FOUND` for that exact
+  development entry now starts a bounded wait and reloads as soon as the file
+  returns. Packaged builds, dev-server runs and unrelated load errors are unchanged.
+- Test surface: the reported live development app failed with `ERR_FILE_NOT_FOUND`;
+  after rebuilding and restarting, its renderer completed bootstrap, cache load
+  and timeline paint. A second isolated native Electron run captured the fully
+  rendered Folio window. Three focused recovery regressions, TypeScript checking
+  and the production Electron build pass. Source only; nothing was published or
+  deployed, and no server update is required.
+
 ## 2026-11-03 — Render Canvas artifacts directly in AgentsDock
 
 - `.canvas.tsx` links now compile and render as visual cards, tables and layouts
