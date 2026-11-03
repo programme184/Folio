@@ -19,6 +19,11 @@
   allowlist rejecting the new `remote_host` query before it reached the server.
   The allowlist accepts only the expected optional key and a validated SSH host;
   a focused live-transport regression covers both valid and unsafe host values.
+- Final acceptance used the installed Electron package with isolated desktop
+  state against the live loopback AgentsServer and the configured Synria SSH
+  alias. Both reported roots rendered their real entries (10 and 18), and the
+  remote `.gitignore` opened with its 14 lines; all three app-originated HTTP
+  requests completed with status 200. The isolated desktop state was removed.
 
 ## 2026-11-03 — Remote groups open SSH terminals
 
