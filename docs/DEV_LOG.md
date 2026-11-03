@@ -19,6 +19,11 @@
 - `.canvas.tsx` links now compile and render as visual cards, tables and layouts
   inside AgentsDock. They no longer launch Cursor, while ordinary TypeScript and
   TSX files continue to use the source editor.
+- Canvas layouts now preserve React-style numeric dimensions such as padding,
+  maximum width and grid gaps. The built-in light and dark presentation uses a
+  neutral document surface, clearer type hierarchy, restrained callouts, denser
+  tables and a single-column narrow layout instead of the earlier full-bleed
+  yellow presentation.
 - Canvas code runs in a separate internal origin with a bounded document store,
   explicit component compatibility layer, no network access and no access to
   the AgentsDock renderer. Malformed files show a local compile/runtime error.
@@ -30,6 +35,11 @@
   inside AgentsDock; Cursor process count remained zero before and after. The
   package is installed locally, no package was published, and no server update
   is required.
+- The presentation follow-up exercised that same real chat link at 469 px and
+  701 px editor widths in an isolated native app. Numeric padding and gaps were
+  present in computed styles, both themes rendered without alerts, and neither
+  width produced horizontal document overflow. The focused viewer regression,
+  TypeScript check and production build pass.
 
 ## 2026-11-03 — Keep local generated files local in remote groups
 

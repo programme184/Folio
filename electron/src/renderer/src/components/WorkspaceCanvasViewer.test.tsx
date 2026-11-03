@@ -41,6 +41,17 @@ describe('WorkspaceCanvasViewer', () => {
     expect(window.agentsDock.workspace.createCanvasPreview).toHaveBeenCalledWith(expect.stringContaining('Native preview'))
   })
 
+  it('renders React-style numeric dimensions with CSS units and neutral callout text', async () => {
+    render(<WorkspaceCanvasViewer source={source} label="Styled Canvas" />)
+
+    await screen.findByTitle('Styled Canvas')
+    const documentSource = vi.mocked(window.agentsDock.workspace.createCanvasPreview).mock.calls[0]?.[0]
+    expect(documentSource).toContain("value + 'px'")
+    expect(documentSource).toContain("unitlessStyles.has(key)")
+    expect(documentSource).toContain('.cv-callout { padding: 15px 17px; color: var(--cv-text);')
+    expect(documentSource).toContain('--cv-bg: #f6f7f9; --cv-surface: #ffffff;')
+  })
+
   it('reports malformed TSX instead of creating a runnable frame', () => {
     render(<WorkspaceCanvasViewer source={'export default () => <Card>'} label="Broken Canvas" />)
 
