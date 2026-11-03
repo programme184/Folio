@@ -13,7 +13,8 @@
 ```text
 Source commit / app build / server version: `03a60e8f`; electron-vite production
 build and local Linux unpacked package; AgentsServer workspace-files capability
-7 is implemented in source but not deployed to the running production server.
+7, deployed to the checkout-backed local server and as a rollback-backed hotfix
+on the authorized remote 1.0.11 installations.
 Test surface: isolated native Electron source app and packaged candidate against
 a disposable live AgentsServer, with an AgentsDock root and a second temporary
 workspace root assigned to the same project.
@@ -21,16 +22,20 @@ Actions exercised and observed outcomes: opened Files and observed both roots
 expanded with their real entries, opened SECOND_ROOT.md from the second root,
 and verified the chat cwd remained `/home/ubuntu/Github/AgentsDock`. Repeated the
 same root, file-content and unchanged-cwd checks in the packaged candidate.
+After deployment, each server reported a healthy capability 7 and served an
+authenticated native `absolute-entries` request from its live API.
 Focused regression / typecheck / production build: 65 server workspace-file
 tests and 386 Electron workspace/client/IPC tests pass; `tsc --noEmit` and the
 Electron production build pass. Two known runtime-catalog call-count failures
 remain in the broader Electron service subset; the full repository suite has 20
 existing failures outside this change.
 Remaining limitations: multi-root creation, rename and deletion stay disabled;
-those mutations remain deliberately scoped to the chat cwd. No production
-server deployment was authorized or performed.
+those mutations remain deliberately scoped to the chat cwd. The remote hotfixes
+retain their original `agent_server.py` beside the installed release for direct
+rollback and are not a published server release.
 Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
-retained as `~/.local/lib/folio/app.before-multi-root`; not published.
+retained as `~/.local/lib/folio/app.before-multi-root`; server changes deployed
+to the authorized installations; no package was published.
 ```
 
 ## 2026-11-03 — Split-pane Files follows the selected workspace
