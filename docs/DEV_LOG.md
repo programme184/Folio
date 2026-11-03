@@ -9567,6 +9567,9 @@ including credentials, user data, private infrastructure, or internal history.
   create a chat in that project, while the browser header can create a project
   or an ungrouped chat. Creation stays on the pane's server and opens the new
   chat in the pane that initiated it.
+- Project header styling is isolated from full-width chat rows, so the disclosure
+  arrow, folder icon, project name, count, and add button remain visible without
+  introducing a horizontal scrollbar.
 - The focused regression, TypeScript check, and production Electron build passed.
   An isolated headless Electron app exercised the real renderer/preload/main and
   authenticated server boundary: project groups loaded, a chat was selected, a
