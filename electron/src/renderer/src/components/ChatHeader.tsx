@@ -24,6 +24,7 @@ export function ChatHeader({
   terminalOpen = false,
   onSidebarToggle,
   onTerminalToggle,
+  onInspectorToggle,
   onOpenSplit,
   onSwapPanes,
   onClosePane,
@@ -37,6 +38,7 @@ export function ChatHeader({
   terminalOpen?: boolean
   onSidebarToggle?: () => void
   onTerminalToggle?: () => void
+  onInspectorToggle?: () => void
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
   onClosePane?: () => void
@@ -195,7 +197,12 @@ export function ChatHeader({
           || (session.backend === 'codex' && !codexControlsSupported)
         ) && <AgentRunningStatus backend={session.backend} starting={!running && admitting} />}
         <ChatSyncStatus sessionId={session.id} />
-        {focused && <ShortcutTooltip shortcut="toggleInspector" label={`${inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}><button className="icon-button inspector-toggle" aria-label={`${inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`} onClick={() => useAppStore.getState().setInspectorVisible(!inspector)}>{inspector ? <PanelRightClose size={16} /> : <PanelRight size={16} />}</button></ShortcutTooltip>}
+        <ShortcutTooltip shortcut="toggleInspector" label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}><button
+          className="icon-button inspector-toggle"
+          aria-label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}
+          aria-pressed={focused && inspector}
+          onClick={onInspectorToggle ?? (() => useAppStore.getState().setInspectorVisible(!inspector))}
+        >{focused && inspector ? <PanelRightClose size={16} /> : <PanelRight size={16} />}</button></ShortcutTooltip>
         {onClosePane && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.close_this_chat_pane_4926598")} aria-label={t("ui.ChatHeader.ChatHeader.close_pane_fe2672f", { "title": String(session.title) })} onClick={onClosePane}><X size={15} /></button>}
       </div>
     </header>

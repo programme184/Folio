@@ -16,7 +16,9 @@ const workspaceEditor = vi.hoisted(() => ({ render: vi.fn() }))
 
 vi.mock('../lib/native-files', () => ({ nativeFileRefsFromFiles: nativeFiles.fromFiles }))
 vi.mock('./ChatHeader', () => ({
-  ChatHeader: ({ session, titleInTab }: { session: Session; titleInTab?: boolean }) => <div data-testid="chat-header" data-title-in-tab={String(titleInTab)}>Header:{session.id}</div>
+  ChatHeader: ({ session, titleInTab, onInspectorToggle }: { session: Session; titleInTab?: boolean; onInspectorToggle?: () => void }) => <div data-testid="chat-header" data-title-in-tab={String(titleInTab)}>
+    Header:{session.id}<button type="button" className="inspector-toggle" onClick={onInspectorToggle}>Pane files</button>
+  </div>
 }))
 vi.mock('./ClaudeRuntimeContext', () => ({
   ClaudeRuntimeProvider: ({ children }: { children: React.ReactNode }) => {
@@ -75,6 +77,9 @@ describe('ChatPane', () => {
     runtimeProviders.claude.mockClear()
     runtimeProviders.codex.mockClear()
     workspaceEditor.render.mockClear()
+    Object.defineProperty(window, 'agentsDock', { configurable: true, value: {
+      preferences: { set: vi.fn().mockResolvedValue(undefined), setScoped: vi.fn().mockResolvedValue(undefined) }
+    } })
     useAppStore.setState({
       ...initialState,
       activeProfileId: profile.id,
@@ -115,6 +120,16 @@ describe('ChatPane', () => {
 
     fireEvent.pointerDown(screen.getByRole('region', { name: 'Secondary chat pane' }))
     expect(focusChatPane).toHaveBeenCalledWith('secondary')
+  })
+
+  it('focuses an inactive pane and opens its inspector from the persistent button', () => {
+    useAppStore.setState({ inspectorVisible: false })
+    renderSecondary()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pane files' }))
+
+    expect(focusChatPane).toHaveBeenCalledWith('secondary')
+    expect(useAppStore.getState().inspectorVisible).toBe(true)
   })
 
   it('ignores equivalent health telemetry and unchanged parent renders', () => {

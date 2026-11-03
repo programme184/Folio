@@ -194,6 +194,12 @@ export const ChatPane = memo(function ChatPane({
       terminalOpen={terminalOpen}
       onSidebarToggle={pane === 'primary' ? onSidebarToggle : undefined}
       onTerminalToggle={focused ? onTerminalToggle : undefined}
+      onInspectorToggle={() => {
+        const state = useAppStore.getState()
+        const alreadyFocused = state.focusedChatPane === pane
+        state.focusChatPane(pane)
+        state.setInspectorVisible(alreadyFocused ? !state.inspectorVisible : true)
+      }}
       onOpenSplit={candidateId => void useAppStore.getState().openSessionInSplit(candidateId)}
       onClosePane={split ? () => useAppStore.getState().closeChatPane(pane) : undefined}
       papersOpen={papersOpen}
@@ -248,8 +254,14 @@ export const ChatPane = memo(function ChatPane({
     tabIndex={-1}
     data-chat-pane={pane}
     data-session-id={session.id}
-    onPointerDownCapture={focusPane}
-    onFocusCapture={focusPane}
+    onPointerDownCapture={event => {
+      if (event.target instanceof Element && event.target.closest('.inspector-toggle')) return
+      focusPane()
+    }}
+    onFocusCapture={event => {
+      if (event.target instanceof Element && event.target.closest('.inspector-toggle')) return
+      focusPane()
+    }}
   >
     {session.archived
       ? paneContent

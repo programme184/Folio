@@ -74,6 +74,19 @@ describe('ChatHeader', () => {
     expect(screen.queryByRole('navigation', { name: 'Chat workspace' })).not.toBeInTheDocument()
   })
 
+  it('keeps the right-panel button visible in an unfocused pane', async () => {
+    const toggle = vi.fn()
+    const session = { id: 'chat', title: 'Chat', backend: 'codex' as const }
+    useAppStore.setState({ sessions: [session], selectedSessionId: session.id, inspectorVisible: true })
+    render(<ChatHeader session={session} focused={false} onInspectorToggle={toggle} />)
+
+    const button = screen.getByRole('button', { name: 'Show right panel' })
+    expect(button).toBeVisible()
+    expect(button).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.setup().click(button)
+    expect(toggle).toHaveBeenCalledOnce()
+  })
+
   it('shows the chat-list restore control only while the sidebar is collapsed', () => {
     const toggle = vi.fn()
     useAppStore.setState({
