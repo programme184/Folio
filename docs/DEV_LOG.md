@@ -11,8 +11,11 @@
 - The reported Canvas rendered 2,652 visible characters, four cards and two
   tables through an isolated native Electron run, including its data-flow,
   module-boundary and risk sections with no alert. Focused protocol/viewer tests,
-  all 156 workspace-editor tests, TypeScript and production builds pass. Installed
-  package acceptance is recorded after packaging; no server update is required.
+  all 156 workspace-editor tests, TypeScript and production builds pass. In the
+  installed package, clicking the real chat link opened the same visual content
+  inside AgentsDock; Cursor process count remained zero before and after. The
+  package is installed locally, no package was published, and no server update
+  is required.
 
 ## 2026-11-03 — Keep local generated files local in remote groups
 
