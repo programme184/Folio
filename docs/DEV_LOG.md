@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-11-03 — Every server pane has its own workspace file tree
+
+- The right-panel button in an embedded cross-server chat now opens that pane's
+  own inspector instead of toggling state with no visible panel.
+- The embedded inspector opens on Files, stays scoped to the pane's server,
+  generation and chat, and supports the same expandable workspace folder tree,
+  file operations and refresh controls as the primary pane.
+
+```text
+Source commit / app build / server version: `145233f7`; electron-vite production
+build and local Linux unpacked package; no server change.
+Test surface: isolated native Electron source app and packaged candidate with
+two disposable live AgentsServer instances.
+Actions exercised and observed outcomes: opened Beta's right-panel control while
+Alpha remained visible, observed Beta's Files tab and workspace root, expanded a
+child folder, and confirmed both the root and child workspace-entry requests were
+served by Beta. Repeated the same workflow in the packaged candidate.
+Focused regression / typecheck / production build: 65 App/Inspector tests pass;
+`tsc --noEmit`; Electron production build and compiled-output verification pass;
+packaged-candidate check passes.
+Remaining limitations: no provider turn was required or launched for this UI fix.
+Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
+retained as `~/.local/lib/folio/app.before-pane-files`; not published.
+```
+
 ## 2026-11-03 — Cross-server panes retain their complete controls
 
 - A cross-server pane's server selector now occupies its own toolbar instead of
