@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-11-03 — Pane file controls persist across focus changes
+
+- The right-panel/file-tree control is now rendered in every visible chat pane,
+  not only the pane that currently owns keyboard focus.
+- Clicking the control in an inactive pane focuses that pane first and opens its
+  inspector. It no longer disappears after polling, pointer focus, layout restore
+  or interaction with another pane.
+
+```text
+Source commit / app build / server version: `2a09d4d0`; electron-vite production
+build and local Linux unpacked package; no server change.
+Test surface: isolated native Electron source app and packaged candidate with
+two live chats and disposable AgentsServer state.
+Actions exercised and observed outcomes: kept both pane controls visible across
+focus changes and two background refresh intervals, then clicked the inactive
+pane's control and observed that pane become focused with its inspector open.
+Repeated the wait/focus/open workflow in the packaged candidate.
+Focused regression / typecheck / production build: 94 App/ChatHeader/ChatPane
+tests pass; `tsc --noEmit`; Electron production build and compiled-output
+verification pass; packaged-candidate check passes.
+Remaining limitations: no provider turn was required or launched for this UI fix.
+Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
+retained as `~/.local/lib/folio/app.before-pane-inspector-persistent`; not published.
+```
+
 ## 2026-11-03 — Every server pane has its own workspace file tree
 
 - The right-panel button in an embedded cross-server chat now opens that pane's
