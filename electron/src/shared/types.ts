@@ -450,6 +450,9 @@ export interface Session {
   title: string
   folder?: string | null
   cwd?: string | null
+  workspace_transport?: 'local' | 'ssh'
+  ssh_workspace_host?: string | null
+  ssh_workspace_path?: string | null
   backend: Backend
   /** Missing on older sessions means native Codex's default provider. */
   codex_provider?: CodexProvider
@@ -1753,6 +1756,7 @@ export interface HealthCapabilities {
   tmux?: ServerCapability
   workspace_files?: WorkspaceFilesCapability
   working_directory_completion?: WorkingDirectoryCompletionCapability
+  ssh_workspace_v1?: ServerCapability & { version?: number }
   scheduled_jobs?: ScheduledJobsCapability
   codex_controls?: InteractiveProviderCapability
   claude_controls?: InteractiveProviderCapability
@@ -2397,6 +2401,9 @@ export interface CreateSessionInput {
   title: string
   folder: string
   cwd: string
+  workspace_transport?: 'local' | 'ssh'
+  ssh_workspace_host?: string | null
+  ssh_workspace_path?: string | null
   backend: Backend
   codex_provider?: CodexProvider
   provider_connection?: CodexProvider
@@ -2442,6 +2449,9 @@ export interface UpdateSessionInput {
   title?: string
   folder?: string
   cwd?: string
+  workspace_transport?: 'local' | 'ssh'
+  ssh_workspace_host?: string | null
+  ssh_workspace_path?: string | null
   backend?: Backend
   codex_provider?: CodexProvider
   provider_connection?: CodexProvider

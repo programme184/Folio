@@ -6053,6 +6053,47 @@ describe('Composer', () => {
     expect(useAppStore.getState().selectedSessionId).toBe('chat-2')
   })
 
+  it('configures an SSH workspace without moving the agent off the active server', async () => {
+    const session = { id: 'chat-1', title: 'Local agent', backend: 'codex' as const, cwd: '/home/local' }
+    const update = vi.fn(async (_sessionId: string, patch: Record<string, unknown>) => ({ ...session, ...patch }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        sessions: { update }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [session],
+      selectedSessionId: 'chat-1',
+      chatPanes: { primary: 'chat-1', secondary: null },
+      focusedChatPane: 'primary',
+      health: {
+        ok: true,
+        default_cwd: '/home/local',
+        capabilities: {
+          ssh_workspace_v1: { available: true, required: false, version: 1, message: '', action: null }
+        }
+      }
+    })
+    const user = userEvent.setup()
+    render(<Composer sessionId="chat-1" />)
+
+    await user.type(screen.getByRole('textbox', { name: 'Message Local agent' }), '/workdir')
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message Local agent' }), { key: 'Enter' })
+    await user.click(await screen.findByRole('button', { name: /SSH workspace/ }))
+    await user.type(screen.getByLabelText('SSH host or alias'), 'Synria')
+    await user.type(screen.getByLabelText('Remote project path'), '/home/ubuntu/Synria/geom_dev')
+    await user.click(screen.getByRole('button', { name: 'Use folder' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledWith('chat-1', {
+      cwd: '/home/local',
+      workspace_transport: 'ssh',
+      ssh_workspace_host: 'Synria',
+      ssh_workspace_path: '/home/ubuntu/Synria/geom_dev'
+    }))
+  })
+
   it('registers slash, runtime, and permissions as close-first Cmd/Ctrl+W transients', async () => {
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,

@@ -237,14 +237,14 @@ export const ChatPane = memo(function ChatPane({
   const paneContent = papersOpen && focused && onAskPaper
     ? <PaperShelf chat={conversation} session={session} scope={scope} onAsk={onAskPaper} />
     : <WorkspaceEditor
-      key={`${session.id}:${session.cwd ?? ''}`}
-      workspaceKey={`${profileSessionKey(activeProfileId, session.id, serverIdentity)}:cwd:${session.cwd ?? ''}`}
+      key={`${session.id}:${session.workspace_transport ?? 'local'}:${session.ssh_workspace_host ?? ''}:${session.ssh_workspace_path ?? session.cwd ?? ''}`}
+      workspaceKey={`${profileSessionKey(activeProfileId, session.id, serverIdentity)}:${session.workspace_transport ?? 'local'}:${session.ssh_workspace_host ?? ''}:${session.ssh_workspace_path ?? session.cwd ?? ''}`}
       session={session}
       profileScope={scope}
-      available={workspaceFilesAvailable}
+      available={session.workspace_transport === 'ssh' ? false : workspaceFilesAvailable}
       capabilityVersion={workspaceFilesVersion}
       maxTextFileBytes={workspaceFilesMaxBytes}
-      unavailableMessage={workspaceFilesMessage}
+      unavailableMessage={session.workspace_transport === 'ssh' ? t('editor.sshWorkspaceFilesUseAgent') : workspaceFilesMessage}
       tabbedPane
       paneFocused={focused}
       onAskPaper={onAskPaper}

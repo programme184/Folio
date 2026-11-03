@@ -345,12 +345,15 @@ export const NEW_CHAT_DEFAULTS_PREFERENCE_KEY = 'newChatDefaults:v1'
 const DIRECT_CHAT_PLACEHOLDER_PREFERENCE_PREFIX = 'directChatPlaceholder:v1:'
 
 type NewChatPermissionDefaults = Pick<CreateSessionInput, 'claude_permission_mode' | 'cursor_permission_mode' | 'opencode_permission_mode' | 'gemini_permission_mode' | 'codex_approval_policy' | 'codex_sandbox_mode' | 'codex_permission_profile' | 'codex_approvals_reviewer'>
-type NewChatDefaultsInput = Pick<CreateSessionInput, 'folder' | 'cwd' | 'backend' | 'codex_provider' | 'provider_connection' | 'model' | 'effort' | 'system_prompt' | 'subagent_limit'> & NewChatPermissionDefaults
+type NewChatDefaultsInput = Pick<CreateSessionInput, 'folder' | 'cwd' | 'workspace_transport' | 'ssh_workspace_host' | 'ssh_workspace_path' | 'backend' | 'codex_provider' | 'provider_connection' | 'model' | 'effort' | 'system_prompt' | 'subagent_limit'> & NewChatPermissionDefaults
 
 export interface NewChatDefaults extends NewChatPermissionDefaults {
   version: 1
   folder: string
   cwd: string
+  workspace_transport?: 'local' | 'ssh'
+  ssh_workspace_host?: string | null
+  ssh_workspace_path?: string | null
   backend: Backend
   codex_provider?: CreateSessionInput['codex_provider']
   provider_connection?: CreateSessionInput['provider_connection']
@@ -380,6 +383,9 @@ function normalizedNewChatDefaults(input: NewChatDefaultsInput): NewChatDefaults
     version: 1,
     folder: input.folder.trim() || 'General',
     cwd: input.cwd.trim(),
+    workspace_transport: input.workspace_transport === 'ssh' ? 'ssh' : 'local',
+    ssh_workspace_host: input.workspace_transport === 'ssh' ? input.ssh_workspace_host?.trim() || null : null,
+    ssh_workspace_path: input.workspace_transport === 'ssh' ? input.ssh_workspace_path?.trim() || null : null,
     backend: input.backend,
     ...(input.backend === 'codex' && input.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
     ...(input.provider_connection === 'custom' ? { provider_connection: 'custom' as const } : {}),
@@ -401,6 +407,9 @@ function parseNewChatDefaults(value: unknown): NewChatDefaults | null {
     || candidate.provider_connection !== undefined && !['default', 'custom'].includes(candidate.provider_connection)
     || typeof candidate.folder !== 'string'
     || typeof candidate.cwd !== 'string'
+    || candidate.workspace_transport !== undefined && !['local', 'ssh'].includes(candidate.workspace_transport)
+    || candidate.ssh_workspace_host != null && typeof candidate.ssh_workspace_host !== 'string'
+    || candidate.ssh_workspace_path != null && typeof candidate.ssh_workspace_path !== 'string'
     || candidate.model !== null && typeof candidate.model !== 'string'
     || candidate.effort !== null && typeof candidate.effort !== 'string'
     || candidate.system_prompt != null && typeof candidate.system_prompt !== 'string'
@@ -440,6 +449,9 @@ function sessionNewChatDefaults(session: Session, defaultCwd: string): NewChatDe
     ...newChatPermissions(session, session.backend),
     folder: session.folder || 'General',
     cwd: session.cwd || defaultCwd,
+    workspace_transport: session.workspace_transport,
+    ssh_workspace_host: session.ssh_workspace_host,
+    ssh_workspace_path: session.ssh_workspace_path,
     backend: session.backend,
     codex_provider: session.codex_provider,
     provider_connection: session.provider_connection,
@@ -2449,6 +2461,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         title: 'New chat',
         folder: defaults.folder,
         cwd: defaults.cwd,
+        workspace_transport: defaults.workspace_transport,
+        ssh_workspace_host: defaults.ssh_workspace_host,
+        ssh_workspace_path: defaults.ssh_workspace_path,
         backend: defaults.backend,
         ...(defaults.codex_provider === 'custom' ? { codex_provider: 'custom' as const } : {}),
         ...(defaults.provider_connection === 'custom' ? { provider_connection: 'custom' as const } : {}),
@@ -5401,6 +5416,9 @@ function normalizeSessionPatch(patch: Partial<Session> & { gemini_connect_api?: 
   title: patch.title,
   folder: patch.folder ?? undefined,
   cwd: patch.cwd ?? undefined,
+  workspace_transport: patch.workspace_transport,
+  ssh_workspace_host: patch.ssh_workspace_host,
+  ssh_workspace_path: patch.ssh_workspace_path,
   backend: patch.backend,
   codex_provider: patch.codex_provider,
   provider_connection: patch.provider_connection,

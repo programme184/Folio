@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-11-03 — Local agents can use an SSH workspace
+
+- Chats can now keep their agent, sign-in, settings and history on the selected
+  AgentsServer while using an SSH host and absolute remote path as the project
+  workspace. New-chat defaults and forks preserve that workspace selection.
+- The composer identifies the SSH workspace, and the native Files/Changes views
+  explicitly remain unavailable instead of showing the server's local runtime
+  directory. Remote project work is performed by the agent through OpenSSH.
+- Test surface: isolated production Electron app, disposable authenticated
+  AgentsServer and real local Codex. The SSH workspace was configured through
+  the UI; two read-only prompts reached the remote directory and returned the
+  expected path and basename. Server regressions, focused renderer regressions,
+  TypeScript checking and the Electron production build pass. Source only; no
+  package was installed or published, and no server was deployed.
+
 ## 2026-11-03 — Workspace Files supports multiple simultaneous roots
 
 - A chat assigned to a workspace with multiple folders now shows every folder

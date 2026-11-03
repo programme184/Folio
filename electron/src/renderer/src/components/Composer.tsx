@@ -2006,7 +2006,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   return (
     <div className="composer-dock">
       {(!window.agentsDock.sharedChat || activeInboundDeliveryKind === 'unknown') && <div className="composer-context-row">
-        {!window.agentsDock.sharedChat && <WorkingDirectoryPopover session={session} />}
+        {!window.agentsDock.sharedChat && <WorkingDirectoryPopover session={session} onConfigure={() => setWorkingDirectoryOpen(true)} />}
         {activeInboundDeliveryKind === 'unknown' && <span className="composer-sync-status" role="status">{t("ui.Composer.Composer.an_active_turn_is_running_while_chat_sync__2265ac1")}</span>}
       </div>}
       <fieldset className="composer-goal-controls" disabled={writeDisabled}><CodexGoalBar /></fieldset>
@@ -3127,6 +3127,10 @@ function composerCommandValue(
   }
   if (command.id === 'plan') return claudePermissionMode === 'plan' ? 'On' : 'Choose'
   if (command.id === 'workdir') {
+    if (session.workspace_transport === 'ssh' && session.ssh_workspace_path?.trim()) {
+      const parts = session.ssh_workspace_path.split('/').filter(Boolean)
+      return `${session.ssh_workspace_host || 'SSH'}:${parts.at(-1) || '/'}`
+    }
     const cwd = session.cwd?.trim()
     if (!cwd) return t("ui.Composer.composerCommandValue.server_default_42b9983")
     const parts = cwd.split(/[\\/]/u).filter(Boolean)
@@ -3171,22 +3175,41 @@ function WorkingDirectoryCommandDialog({
   useLocale()
   const defaultCwd = useAppStore(state => state.health?.default_cwd?.trim() || '')
   const completionAvailable = useAppStore(state => state.health?.capabilities?.working_directory_completion?.available === true)
+  const sshWorkspaceAvailable = useAppStore(state => state.health?.capabilities?.ssh_workspace_v1?.available === true)
   const [draft, setDraft] = useState(session.cwd?.trim() || defaultCwd)
+  const [workspaceTransport, setWorkspaceTransport] = useState<'local' | 'ssh'>(session.workspace_transport === 'ssh' ? 'ssh' : 'local')
+  const [sshHost, setSSHHost] = useState(session.ssh_workspace_host?.trim() || '')
+  const [sshPath, setSSHPath] = useState(session.ssh_workspace_path?.trim() || '')
   const [saving, setSaving] = useState(false)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    if (open) setDraft(session.cwd?.trim() || defaultCwd)
-  }, [defaultCwd, open, session.cwd, session.id])
+    if (!open) return
+    setDraft(session.cwd?.trim() || defaultCwd)
+    setWorkspaceTransport(session.workspace_transport === 'ssh' ? 'ssh' : 'local')
+    setSSHHost(session.ssh_workspace_host?.trim() || '')
+    setSSHPath(session.ssh_workspace_path?.trim() || '')
+  }, [defaultCwd, open, session.cwd, session.id, session.ssh_workspace_host, session.ssh_workspace_path, session.workspace_transport])
 
   const save = async () => {
     const cwd = draft.trim()
-    if (!cwd || saving) return
+    if (saving || workspaceTransport === 'local' && !cwd || workspaceTransport === 'ssh' && (!sshHost.trim() || !sshPath.trim().startsWith('/'))) return
     setSaving(true)
     try {
-      await useAppStore.getState().updateSession(session.id, { cwd })
+      await useAppStore.getState().updateSession(session.id, workspaceTransport === 'ssh' ? {
+        cwd: cwd || defaultCwd,
+        workspace_transport: 'ssh',
+        ssh_workspace_host: sshHost.trim(),
+        ssh_workspace_path: sshPath.trim()
+      } : session.workspace_transport === 'ssh' ? {
+        cwd,
+        workspace_transport: 'local',
+        ssh_workspace_host: null,
+        ssh_workspace_path: null
+      } : { cwd })
       const saved = useAppStore.getState().sessions.find(candidate => candidate.id === session.id)
-      if (saved?.cwd?.trim() === cwd) onOpenChange(false)
+      if (saved && (saved.workspace_transport ?? 'local') === workspaceTransport
+        && (workspaceTransport === 'ssh' ? saved.ssh_workspace_host === sshHost.trim() && saved.ssh_workspace_path === sshPath.trim() : saved.cwd?.trim() === cwd)) onOpenChange(false)
     } catch (error) {
       reportActionError(error)
     } finally {
@@ -3214,17 +3237,27 @@ function WorkingDirectoryCommandDialog({
         </header>
         <div className="form-dialog-body">
           <form className="dialog-form" onSubmit={event => { event.preventDefault(); void save() }}>
-            <WorkingDirectoryInput
-              value={draft}
-              onChange={setDraft}
-              defaultCwd={defaultCwd}
-              available={completionAvailable}
-            />
-            <small className="working-directory-hint">{t("ui.Composer.WorkingDirectoryCommandDialog.folder_suggestions_come_from_the_active_ag_fb6c963")}</small>
+            {sshWorkspaceAvailable && <div className="segmented" role="group" aria-label={t('ui.Composer.WorkingDirectoryCommandDialog.workspace_type')}>
+              <button type="button" className={workspaceTransport === 'local' ? 'active' : ''} aria-pressed={workspaceTransport === 'local'} onClick={() => setWorkspaceTransport('local')}><Folder size={14} /> {t('ui.Composer.WorkingDirectoryCommandDialog.local_folder')}</button>
+              <button type="button" className={workspaceTransport === 'ssh' ? 'active' : ''} aria-pressed={workspaceTransport === 'ssh'} onClick={() => setWorkspaceTransport('ssh')}><Network size={14} /> {t('ui.Composer.WorkingDirectoryCommandDialog.ssh_workspace')}</button>
+            </div>}
+            {workspaceTransport === 'local' ? <>
+              <WorkingDirectoryInput
+                value={draft}
+                onChange={setDraft}
+                defaultCwd={defaultCwd}
+                available={completionAvailable}
+              />
+              <small className="working-directory-hint">{t("ui.Composer.WorkingDirectoryCommandDialog.folder_suggestions_come_from_the_active_ag_fb6c963")}</small>
+            </> : <>
+              <label><span>{t('ui.Composer.WorkingDirectoryCommandDialog.ssh_host')}</span><input autoFocus value={sshHost} onChange={event => setSSHHost(event.target.value)} placeholder="Synria" autoCapitalize="none" autoCorrect="off" /></label>
+              <label><span>{t('ui.Composer.WorkingDirectoryCommandDialog.remote_path')}</span><input value={sshPath} onChange={event => setSSHPath(event.target.value)} placeholder="/home/ubuntu/project" autoCapitalize="none" autoCorrect="off" /></label>
+              <small className="working-directory-hint">{t('ui.Composer.WorkingDirectoryCommandDialog.ssh_workspace_hint')}</small>
+            </>}
             {session.backend === 'opencode' && <small className="working-directory-hint">{t('opencode.cwdReset')}</small>}
             <footer>
               <Dialog.Close asChild><button type="button" className="quiet-button">{t("ui.Composer.WorkingDirectoryCommandDialog.cancel_19766ed")}</button></Dialog.Close>
-              <button type="submit" className="primary-button" disabled={!draft.trim() || saving}>{saving ? t("ui.Composer.WorkingDirectoryCommandDialog.saving_23e3929") : t("ui.Composer.WorkingDirectoryCommandDialog.use_folder_901c498")}</button>
+              <button type="submit" className="primary-button" disabled={saving || (workspaceTransport === 'local' ? !draft.trim() : !sshHost.trim() || !sshPath.trim().startsWith('/'))}>{saving ? t("ui.Composer.WorkingDirectoryCommandDialog.saving_23e3929") : t("ui.Composer.WorkingDirectoryCommandDialog.use_folder_901c498")}</button>
             </footer>
           </form>
         </div>

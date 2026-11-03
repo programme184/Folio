@@ -124,6 +124,17 @@ describe('Inspector files', () => {
     expect(entries).not.toHaveBeenCalled()
   })
 
+  it('does not expose the local runtime directory as files for an SSH workspace', () => {
+    render(<RealInspectorFiles session={{
+      ...session,
+      workspace_transport: 'ssh',
+      ssh_workspace_host: 'Synria',
+      ssh_workspace_path: '/home/ubuntu/project'
+    }} scope={scope} />)
+    expect(screen.getByText(/accessed by the agent through SSH/)).toBeVisible()
+    expect(entries).not.toHaveBeenCalled()
+  })
+
   it('lists hidden files while keeping symlinks unavailable', async () => {
     entries.mockResolvedValue(page([{ name: '.env', path: '.env', kind: 'file', hidden: true }, { name: 'outside', path: 'outside', kind: 'symlink' }]))
     render(<InspectorFiles session={session} scope={scope} />)

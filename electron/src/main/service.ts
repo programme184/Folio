@@ -2682,6 +2682,7 @@ export class AppService {
     this.requirePerChatCodexProvider(input.codex_provider)
     this.requirePerChatProviderConnection(input.provider_connection)
     this.requirePerChatSubagentLimit(input.subagent_limit)
+    this.requireSSHWorkspace(input.workspace_transport)
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
     this.upsertSession(scope, session)
@@ -2695,6 +2696,7 @@ export class AppService {
     this.requirePerChatCodexProvider(input.codex_provider)
     if (input.provider_connection === 'custom') throw new Error('Import native conversations with their native login.')
     this.requirePerChatSubagentLimit(input.subagent_limit)
+    this.requireSSHWorkspace(input.workspace_transport)
     const session = await scope.client.createSession(input)
     this.assertCurrentScope(scope)
     this.upsertSession(scope, session)
@@ -2779,6 +2781,7 @@ export class AppService {
     this.requirePerChatCodexProvider(patch.codex_provider)
     this.requirePerChatProviderConnection(patch.provider_connection)
     this.requirePerChatSubagentLimit(patch.subagent_limit)
+    this.requireSSHWorkspace(patch.workspace_transport)
     const session = await scope.client.updateSession(sessionId, patch)
     this.assertCurrentScope(scope)
     if (session.archived) {
@@ -2796,6 +2799,13 @@ export class AppService {
     }
     if (this.health?.capabilities?.subagent_limit_v1?.version !== 1) {
       throw new Error('Update AgentsServer to set a per-chat sub-agent limit.')
+    }
+  }
+
+  private requireSSHWorkspace(transport: unknown): void {
+    if (transport !== 'ssh') return
+    if (this.health?.capabilities?.ssh_workspace_v1?.available !== true) {
+      throw new Error('Update AgentsServer to keep agents local while using an SSH workspace.')
     }
   }
 

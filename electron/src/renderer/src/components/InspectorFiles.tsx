@@ -14,7 +14,8 @@ export function InspectorFiles({ session, scope }: { session: Session | null; sc
     const capability = state.health?.capabilities?.workspace_files
     return [capability?.message, capability?.action].filter(Boolean).join(' ')
   })
-  const message = !session?.cwd?.trim() ? t('editor.noWorkingDirectory')
+  const message = session?.workspace_transport === 'ssh' ? t('editor.sshWorkspaceFilesUseAgent')
+    : !session?.cwd?.trim() ? t('editor.noWorkingDirectory')
     : !connected ? t('editor.workspaceFilesWillBeAvailableAfterAgentsserverFinishesConnecting')
       : !available ? capabilityMessage || t('editor.updateAgentsserverToEnableWorkspaceFileBrowsingAndEditing') : null
   if (message || !session) return <p className="inspector-files-message">{message}</p>

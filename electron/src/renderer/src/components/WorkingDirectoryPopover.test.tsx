@@ -139,4 +139,43 @@ describe('WorkingDirectoryPopover', () => {
     await user.click(screen.getByRole('button', { name: 'Open files in /tmp/notes' }))
     await waitFor(() => expect(updateSession).toHaveBeenCalledWith('chat-1', { cwd: '/tmp/notes' }))
   })
+
+  it('shows the configured SSH workspace without browsing the local runtime directory', async () => {
+    const complete = vi.fn(async (path: string) => completion(path, []))
+    const onConfigure = vi.fn()
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { workingDirectories: { complete } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      health: {
+        ok: true,
+        default_cwd: '/srv',
+        capabilities: {
+          working_directory_completion: { available: true, required: false, message: '', action: null }
+        }
+      }
+    })
+    const user = userEvent.setup()
+    render(<WorkingDirectoryPopover
+      session={{
+        id: 'chat-1',
+        title: 'Chat',
+        backend: 'codex',
+        cwd: '/srv/runtime',
+        workspace_transport: 'ssh',
+        ssh_workspace_host: 'Synria',
+        ssh_workspace_path: '/home/ubuntu/project'
+      }}
+      onConfigure={onConfigure}
+    />)
+
+    await user.click(screen.getByRole('button', { name: 'SSH workspace: Synria:/home/ubuntu/project' }))
+    expect(await screen.findByText('SSH workspace')).toBeVisible()
+    expect(screen.getByText('Synria:/home/ubuntu/project')).toBeVisible()
+    expect(complete).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Change workspace' }))
+    expect(onConfigure).toHaveBeenCalledOnce()
+  })
 })
