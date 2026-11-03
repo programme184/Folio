@@ -63,13 +63,17 @@ function EmbeddedPaneApp() {
   const initialized = useAppStore(state => state.initialized)
   const activeProfileId = useAppStore(state => state.activeProfileId)
   const activeServerIdentity = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.serverIdentity ?? null)
+  const profileGeneration = useAppStore(state => state.profileGeneration)
   const sessions = useAppStore(state => state.sessions)
   const selectedSessionId = useAppStore(state => state.selectedSessionId)
   const selectedSession = useAppStore(state => state.sessions.find(session => session.id === state.selectedSessionId) ?? null)
   const error = useAppStore(state => state.error)
   const storageFull = useAppStore(state => state.storageFull)
+  const inspectorVisible = useAppStore(state => state.inspectorVisible)
   const [query, setQuery] = useState('')
   const [terminalOpen, setTerminalOpen] = useState(false)
+  const [inspectorTab, setInspectorTab] = useState<InspectorWorkspaceTab>('files')
+  const [sideChatController] = useState(() => new SideChatController())
   const requestedSessionId = useMemo(() => new URLSearchParams(window.location.search).get('sessionId'), [])
 
   useEffect(() => { void initialize() }, [initialize])
@@ -78,30 +82,43 @@ function EmbeddedPaneApp() {
       || !sessions.some(session => session.id === requestedSessionId)) return
     void useAppStore.getState().selectSession(requestedSessionId)
   }, [initialized, requestedSessionId, selectedSessionId, sessions])
+  useEffect(() => () => sideChatController.reset(), [sideChatController])
 
   if (!initialized) return <main className="embedded-pane-boot"><LoaderCircle className="spin" size={20} /></main>
   const candidates = sessions.filter(session => !session.archived
     && `${session.title} ${session.cwd ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
-  return <main className="embedded-pane-app">
+  const activeProfileKey = rendererWorkspaceKey(activeProfileId, activeServerIdentity)
+  const selectedRenderKey = `${activeProfileKey}:generation:${profileGeneration}:${selectedSessionId ?? 'empty'}`
+  return <main className={`app-shell sidebar-hidden embedded-pane-app${inspectorVisible ? ' inspector-open' : ''}`}>
     <ChatFontApplier />
     <AnswerFollowUp />
-    {selectedSession
-      ? <ChatPane pane="primary" session={selectedSession} focused split={false} terminalOpen={terminalOpen}
-        onTerminalToggle={() => setTerminalOpen(open => !open)} />
-      : <section className="embedded-pane-session-picker">
-        <strong>{t('chatWorkspace.chooseChat')}</strong>
-        <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
-          value={query} onChange={event => setQuery(event.target.value)} />
-        <div className="embedded-pane-session-list">
-          {candidates.map(session => <button type="button" key={session.id}
-            onClick={() => void useAppStore.getState().selectSession(session.id)}>
-            <strong>{session.title}</strong><small>{session.backend}</small>
-          </button>)}
-          {!candidates.length && <p>{t('chatWorkspace.noChats')}</p>}
-        </div>
-      </section>}
+    <section className="conversation-pane embedded-pane-conversation">
+      {selectedSession
+        ? <ChatPane pane="primary" session={selectedSession} focused split={false} terminalOpen={terminalOpen}
+          onTerminalToggle={() => setTerminalOpen(open => !open)} />
+        : <section className="embedded-pane-session-picker">
+          <strong>{t('chatWorkspace.chooseChat')}</strong>
+          <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
+            value={query} onChange={event => setQuery(event.target.value)} />
+          <div className="embedded-pane-session-list">
+            {candidates.map(session => <button type="button" key={session.id}
+              onClick={() => void useAppStore.getState().selectSession(session.id)}>
+              <strong>{session.title}</strong><small>{session.backend}</small>
+            </button>)}
+            {!candidates.length && <p>{t('chatWorkspace.noChats')}</p>}
+          </div>
+        </section>}
+    </section>
+    <InspectorDock
+      open={inspectorVisible && Boolean(selectedSession)}
+      contentKey={selectedRenderKey}
+      content={<InspectorWorkspace session={selectedSession}
+        scope={{ profileId: activeProfileId ?? '', profileGeneration, serverIdentity: activeServerIdentity }}
+        controller={sideChatController} tab={inspectorTab} onTabChange={setInspectorTab}
+        onHide={() => useAppStore.getState().setInspectorVisible(false)} />}
+    />
     {selectedSession && <TerminalDock
-      workspaceKey={rendererWorkspaceKey(activeProfileId, activeServerIdentity)}
+      workspaceKey={activeProfileKey}
       open={terminalOpen}
       session={selectedSession}
       onRequestClose={() => setTerminalOpen(false)}

@@ -16,7 +16,7 @@ const workspaceEditorHarness = vi.hoisted(() => ({
 }))
 const appRenderHarness = vi.hoisted(() => ({ sidebarRenders: 0 }))
 const analytics = vi.hoisted(() => ({ trackEvent: vi.fn() }))
-const inspectorHarness = vi.hoisted(() => ({ props: null as any }))
+const inspectorHarness = vi.hoisted(() => ({ props: null as any, open: false }))
 const sideChatHarness = vi.hoisted(() => ({ props: null as any }))
 const teamspaceHarness = vi.hoisted(() => ({
   mounts: 0,
@@ -43,6 +43,7 @@ vi.mock('./components/Sidebar', () => ({
   }
 }))
 vi.mock('./components/ChatHeader', () => ({
+  WindowFrameControls: () => null,
   ChatHeader: ({ session }: { session?: Session | null }) => {
     const selectedSessionId = useAppStore(state => state.selectedSessionId)
     return <header data-testid="header">header:{session?.id ?? selectedSessionId}</header>
@@ -61,7 +62,11 @@ vi.mock('./components/Composer', () => ({
   }
 }))
 vi.mock('./components/Dialogs', () => ({ Dialogs: () => <div data-testid="dialogs" /> }))
-vi.mock('./components/InspectorDock', () => ({ InspectorDock: ({ content }: any) => { inspectorHarness.props = content.props; return <div data-testid="inspector" /> } }))
+vi.mock('./components/InspectorDock', () => ({ InspectorDock: ({ content, open }: any) => {
+  inspectorHarness.props = content.props
+  inspectorHarness.open = open
+  return <div data-testid="inspector" />
+} }))
 vi.mock('./components/SideChatPopover', () => ({ SideChatPopover: (props: any) => {
   sideChatHarness.props = props
   return <div data-testid="side-chat-popover" />
@@ -256,6 +261,22 @@ describe('App chat workspace identity', () => {
     cleanup()
     window.history.replaceState({}, '', '/')
     vi.restoreAllMocks()
+  })
+
+  it('mounts an independent Files inspector for an embedded server pane', () => {
+    window.history.replaceState({}, '', '/?embeddedPane=1&profileId=profile-a&sessionId=chat-a')
+    const view = render(<App />)
+    expect(view.container.querySelector('.embedded-pane-app.app-shell')).toBeInTheDocument()
+    expect(inspectorHarness.props).toEqual(expect.objectContaining({
+      session: expect.objectContaining({ id: 'chat-a' }),
+      scope: { profileId: 'profile-a', profileGeneration: 4, serverIdentity: 'server-a' },
+      tab: 'files'
+    }))
+    expect(inspectorHarness.open).toBe(false)
+    act(() => useAppStore.getState().setInspectorVisible(true))
+    expect(inspectorHarness.open).toBe(true)
+    act(() => inspectorHarness.props.onHide())
+    expect(useAppStore.getState().inspectorVisible).toBe(false)
   })
 
   it('remembers Files across panel close and app remount, and lets Details replace it', () => {
