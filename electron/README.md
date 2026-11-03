@@ -206,8 +206,12 @@ Status groups are not folder drop targets; dragging a chat out can still assign
 it to a real folder.
 
 Every selected chat also owns a lightweight workspace surface rooted at its
-server-side `cwd`. The right-hand Details panel has a **Files** tab for browsing
-that directory and opening files in the existing workspace editor. It replaces
+server-side `cwd`. When its Folio folder contains multiple configured workspace
+directories and AgentsServer advertises workspace-files v7, the **Files** tab
+shows all of those roots at once; expanding or opening a second root does not
+change the chat's `cwd`. Existing files in additional roots use the native-only
+absolute file transport and retain revision-checked editing. The right-hand
+Details panel opens files in the existing workspace editor. It replaces
 the editor's separate Explorer pane and retains new file/folder, refresh and
 right-click actions (open beside, copy path, download, rename and delete), with
 the existing unsaved-edit and revision checks. Folders load on expansion or

@@ -475,6 +475,7 @@
   "editor.fileName": "文件名",
   "editor.fileOutsideDirectory": "该文件不在当前会话的工作目录内。",
   "editor.filesAreLoadedFromTheChatWorkingDirectoryOnAgentsserver": "文件从 AgentsServer 上当前会话的工作目录加载。",
+  "editor.filesAreLoadedFromWorkspaceFoldersOnAgentsserver": "文件从 AgentsServer 上工作区的所有文件夹加载。",
   "editor.findAWorkspaceFile": "查找工作区文件",
   "editor.font": "字体",
   "editor.fullPath": "完整路径",

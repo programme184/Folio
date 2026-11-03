@@ -350,6 +350,8 @@ export function WorkspaceEditor({
     if (!folder || folder.toLocaleLowerCase() === 'general') return EMPTY_WORKSPACE_DIRECTORIES
     return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
   })
+  const multiRootExplorer = capabilityVersion >= 7 && workspaceFolders.length > 1
+  const workspaceFoldersKey = workspaceFolders.join('\0')
   const registeredFilesHost = useWorkspaceFilesHost(workspaceFilesKey(profileScope, session.id, cwd))
   // The host key already binds the explorer to one server, session, and cwd.
   // Do not additionally gate its portal on pane focus: focus and the inspector
@@ -409,7 +411,9 @@ export function WorkspaceEditor({
   const [paletteTruncated, setPaletteTruncated] = useState(false)
   const [openingPath, setOpeningPath] = useState<string | null>(null)
   const [directories, setDirectories] = useState<Record<string, DirectoryState>>({})
-  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => new Set())
+  const [expandedDirectories, setExpandedDirectories] = useState<Set<string>>(() => (
+    multiRootExplorer ? new Set(workspaceFolders) : new Set()
+  ))
   const [workspaceRoot, setWorkspaceRoot] = useState(cwd)
   const [pendingCreate, setPendingCreate] = useState<PendingWorkspaceCreate | null>(null)
   const [pendingUntitledSave, setPendingUntitledSave] = useState<PendingUntitledSave | null>(null)
@@ -1529,16 +1533,25 @@ export function WorkspaceEditor({
     setDirectories(markLoading)
     const request = (async () => {
       try {
-        const page = await window.agentsDock.workspace.entries(
-          session.id,
-          path,
-          offset,
-          WORKSPACE_DIRECTORY_PAGE_SIZE
-        )
+        const page = multiRootExplorer
+          ? await window.agentsDock.workspace.absoluteEntries(
+            session.id,
+            path,
+            offset,
+            WORKSPACE_DIRECTORY_PAGE_SIZE
+          )
+          : await window.agentsDock.workspace.entries(
+            session.id,
+            path,
+            offset,
+            WORKSPACE_DIRECTORY_PAGE_SIZE
+          )
         if (!mountedRef.current || requestedGeneration !== directoryGeneration.current) return
-        if (directoryRootRef.current !== null && directoryRootRef.current !== page.root) throw new Error(t('inspector.filesRootChanged'))
-        directoryRootRef.current = page.root
-        setWorkspaceRoot(page.root)
+        if (!multiRootExplorer) {
+          if (directoryRootRef.current !== null && directoryRootRef.current !== page.root) throw new Error(t('inspector.filesRootChanged'))
+          directoryRootRef.current = page.root
+          setWorkspaceRoot(page.root)
+        }
         const applyPage = (state: Record<string, DirectoryState>) => ({
           ...state,
           [path]: {
@@ -1668,10 +1681,21 @@ export function WorkspaceEditor({
       !filesHost
       || available !== true
       || !cwd
-      || directoriesRef.current['']
     ) return
+    if (multiRootExplorer) {
+      setExpandedDirectories(current => {
+        const next = new Set(current)
+        for (const root of workspaceFolders) next.add(root)
+        return equalStringSets(current, next) ? current : next
+      })
+      for (const root of workspaceFolders) {
+        if (!directoriesRef.current[root]) void loadDirectory(root)
+      }
+      return
+    }
+    if (directoriesRef.current['']) return
     void loadDirectory('')
-  }, [filesHost, available, cwd, session.id])
+  }, [filesHost, available, cwd, session.id, multiRootExplorer, workspaceFoldersKey])
 
   const toggleDirectory = (path: string) => {
     setExpandedDirectories(current => {
@@ -1690,9 +1714,13 @@ export function WorkspaceEditor({
     directoryLoadsRef.current.clear()
     directoriesRef.current = {}
     setDirectories({})
-    setExpandedDirectories(new Set())
+    setExpandedDirectories(multiRootExplorer ? new Set(workspaceFolders) : new Set())
     setWorkspaceRoot(cwd)
-    void loadDirectory('', false, generation)
+    if (multiRootExplorer) {
+      for (const root of workspaceFolders) void loadDirectory(root, false, generation)
+    } else {
+      void loadDirectory('', false, generation)
+    }
   }
   const reloadExplorerAtRootRef = useRef(reloadExplorerAtRoot)
   reloadExplorerAtRootRef.current = reloadExplorerAtRoot
@@ -1718,7 +1746,10 @@ export function WorkspaceEditor({
     directoryRootRef.current = null
     directoriesRef.current = {}
     setDirectories({})
-    if (focusedPath && activeFile?.origin === 'workspace') {
+    if (multiRootExplorer) {
+      setExpandedDirectories(new Set(workspaceFolders))
+      for (const root of workspaceFolders) void loadDirectory(root, false, generation)
+    } else if (focusedPath && activeFile?.origin === 'workspace') {
       void revealWorkspaceFile(focusedPath, generation)
     } else {
       setExpandedDirectories(new Set())
@@ -1982,7 +2013,15 @@ export function WorkspaceEditor({
   }, [capabilityVersion, creationAvailable, focusedPath, session.archived])
 
   const copyWorkspaceEntryPath = async (entry: WorkspaceEntry, relative: boolean) => {
-    const value = relative ? entry.path : absoluteWorkspacePath(workspaceRoot, entry.path)
+    const multiRoot = multiRootExplorer
+      ? workspaceFolders.find(root => (
+        entry.path === root
+        || entry.path.startsWith(`${root.replace(/[\\/]+$/, '')}${root.includes('\\') ? '\\' : '/'}`)
+      ))
+      : null
+    const value = relative
+      ? multiRoot ? entry.path.slice(multiRoot.length).replace(/^[\\/]+/, '') : entry.path
+      : multiRootExplorer ? entry.path : absoluteWorkspacePath(workspaceRoot, entry.path)
     try {
       await window.agentsDock.native.writeClipboard(value)
     } catch (error) {
@@ -4005,21 +4044,16 @@ export function WorkspaceEditor({
           root={workspaceLabel}
           cwd={workspaceRoot}
           workspaceFolders={workspaceFolders}
-          onOpenWorkspaceFolder={path => {
-            if (!path || path === cwd) return
-            void useAppStore.getState().updateSession(session.id, { cwd: path }).then(() => {
-              window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
-            })
-          }}
+          multiRoot={multiRootExplorer}
           activePath={focusedPath}
           openPaths={openPaths}
           directories={directories}
           expanded={expandedDirectories}
-          mutationsAvailable={mutationsAvailable && !workspaceMutationPath}
-          creationAvailable={creationAvailable && !workspaceMutationPath}
-          pendingCreate={pendingCreate}
-          onOpen={path => void openFile(path)}
-          onOpenToSide={tabbedPane ? undefined : openFileToSide}
+          mutationsAvailable={!multiRootExplorer && mutationsAvailable && !workspaceMutationPath}
+          creationAvailable={!multiRootExplorer && creationAvailable && !workspaceMutationPath}
+          pendingCreate={multiRootExplorer ? null : pendingCreate}
+          onOpen={path => void (multiRootExplorer ? openAbsoluteFile(path) : openFile(path))}
+          onOpenToSide={tabbedPane || multiRootExplorer ? undefined : openFileToSide}
           onToggle={toggleDirectory}
           onLoadMore={path => void loadDirectory(path, true)}
           onRefresh={refreshExplorer}
@@ -4035,7 +4069,7 @@ export function WorkspaceEditor({
             if (!pendingCreate?.creating) setPendingCreate(null)
           }}
           onCopyPath={(entry, relative) => void copyWorkspaceEntryPath(entry, relative)}
-          onDownload={entry => void downloadWorkspaceEntry(entry)}
+          onDownload={multiRootExplorer ? undefined : entry => void downloadWorkspaceEntry(entry)}
           onRename={requestRenameWorkspaceEntry}
           onDelete={entry => {
             setWorkspaceError(null)
@@ -4286,7 +4320,7 @@ const Explorer = memo(function Explorer({
   root,
   cwd,
   workspaceFolders = EMPTY_WORKSPACE_DIRECTORIES,
-  onOpenWorkspaceFolder,
+  multiRoot = false,
   activePath,
   openPaths,
   directories,
@@ -4311,7 +4345,7 @@ const Explorer = memo(function Explorer({
   root: string
   cwd: string
   workspaceFolders?: string[]
-  onOpenWorkspaceFolder?: (path: string) => void
+  multiRoot?: boolean
   activePath: string | null
   openPaths: Set<string>
   directories: Record<string, DirectoryState>
@@ -4329,7 +4363,7 @@ const Explorer = memo(function Explorer({
   onCreateErrorClear: () => void
   onCreateCancel: () => void
   onCopyPath: (entry: WorkspaceEntry, relative: boolean) => void
-  onDownload: (entry: WorkspaceEntry) => void
+  onDownload?: (entry: WorkspaceEntry) => void
   onRename: (entry: WorkspaceEntry) => void
   onDelete: (entry: WorkspaceEntry) => void
 }) {
@@ -4365,16 +4399,21 @@ const Explorer = memo(function Explorer({
         <button type="button" aria-label={t('editor.refreshFileExplorer')} title={t('editor.refreshExplorer')} onClick={onRefresh}><RefreshCw size={12} /></button>
       </div>
     </header>
-    {workspaceFolders.length > 0
-      ? <div className="workspace-editor-roots" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
-        {workspaceFolders.map(path => <button
-          type="button"
-          className={`workspace-editor-root-folder${path === cwd ? ' active' : ''}`}
-          key={path}
-          title={path}
-          aria-label={t('ui.WorkingDirectoryPopover.open_workspace_folder', { folder: path })}
-          onClick={() => onOpenWorkspaceFolder?.(path)}
-        ><FolderOpen size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>)}
+    {multiRoot
+      ? <div className="workspace-editor-roots workspace-editor-roots-multi" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
+        {workspaceFolders.map(path => {
+          const open = expanded.has(path)
+          return <div className="workspace-editor-root-tree" key={path}>
+            <button
+              type="button"
+              className={`workspace-editor-root-folder${path === cwd ? ' active' : ''}`}
+              title={path}
+              aria-expanded={open}
+              onClick={() => onToggle(path)}
+            ><ChevronRight className={open ? 'workspace-editor-chevron-open' : ''} size={12} aria-hidden="true" /><FolderOpen size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>
+            {open && <DirectoryRows path={path} depth={1} activePath={activePath} openPaths={openPaths} directories={directories} expanded={expanded} pendingCreate={null} activeRowRef={activeRowRef} onOpen={onOpen} onToggle={onToggle} onLoadMore={onLoadMore} onCreateCommit={onCreateCommit} onCreateErrorClear={onCreateErrorClear} onCreateCancel={onCreateCancel} />}
+          </div>
+        })}
       </div>
       : <div className="workspace-editor-explorer-root" title={cwd}><FolderOpen size={14} aria-hidden="true" /><strong>{root}</strong></div>}
     <ContextMenu.Root onOpenChange={open => { if (!open) setContextEntryPath(null) }}>
@@ -4390,7 +4429,7 @@ const Explorer = memo(function Explorer({
           }
           setContextEntryPath(path)
         }}>
-          <DirectoryRows
+          {!multiRoot && <DirectoryRows
             path=""
             depth={0}
             activePath={activePath}
@@ -4405,7 +4444,7 @@ const Explorer = memo(function Explorer({
             onCreateCommit={onCreateCommit}
             onCreateErrorClear={onCreateErrorClear}
             onCreateCancel={onCreateCancel}
-          />
+          />}
         </div>
       </ContextMenu.Trigger>
       {contextEntry && <WorkspaceEntryContextMenu
@@ -4423,7 +4462,7 @@ const Explorer = memo(function Explorer({
           : undefined}
         onRequestCreate={kind => onRequestCreate(kind, contextEntry)}
         onCopyPath={onCopyPath}
-        onDownload={contextEntry.kind === 'file' ? () => onDownload(contextEntry) : undefined}
+        onDownload={contextEntry.kind === 'file' && onDownload ? () => onDownload(contextEntry) : undefined}
         onRename={onRename}
         onDelete={onDelete}
       />}
@@ -4433,7 +4472,9 @@ const Explorer = memo(function Explorer({
         onRefresh={onRefresh}
       />}
     </ContextMenu.Root>
-    <p className="workspace-editor-explorer-note">{t('editor.filesAreLoadedFromTheChatWorkingDirectoryOnAgentsserver')}</p>
+    <p className="workspace-editor-explorer-note">{t(multiRoot
+      ? 'editor.filesAreLoadedFromWorkspaceFoldersOnAgentsserver'
+      : 'editor.filesAreLoadedFromTheChatWorkingDirectoryOnAgentsserver')}</p>
   </aside>
 })
 

@@ -2392,6 +2392,27 @@ describe('AgentServerClient live stream', () => {
     expect(calls[9][1].method).toBe('DELETE')
   })
 
+  it('lists an absolute workspace root through the native transport', async () => {
+    const requests: IncomingMessage[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({
+        root: '/work/other root', path: '/work/other root', entries: [],
+        total: 0, offset: 3, limit: 40, has_more: false, scope: 'absolute'
+      }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await expect(client.absoluteWorkspaceEntries('chat-one', '/work/other root', 3, 40)).resolves.toMatchObject({
+        root: '/work/other root', path: '/work/other root'
+      })
+    })
+
+    expect(requests[0]?.url).toContain('/api/sessions/chat-one/workspace/absolute-entries?path=%2Fwork%2Fother+root&offset=3&limit=40')
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+  })
+
   it('requests working-directory completions from the active remote server', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       input: '/srv/pro',

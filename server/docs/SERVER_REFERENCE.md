@@ -1355,6 +1355,7 @@ so older clients continue to work without a global compatibility failure.
 ```text
 GET /api/sessions/{session_id}/workspace
 GET /api/sessions/{session_id}/workspace/entries?path=&offset=0&limit=500
+GET /api/sessions/{session_id}/workspace/absolute-entries?path=/srv/second-project&offset=0&limit=500
 GET /api/sessions/{session_id}/workspace/search?q=app&limit=100
 GET /api/sessions/{session_id}/workspace/file?path=src/App.tsx
 PUT /api/sessions/{session_id}/workspace/file
@@ -1396,6 +1397,16 @@ Workspace-files capability v4 adds no-overwrite creation. Post
 `{path, kind: "directory"}` to create one directory. Creation is
 descriptor-relative, rejects symlinked parents and existing destinations, and
 is unavailable for archived chats.
+
+Workspace-files capability v7 adds native-only enumeration of an explicitly
+selected absolute directory for desktop multi-root workspaces. The route uses
+the exact native token transport for authenticated remote servers, rejects
+ambient browser requests, and permits an unauthenticated request only from the
+same host when AgentsServer itself has no operator token. Directory traversal
+remains descriptor-relative and never follows symlinks. This route does not
+change the chat's `cwd` and does not add absolute create, rename, or delete
+authority; existing absolute files retain the v5/v6 read and revision-checked
+write behavior.
 
 ## Workspace Git
 

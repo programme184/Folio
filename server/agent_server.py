@@ -2895,7 +2895,7 @@ def workspace_info_sync(session_id: str) -> dict[str, Any]:
         "root": str(root),
         "name": root.name or str(root),
         "read_only": bool(sess.get("archived")),
-        "capability_version": 6 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+        "capability_version": 7 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
         "max_text_file_bytes": workspace_text_bytes_capability(),
         "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
         "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -2940,6 +2940,60 @@ def list_workspace_entries_sync(
         "offset": offset,
         "limit": limit,
         "has_more": offset + len(page) < total,
+    }
+
+
+def list_absolute_workspace_entries_sync(
+    session_id: str,
+    absolute_path: str,
+    offset: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Enumerate one explicitly selected absolute workspace directory."""
+    if not WORKSPACE_SECURE_OPEN_AVAILABLE:
+        raise workspace_http_error(
+            501,
+            "workspace_secure_open_unavailable",
+            "Secure absolute directory access is unavailable on this host.",
+        )
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    anchor, relative, normalized = normalize_absolute_file_path(absolute_path)
+    directory_fd = open_workspace_directory_fd(anchor, relative)
+    try:
+        records: list[dict[str, Any]] = []
+        separator = "\\" if os.name == "nt" else "/"
+        prefix = normalized.rstrip("/\\")
+        for name in os.listdir(directory_fd):
+            try:
+                item_stat = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.EACCES, errno.EPERM}:
+                    continue
+                raise translate_workspace_os_error(exc, f"{prefix}{separator}{name}") from exc
+            record = workspace_entry("", name, item_stat)
+            if record:
+                record["path"] = f"{prefix}{separator}{name}"
+                if bool(sess.get("archived")):
+                    record["writable"] = False
+                records.append(record)
+    finally:
+        os.close(directory_fd)
+    records.sort(key=lambda item: (item["kind"] != "directory", str(item["name"]).casefold(), str(item["name"])))
+    total = len(records)
+    page = records[offset:offset + limit]
+    return {
+        "root": normalized,
+        "path": normalized,
+        "entries": page,
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(page) < total,
+        "scope": "absolute",
     }
 
 
@@ -83771,7 +83825,7 @@ async def health() -> dict[str, Any]:
                     else "Secure workspace file access is unavailable on this host."
                 ),
                 "action": None if WORKSPACE_SECURE_OPEN_AVAILABLE else "Use a supported macOS or Linux host.",
-                "version": 6 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+                "version": 7 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
                 "max_text_file_bytes": workspace_text_bytes_capability(),
                 "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
                 "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -84841,6 +84895,24 @@ def require_native_admin_control(request: Request) -> None:
             ),
         )
     if not loopback_credential_admin and not loopback_side_chat and not request_exact_native_token_header_authorized(request):
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def require_native_workspace_directory_control(request: Request) -> None:
+    """Authorize explicit multi-root browsing without granting browser access."""
+
+    if privileged_native_browser_request_forbidden(request):
+        raise HTTPException(status_code=403, detail="forbidden")
+    client = request.client
+    host = client.host if client is not None else ""
+    if not AGENT_TOKEN:
+        if host not in {"127.0.0.1", "::1"}:
+            raise HTTPException(
+                status_code=503,
+                detail="Multi-root browsing requires authenticated AgentsServer mode for remote clients.",
+            )
+        return
+    if not request_exact_native_token_header_authorized(request):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -99039,6 +99111,18 @@ async def get_session_workspace_entries(
     limit: int = Query(default=500, ge=1, le=1000),
 ) -> dict[str, Any]:
     return await asyncio.to_thread(list_workspace_entries_sync, session_id, path, offset, limit)
+
+
+@app.get("/api/sessions/{session_id}/workspace/absolute-entries")
+async def get_session_absolute_workspace_entries(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=1000),
+) -> dict[str, Any]:
+    require_native_workspace_directory_control(request)
+    return await asyncio.to_thread(list_absolute_workspace_entries_sync, session_id, path, offset, limit)
 
 
 @app.get("/api/sessions/{session_id}/workspace/search")

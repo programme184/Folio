@@ -385,6 +385,7 @@ const api: AgentsDockAPI = {
   workspace: {
     info: sessionId => ipcRenderer.invoke('workspace:info', sessionId),
     entries: (sessionId, path, offset, limit) => ipcRenderer.invoke('workspace:entries', sessionId, path, offset, limit),
+    absoluteEntries: (sessionId, path, offset, limit) => ipcRenderer.invoke('workspace:absolute-entries', sessionId, path, offset, limit),
     search: (sessionId, query, limit) => ipcRenderer.invoke('workspace:search', sessionId, query, limit),
     read: (sessionId, path) => ipcRenderer.invoke('workspace:read', sessionId, path),
     readAbsolute: (sessionId, path) => ipcRenderer.invoke('workspace:read-absolute', sessionId, path),

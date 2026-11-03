@@ -446,6 +446,7 @@ export function registerIpc(
   })
   handle('workspace:info', sessionId => service.workspaceInfo(sessionId))
   handle('workspace:entries', (sessionId, path, offset, limit) => service.workspaceEntries(sessionId, path, offset, limit))
+  handle('workspace:absolute-entries', (sessionId, path, offset, limit) => service.absoluteWorkspaceEntries(sessionId, path, offset, limit))
   handle('workspace:search', (sessionId, query, limit) => service.workspaceSearch(sessionId, query, limit))
   handle('workspace:read', (sessionId, path) => service.workspaceFile(sessionId, path))
   handle('workspace:read-absolute', (sessionId, path) => service.absoluteFile(sessionId, path))

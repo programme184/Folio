@@ -584,6 +584,7 @@ export interface AgentsDockAPI {
   workspace: {
     info(sessionId: string): Promise<WorkspaceInfo>
     entries(sessionId: string, path?: string, offset?: number, limit?: number): Promise<WorkspaceEntriesPage>
+    absoluteEntries(sessionId: string, path: string, offset?: number, limit?: number): Promise<WorkspaceEntriesPage>
     search(sessionId: string, query?: string, limit?: number): Promise<WorkspaceSearchPage>
     read(sessionId: string, path: string): Promise<WorkspaceFile>
     readAbsolute(sessionId: string, path: string): Promise<WorkspaceFile>

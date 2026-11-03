@@ -475,6 +475,7 @@
   "editor.fileName": "File name",
   "editor.fileOutsideDirectory": "That file is outside this chat’s working directory.",
   "editor.filesAreLoadedFromTheChatWorkingDirectoryOnAgentsserver": "Files are loaded from the chat working directory on AgentsServer.",
+  "editor.filesAreLoadedFromWorkspaceFoldersOnAgentsserver": "Files are loaded from all workspace folders on AgentsServer.",
   "editor.findAWorkspaceFile": "Find a workspace file",
   "editor.font": "Font",
   "editor.fullPath": "Full path",

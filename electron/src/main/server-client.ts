@@ -1846,6 +1846,11 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`)
   }
 
+  absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
+    const query = new URLSearchParams({ path, offset: String(offset), limit: String(limit) })
+    return this.privilegedNativeRequest(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entries?${query}`)
+  }
+
   workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/search?${params}`)
@@ -3345,6 +3350,12 @@ function isPrivilegedNativeControlTarget(
     const keys = [...target.searchParams.keys()]
     return method === 'GET' && keys.length === (operation === 'diff' ? 2 : 1)
       && keys.includes('path') && (operation !== 'diff' || keys.includes('view'))
+  }
+  if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/absolute-entries$/.test(path)) {
+    const keys = [...target.searchParams.keys()]
+    return method === 'GET' && keys.length === 3 && new Set(keys).size === 3
+      && keys.every(key => ['path', 'offset', 'limit'].includes(key))
+      && Boolean(target.searchParams.get('path'))
   }
   const syncedSideChat = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/side-chat(?:\/(?:requests\/)?[A-Za-z0-9_-]{1,128})?$/.exec(path)
   if (syncedSideChat) return !target.search && (path.endsWith('/side-chat') ? method === 'GET' || method === 'POST' : method === 'DELETE')

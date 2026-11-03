@@ -162,6 +162,15 @@ describe('WorkspaceEditor', () => {
             limit: 500,
             has_more: false
           })),
+          absoluteEntries: vi.fn().mockImplementation((_sessionId: string, path: string) => Promise.resolve({
+            root: path,
+            path,
+            entries: [],
+            total: 0,
+            offset: 0,
+            limit: 500,
+            has_more: false
+          })),
           search: vi.fn().mockImplementation((_sessionId: string, query = '') => Promise.resolve({
             root: '/work/project',
             query,
@@ -352,6 +361,51 @@ describe('WorkspaceEditor', () => {
     expect(await screen.findByRole('complementary', { name: 'File explorer' })).toBeVisible()
     expect(await screen.findByRole('button', { name: 'Open README.md' })).toBeVisible()
     expect(window.agentsDock.workspace.entries).toHaveBeenCalledExactlyOnceWith(session.id, '', 0, 500)
+  })
+
+  it('shows and browses multiple project roots without changing the chat working directory', async () => {
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    const projectSession = { ...session, folder: 'Research' }
+    const previousState = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [projectSession],
+      projectWorkspaces: { Research: { directories: ['/work/project', '/work/notes'] } }
+    })
+    vi.mocked(window.agentsDock.workspace.absoluteEntries).mockImplementation((_sessionId, path) => Promise.resolve({
+      root: path,
+      path,
+      entries: [{
+        name: path.endsWith('notes') ? 'notes.md' : 'README.md',
+        path: `${path}/${path.endsWith('notes') ? 'notes.md' : 'README.md'}`,
+        kind: 'file',
+        size: 12,
+        writable: true,
+        revision: `entry-${path}`
+      }],
+      total: 1,
+      offset: 0,
+      limit: 500,
+      has_more: false
+    }))
+    const panel = render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="multi-root" session={projectSession} profileScope={scope}
+        available capabilityVersion={7} chatContent={<p>Chat</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
+    </WorkspaceFilesProvider>)
+    try {
+      expect(await within(panel.container).findByRole('button', { name: 'Open /work/project/README.md' })).toBeVisible()
+      expect(await within(panel.container).findByRole('button', { name: 'Open /work/notes/notes.md' })).toBeVisible()
+      expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/project', 0, 500)
+      expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/notes', 0, 500)
+      expect(window.agentsDock.workspace.entries).not.toHaveBeenCalled()
+
+      fireEvent.click(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
+      expect(await screen.findByRole('textbox', { name: 'Contents of /work/notes/notes.md' })).toBeVisible()
+      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, '/work/notes/notes.md')
+      expect(useAppStore.getState().sessions[0]?.cwd).toBe('/work/project')
+    } finally {
+      act(() => useAppStore.setState(previousState))
+    }
   })
 
   it('rejects inactive panes and mismatched scoped requests before reading files', async () => {

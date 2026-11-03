@@ -20,7 +20,7 @@ class WorkspaceFilesTests(unittest.TestCase):
     def session(self, root: Path, *, archived: bool = False) -> dict[str, object]:
         return {"id": "session-1", "cwd": str(root), "archived": archived}
 
-    def request(self, method: str = "GET", **headers: str) -> Request:
+    def request(self, method: str = "GET", client_host: str = "test", **headers: str) -> Request:
         return Request({
             "type": "http",
             "asgi": {"version": "3.0"},
@@ -34,7 +34,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 (name.lower().replace("_", "-").encode("ascii"), value.encode("ascii"))
                 for name, value in headers.items()
             ],
-            "client": ("test", 123),
+            "client": (client_host, 123),
             "server": ("test", 80),
         })
 
@@ -77,7 +77,46 @@ class WorkspaceFilesTests(unittest.TestCase):
         ])
         self.assertEqual(second["entries"][0]["kind"], "symlink")
 
-    def test_workspace_capability_v6_entries_have_opaque_revisions_and_preview_limits(self) -> None:
+    def test_lists_an_explicit_absolute_directory_without_changing_session_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            chat_root = base / "chat"
+            other_root = base / "other"
+            chat_root.mkdir()
+            other_root.mkdir()
+            (other_root / "src").mkdir()
+            (other_root / "README.md").write_text("# Other\n")
+            (other_root / "alias").symlink_to(other_root / "README.md")
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(chat_root)}):
+                listed = agent_server.list_absolute_workspace_entries_sync(
+                    "session-1", str(other_root), 0, 20
+                )
+
+        self.assertEqual(listed["root"], str(other_root))
+        self.assertEqual(listed["scope"], "absolute")
+        self.assertEqual([item["path"] for item in listed["entries"]], [
+            str(other_root / "src"), str(other_root / "alias"), str(other_root / "README.md"),
+        ])
+        self.assertEqual(listed["entries"][1]["kind"], "symlink")
+
+    def test_absolute_directory_control_is_native_only_and_allows_local_tokenless_desktop(self) -> None:
+        with patch.object(agent_server, "AGENT_TOKEN", ""):
+            agent_server.require_native_workspace_directory_control(
+                self.request(client_host="127.0.0.1")
+            )
+            with self.assertRaises(HTTPException) as remote:
+                agent_server.require_native_workspace_directory_control(
+                    self.request(client_host="192.0.2.10")
+                )
+            with self.assertRaises(HTTPException) as browser:
+                agent_server.require_native_workspace_directory_control(
+                    self.request(client_host="127.0.0.1", sec_fetch_mode="cors")
+                )
+
+        self.assertEqual(remote.exception.status_code, 503)
+        self.assertEqual(browser.exception.status_code, 403)
+
+    def test_workspace_capability_v7_entries_have_opaque_revisions_and_preview_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "app.py"
@@ -89,7 +128,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 path.write_text("second, longer\n")
                 changed = agent_server.list_workspace_entries_sync("session-1", "", 0, 20)["entries"][0]
 
-        self.assertEqual(info["capability_version"], 6)
+        self.assertEqual(info["capability_version"], 7)
         self.assertEqual(info["max_preview_file_bytes"], agent_server.MAX_WORKSPACE_PREVIEW_BYTES)
         self.assertIn("application/pdf", info["preview_media_types"])
         self.assertIn("image/png", info["preview_media_types"])

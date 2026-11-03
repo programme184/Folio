@@ -4617,6 +4617,14 @@ export class AppService {
     return page
   }
 
+  async absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const page = await scope.client.absoluteWorkspaceEntries(sessionId, path, offset, limit)
+    this.assertCurrentScope(scope)
+    return page
+  }
+
   async workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)

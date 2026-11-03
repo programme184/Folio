@@ -427,6 +427,21 @@
   border-bottom: 1px solid #202020;
 }
 
+.workspace-editor-roots-multi {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.workspace-editor-root-tree > .workspace-editor-tree-row,
+.workspace-editor-root-tree > div > .workspace-editor-tree-row {
+  width: 100%;
+}
+
+.workspace-editor-roots-multi + .workspace-editor-tree {
+  display: none;
+}
+
 .workspace-editor-root-folder {
   min-width: 0;
   height: 28px;
