@@ -158,11 +158,19 @@ describe('local chat execution across server groups', () => {
     expect(await service.listSessions()).toEqual([])
     await service.createSession({ title: 'Remote group', folder: 'General', cwd: '/work/local', backend: 'codex' })
     await service.sendTurn({ sessionId: 'remote-new', prompt: 'hello', fileIds: [] })
+    await service.absoluteWorkspaceEntries('remote-new', '/remote/project')
+    await service.absoluteFile('remote-new', '/remote/project/README.md')
     await service.connectTerminal('b', remoteBootstrap.profileGeneration, 'remote-new', {
       cwd: '/work/local', columns: 80, rows: 24
     })
     expect((await service.listSessions()).map(session => session.id)).toEqual(['remote-new'])
     expect(settings.getProfile('b')?.serverIdentity).toBe('remote-server')
+    expect(clients.some(client => client.absoluteWorkspaceEntries.mock.calls.some(call => (
+      call[0] === 'remote-new' && call[1] === '/remote/project' && call[4] === 'B'
+    )))).toBe(true)
+    expect(clients.some(client => client.absoluteFile.mock.calls.some(call => (
+      call[0] === 'remote-new' && call[1] === '/remote/project/README.md' && call[2] === 'B'
+    )))).toBe(true)
     expect(clients.some(client => client.terminal.mock.calls.some(call => (
       call[0] === 'remote-new'
       && call[1]?.cwd === null
@@ -3656,7 +3664,7 @@ interface FakeClientOptions {
   subagents?: (sessionId: string) => Promise<SubagentSnapshot>
   timelineIndex?: (sessionId: string) => Promise<TimelineIndex>
   workspaceFile?: (sessionId: string, path: string) => Promise<WorkspaceFile>
-  absoluteFile?: (sessionId: string, path: string) => Promise<WorkspaceFile>
+  absoluteFile?: AgentServerClient['absoluteFile']
   writeAbsoluteFile?: (sessionId: string, path: string, content: string, expectedRevision: string) => Promise<WorkspaceFile>
   createWorkspaceEntry?: (sessionId: string, path: string, kind: 'file' | 'directory') => Promise<WorkspaceCreateResult>
   writeWorkspaceFile?: (sessionId: string, path: string, content: string, expectedRevision: string) => Promise<WorkspaceFile>
@@ -3802,6 +3810,9 @@ function fakeClient(options: FakeClientOptions = {}) {
     }))),
     workspaceInfo: vi.fn(async () => ({ root: '/work', name: 'work', read_only: false, capability_version: 1, max_text_file_bytes: 2_097_152 })),
     workspaceEntries: vi.fn(async () => ({ root: '/work', path: '', entries: [], total: 0, offset: 0, limit: 500, has_more: false })),
+    absoluteWorkspaceEntries: vi.fn(async (_sessionId, path, offset = 0, limit = 500, _remoteHost?: string | null) => ({
+      root: path, path, entries: [], total: 0, offset, limit, has_more: false
+    })),
     workspaceSearch: vi.fn(async () => ({ root: '/work', query: '', entries: [], scanned: 0, truncated: false, limit: 100 })),
     completeWorkingDirectory: vi.fn(async path => ({
       input: path,

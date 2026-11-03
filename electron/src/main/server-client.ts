@@ -1846,8 +1846,9 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`)
   }
 
-  absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
+  absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500, remoteHost?: string | null): Promise<WorkspaceEntriesPage> {
     const query = new URLSearchParams({ path, offset: String(offset), limit: String(limit) })
+    if (remoteHost) query.set('remote_host', remoteHost)
     return this.privilegedNativeRequest(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entries?${query}`)
   }
 
@@ -1866,8 +1867,9 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/file?${query}`)
   }
 
-  absoluteFile(sessionId: string, path: string): Promise<WorkspaceFile> {
+  absoluteFile(sessionId: string, path: string, remoteHost?: string | null): Promise<WorkspaceFile> {
     const query = new URLSearchParams({ path })
+    if (remoteHost) query.set('remote_host', remoteHost)
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-file?${query}`)
   }
 

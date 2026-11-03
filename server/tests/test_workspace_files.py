@@ -1,5 +1,6 @@
 import asyncio
 import errno
+import json
 import os
 import stat
 import subprocess
@@ -98,6 +99,60 @@ class WorkspaceFilesTests(unittest.TestCase):
             str(other_root / "src"), str(other_root / "alias"), str(other_root / "README.md"),
         ])
         self.assertEqual(listed["entries"][1]["kind"], "symlink")
+
+    def test_remote_absolute_directory_uses_validated_ssh_and_read_only_results(self) -> None:
+        payload = {
+            "result": {
+                "root": "/remote/project",
+                "path": "/remote/project",
+                "entries": [{
+                    "name": "README.md", "path": "/remote/project/README.md",
+                    "kind": "file", "size": 5, "mtime_ns": 1,
+                    "hidden": False, "writable": False, "revision": "r1",
+                }],
+                "total": 1, "offset": 0, "limit": 500, "has_more": False,
+            }
+        }
+        captured: dict[str, object] = {}
+
+        def run(command, **options):
+            captured["command"] = command
+            captured["options"] = options
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+        with patch.object(
+            agent_server.STORE,
+            "sessions",
+            {"session-1": {"id": "session-1", "archived": False}},
+        ), patch.object(
+            agent_server.shutil,
+            "which",
+            return_value="/usr/bin/ssh",
+        ), patch.object(
+            agent_server.subprocess,
+            "run",
+            side_effect=run,
+        ):
+            result = agent_server.remote_workspace_request(
+                "session-1", "Synria", "entries", "/remote/project", 0, 500
+            )
+
+        self.assertEqual(result["entries"][0]["path"], "/remote/project/README.md")
+        self.assertEqual(captured["command"][:7], [
+            "/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "Synria",
+            "python3 - entries /remote/project 0 500",
+        ])
+        self.assertIn("os.scandir(path)", captured["options"]["input"])
+
+    def test_remote_workspace_rejects_ssh_option_injection(self) -> None:
+        with patch.object(
+            agent_server.STORE,
+            "sessions",
+            {"session-1": {"id": "session-1", "archived": False}},
+        ), self.assertRaisesRegex(HTTPException, "remote terminal host"):
+            agent_server.remote_workspace_request(
+                "session-1", "-oProxyCommand=bad", "entries", "/remote/project", 0, 500
+            )
 
     def test_absolute_directory_control_is_native_only_and_allows_local_tokenless_desktop(self) -> None:
         with patch.object(agent_server, "AGENT_TOKEN", ""):

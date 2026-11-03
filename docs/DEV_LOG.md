@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-11-03 — Remote groups browse project files over SSH
+
+- Multi-root Files for a non-loopback server group now enumerates and reads the
+  configured absolute project paths through the matching validated SSH alias,
+  while chats and provider execution remain on the loopback AgentsServer.
+- Remote entries and UTF-8 text files are read-only in the native explorer.
+  SSH options and shell metacharacters are rejected, provider secrets are
+  removed from the helper environment, paths must be canonical absolutes, and
+  transfer size and timeout limits remain bounded.
+- All 67 server workspace-file tests, focused Electron routing/client tests,
+  TypeScript and the production Electron build pass. An isolated real server
+  enumerated both reported Synria project roots and read a real remote text file
+  through the production HTTP boundary. Isolated state was removed. The unpacked
+  Linux candidate was installed locally with an `app.asar` rollback copy; no
+  package was published and no remote server was changed.
+
 ## 2026-11-03 — Remote groups open SSH terminals
 
 - Chat history, projects and provider execution remain on the loopback

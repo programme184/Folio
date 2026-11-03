@@ -2997,6 +2997,132 @@ def list_absolute_workspace_entries_sync(
     }
 
 
+REMOTE_WORKSPACE_SCRIPT = r'''import hashlib, json, os, stat, sys
+
+def fail(code, message):
+    print(json.dumps({"error": {"code": code, "message": message}}))
+    raise SystemExit(0)
+
+operation = sys.argv[1]
+path = sys.argv[2]
+if not path.startswith("/") or path.startswith("//") or os.path.normpath(path) != path or "\x00" in path:
+    fail("invalid_absolute_file_path", "An absolute canonical remote path is required.")
+
+try:
+    if operation == "entries":
+        offset, limit = int(sys.argv[3]), int(sys.argv[4])
+        records = []
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    item = entry.stat(follow_symlinks=False)
+                except (FileNotFoundError, PermissionError):
+                    continue
+                mode = item.st_mode
+                kind = "symlink" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else None
+                if kind is None:
+                    continue
+                child = path.rstrip("/") + "/" + entry.name
+                revision = hashlib.sha256(f"{item.st_dev}:{item.st_ino}:{item.st_size}:{item.st_mtime_ns}".encode()).hexdigest()
+                records.append({
+                    "name": entry.name, "path": child, "kind": kind,
+                    "size": item.st_size if kind == "file" else None,
+                    "mtime_ns": item.st_mtime_ns, "hidden": entry.name.startswith("."),
+                    "writable": False, "revision": revision,
+                })
+        records.sort(key=lambda item: (item["kind"] != "directory", item["name"].casefold(), item["name"]))
+        page = records[offset:offset + limit]
+        result = {"root": path, "path": path, "entries": page, "total": len(records), "offset": offset, "limit": limit, "has_more": offset + len(page) < len(records), "scope": "absolute"}
+    elif operation == "file":
+        item = os.lstat(path)
+        if not stat.S_ISREG(item.st_mode):
+            fail("absolute_not_regular_file", "Not a regular remote file.")
+        maximum = int(sys.argv[3])
+        if item.st_size > maximum:
+            fail("absolute_file_too_large", "Remote file exceeds the configured text transfer limit.")
+        with open(path, "rb") as handle:
+            data = handle.read(maximum + 1)
+        if len(data) > maximum:
+            fail("absolute_file_too_large", "Remote file exceeds the configured text transfer limit.")
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            fail("absolute_file_not_utf8", "Remote file is not UTF-8 text.")
+        result = {"root": "/", "path": path, "name": os.path.basename(path), "content": content, "revision": hashlib.sha256(data).hexdigest(), "size": len(data), "mtime_ns": item.st_mtime_ns, "writable": False, "scope": "absolute"}
+    else:
+        fail("remote_workspace_operation_invalid", "Invalid remote workspace operation.")
+except FileNotFoundError:
+    fail("workspace_not_found", "Remote workspace path was not found.")
+except NotADirectoryError:
+    fail("workspace_not_directory", "Remote workspace path is not a directory.")
+except PermissionError:
+    fail("workspace_permission_denied", "Remote workspace path is not accessible.")
+except OSError as exc:
+    fail("remote_workspace_error", str(exc)[:300])
+
+print(json.dumps({"result": result}, ensure_ascii=False))
+'''
+
+
+def remote_workspace_request(
+    session_id: str,
+    remote_host: str,
+    operation: str,
+    path: str,
+    *arguments: int,
+) -> dict[str, Any]:
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    host = clean_terminal_remote_host(remote_host)
+    if not host:
+        raise workspace_http_error(400, "remote_host_required", "A remote SSH host is required.")
+    # Reuse the absolute-path lexical contract before transmitting it. The
+    # remote helper performs the same check before touching its filesystem.
+    _anchor, _relative, normalized = normalize_absolute_file_path(path)
+    ssh = shutil.which("ssh", path=terminal_session_path())
+    if not ssh:
+        raise workspace_http_error(503, "ssh_unavailable", "OpenSSH is required for remote workspace files.")
+    remote_arguments = ["python3", "-", operation, normalized, *(str(value) for value in arguments)]
+    remote_command = " ".join(shlex.quote(value) for value in remote_arguments)
+    environment = os.environ.copy()
+    for secret_name in PROVIDER_SECRET_ENV_NAMES:
+        environment.pop(secret_name, None)
+    try:
+        completed = subprocess.run(
+            [ssh, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote_command],
+            input=REMOTE_WORKSPACE_SCRIPT,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise workspace_http_error(503, "remote_workspace_unavailable", f"Remote workspace connection failed: {type(exc).__name__}.") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or "Remote workspace command failed.").strip()[:500]
+        raise workspace_http_error(503, "remote_workspace_unavailable", detail)
+    if len(completed.stdout.encode("utf-8")) > 16 * 1024 * 1024:
+        raise workspace_http_error(413, "remote_workspace_response_too_large", "Remote workspace response is too large.")
+    try:
+        payload = json.loads(completed.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise workspace_http_error(502, "remote_workspace_response_invalid", "Remote workspace returned an invalid response.") from exc
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        raise workspace_http_error(404 if error.get("code") == "workspace_not_found" else 400, str(error.get("code") or "remote_workspace_error"), str(error.get("message") or "Remote workspace request failed."))
+    result = payload.get("result") if isinstance(payload, dict) else None
+    if not isinstance(result, dict):
+        raise workspace_http_error(502, "remote_workspace_response_invalid", "Remote workspace returned an invalid response.")
+    if bool(sess.get("archived")):
+        result["writable"] = False
+        for entry in result.get("entries") or []:
+            if isinstance(entry, dict):
+                entry["writable"] = False
+    return result
+
+
 def read_workspace_file_sync(session_id: str, relative_path: str) -> dict[str, Any]:
     sess, root = session_workspace_root(session_id)
     normalized = normalize_workspace_path(relative_path)
@@ -99187,8 +99313,19 @@ async def get_session_absolute_workspace_entries(
     path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=1000),
+    remote_host: str | None = Query(default=None, max_length=255),
 ) -> dict[str, Any]:
     require_native_workspace_directory_control(request)
+    if remote_host:
+        return await asyncio.to_thread(
+            remote_workspace_request,
+            session_id,
+            remote_host,
+            "entries",
+            path,
+            offset,
+            limit,
+        )
     return await asyncio.to_thread(list_absolute_workspace_entries_sync, session_id, path, offset, limit)
 
 
@@ -99213,7 +99350,17 @@ async def get_session_workspace_file(
 async def get_session_absolute_file(
     session_id: str,
     path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    remote_host: str | None = Query(default=None, max_length=255),
 ) -> dict[str, Any]:
+    if remote_host:
+        return await asyncio.to_thread(
+            remote_workspace_request,
+            session_id,
+            remote_host,
+            "file",
+            path,
+            workspace_text_bytes_capability(),
+        )
     return await asyncio.to_thread(read_absolute_file_sync, session_id, path)
 
 

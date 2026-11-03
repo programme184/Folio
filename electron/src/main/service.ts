@@ -594,6 +594,13 @@ export class AppService {
     }
   }
 
+  private remoteSSHHost(profileId: string): string | null {
+    if (!this.localChatExecution || this.executionConnection(profileId).profileId === profileId) return null
+    const profile = this.settings.getProfile(profileId)
+    if (!profile) throw new Error(`Unknown server profile: ${profileId}`)
+    return profile.name.trim() || null
+  }
+
   private localSessionBindings(): Record<string, string> {
     const value = this.cache.preference<unknown>('desktop', LOCAL_SESSION_PROFILE_BINDINGS_KEY, {})
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
@@ -4713,7 +4720,13 @@ export class AppService {
   async absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const page = await scope.client.absoluteWorkspaceEntries(sessionId, path, offset, limit)
+    const page = await scope.client.absoluteWorkspaceEntries(
+      sessionId,
+      path,
+      offset,
+      limit,
+      this.remoteSSHHost(scope.profileId)
+    )
     this.assertCurrentScope(scope)
     return page
   }
@@ -4745,7 +4758,7 @@ export class AppService {
   async absoluteFile(sessionId: string, path: string): Promise<WorkspaceFile> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const file = await scope.client.absoluteFile(sessionId, path)
+    const file = await scope.client.absoluteFile(sessionId, path, this.remoteSSHHost(scope.profileId))
     this.assertCurrentScope(scope)
     return {
       ...file,
@@ -5096,12 +5109,7 @@ export class AppService {
     this.disconnectTerminal(sessionId)
     const lease = (this.terminalLeases.get(sessionId) ?? 0) + 1
     this.terminalLeases.set(sessionId, lease)
-    const profile = this.settings.getProfile(profileId)
-    if (!profile) throw new Error(`Unknown server profile: ${profileId}`)
-    const executionProfileId = this.executionConnection(profileId).profileId
-    const remoteHost = this.localChatExecution && executionProfileId !== profileId
-      ? profile.name.trim()
-      : null
+    const remoteHost = this.remoteSSHHost(profileId)
     const connection = scope.client.terminal(
       sessionId,
       {

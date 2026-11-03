@@ -2404,12 +2404,13 @@ describe('AgentServerClient live stream', () => {
       }))
     }, async baseURL => {
       const client = new AgentServerClient(baseURL, 'secret')
-      await expect(client.absoluteWorkspaceEntries('chat-one', '/work/other root', 3, 40)).resolves.toMatchObject({
+      await expect(client.absoluteWorkspaceEntries('chat-one', '/work/other root', 3, 40, 'Synria')).resolves.toMatchObject({
         root: '/work/other root', path: '/work/other root'
       })
     })
 
     expect(requests[0]?.url).toContain('/api/sessions/chat-one/workspace/absolute-entries?path=%2Fwork%2Fother+root&offset=3&limit=40')
+    expect(requests[0]?.url).toContain('remote_host=Synria')
     expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
