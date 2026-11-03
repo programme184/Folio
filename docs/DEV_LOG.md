@@ -1,5 +1,36 @@
 # Public development log
 
+## 2026-11-03 — Split-pane Files follows the selected workspace
+
+- Switching focus between same-server panes now immediately routes the Files
+  inspector to that pane's server, chat and working directory. The explorer no
+  longer stays blank because cross-server layout focus and live pane focus were
+  updated in separate render passes.
+- File-tree mounting is keyed by server identity, profile generation, chat and
+  working directory, so the correct workspace remains isolated while another
+  server pane continues running.
+
+```text
+Source commit / app build / server version: `9ebe8014`; electron-vite production
+build and local Linux unpacked package; no server change.
+Test surface: isolated native Electron source app and packaged candidate with
+three panes across two disposable live AgentsServer instances.
+Actions exercised and observed outcomes: focused the second Alpha chat while a
+Beta webview remained mounted, opened Files, observed the AgentsDock workspace
+root and its real entries, then expanded docs and observed its child files.
+Repeated the same workspace-root and folder expansion checks in the packaged
+candidate.
+Focused regression / typecheck / production build: 191 workspace/grid/pane tests
+pass; `tsc --noEmit`; Electron production build and compiled-output verification
+pass; packaged-candidate check passes. The full repository suite has 20 existing
+failures outside this change, including localization/style contracts, Team Hub
+ownership fixtures, runtime catalog call counts and stale component mocks.
+Remaining limitations: no provider turn was required or launched for this UI fix;
+the disposable server reported tmux unavailable, outside the Files workflow.
+Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
+retained as `~/.local/lib/folio/app.before-pane-files-focus`; not published.
+```
+
 ## 2026-11-03 — Pane file controls persist across focus changes
 
 - The right-panel/file-tree control is now rendered in every visible chat pane,
