@@ -9563,13 +9563,20 @@ including credentials, user data, private infrastructure, or internal history.
   choosing a different saved server affects only that pane.
 - Concurrent-server embedded panes expose the same browser after a chat is open,
   and conversations already visible in another pane are not offered twice.
+- Project rows now expand and collapse, including empty projects. Each row can
+  create a chat in that project, while the browser header can create a project
+  or an ungrouped chat. Creation stays on the pane's server and opens the new
+  chat in the pane that initiated it.
 - The focused regression, TypeScript check, and production Electron build passed.
   An isolated headless Electron app exercised the real renderer/preload/main and
   authenticated server boundary: project groups loaded, a chat was selected, a
   second pane was populated, and both panes retained independent browser buttons.
+  A disposable project and chats were then created through the same real app and
+  server boundary, expanded/collapsed, opened in their initiating pane, and
+  removed afterward; their temporary workspace directories were also removed.
   The test server lacked terminal support; terminal behavior was outside scope.
   This is a source change only; nothing was installed, published, or deployed.
-- The full Electron suite completed with 5,652 passing, 5 skipped, and 20
+- The full Electron suite completed with 5,653 passing, 5 skipped, and 20
   pre-existing failures in unrelated workspace-file mocks, design/CSS checks,
   Team Hub permissions, localization terminology, runtime defaults, and sidebar
   fixtures. The focused pane-browser suite remained green.

@@ -57,6 +57,8 @@
 .empty-chat-pane.focused { background: var(--surface-2); }
 .empty-pane-heading { display: flex; align-items: center; gap: var(--space-5); min-width: 0; }
 .empty-pane-heading > strong { flex: 1; min-width: 0; font-size: var(--text-size-ui); font-weight: var(--text-weight-label); }
+.empty-pane-create-actions { display: flex; align-items: center; gap: var(--space-1); }
+.empty-pane-create-actions .icon-button { width: 28px; height: 28px; }
 .empty-pane-server-picker { width: min(220px, 42%); min-width: 120px; -webkit-app-region: no-drag; }
 .empty-pane-server-picker .server-selector-trigger.compact { width: 100%; min-height: 30px; height: 30px; margin: 0; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
 .empty-pane-server-picker .server-selector-trigger.compact:hover,
@@ -68,7 +70,12 @@
 .empty-chat-pane input { width: 100%; min-width: 0; }
 .empty-pane-chat-list { overflow: auto; min-height: 0; }
 .empty-pane-project + .empty-pane-project { margin-top: var(--space-4); }
-.empty-pane-project h3 { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: var(--space-2); margin: 0; padding: var(--space-2); color: var(--muted); background: var(--surface); font-size: var(--text-size-label); font-weight: var(--text-weight-label); }
+.empty-pane-project h3 { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: var(--space-1); margin: 0; padding: 0 var(--space-1); color: var(--muted); background: var(--surface); font-size: var(--text-size-label); font-weight: var(--text-weight-label); }
+.empty-pane-project-toggle { min-width: 0; min-height: 30px; flex: 1; display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-1); color: inherit; background: transparent; border: 0; text-align: left; }
+.empty-pane-project-toggle:hover, .empty-pane-project-add:hover { color: var(--text); background: var(--interaction-hover); }
+.empty-pane-project-toggle span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.empty-pane-project-toggle small { color: var(--faint); font-size: var(--text-size-caption); }
+.empty-pane-project-add { width: 27px; height: 27px; flex: 0 0 auto; }
 .empty-pane-chat-list button { display: flex; width: 100%; align-items: center; gap: 10px; padding: 9px 5px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; }
 .empty-pane-chat-list button:hover { background: var(--interaction-hover); }
 .empty-pane-chat-list button span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

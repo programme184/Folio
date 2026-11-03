@@ -3442,5 +3442,11 @@
   "chatWorkspace.noChats": "没有匹配的会话。可从侧边栏新建会话。",
   "chatWorkspace.paneNumber": "窗格 {number}",
   "chatWorkspace.browsePane": "浏览此窗格服务器上的项目和会话",
-  "chatWorkspace.generalProject": "常规"
+  "chatWorkspace.generalProject": "常规",
+  "chatWorkspace.createActions": "新建项目或会话",
+  "chatWorkspace.createProject": "新建项目",
+  "chatWorkspace.createChat": "新建会话",
+  "chatWorkspace.createChatInProject": "在 {project} 中新建会话",
+  "chatWorkspace.expandProject": "展开 {project}",
+  "chatWorkspace.collapseProject": "折叠 {project}"
 }

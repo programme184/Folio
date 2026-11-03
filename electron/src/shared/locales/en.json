@@ -3442,5 +3442,11 @@
   "chatWorkspace.noChats": "No matching chats. Create one from the sidebar.",
   "chatWorkspace.paneNumber": "Pane {number}",
   "chatWorkspace.browsePane": "Browse this pane's server projects and chats",
-  "chatWorkspace.generalProject": "General"
+  "chatWorkspace.generalProject": "General",
+  "chatWorkspace.createActions": "Create project or chat",
+  "chatWorkspace.createProject": "Create project",
+  "chatWorkspace.createChat": "Create chat",
+  "chatWorkspace.createChatInProject": "Create chat in {project}",
+  "chatWorkspace.expandProject": "Expand {project}",
+  "chatWorkspace.collapseProject": "Collapse {project}"
 }

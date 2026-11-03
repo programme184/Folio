@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from 'react'
-import { Columns2, Columns3, Folder, Grid2X2, PanelLeft, Square, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Columns2, Columns3, Folder, FolderPlus, Grid2X2, PanelLeft, Plus, Square, X } from 'lucide-react'
 import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
 import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount } from '../lib/chat-panes'
@@ -64,6 +64,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     first: (active?.threeColumnRatios?.[0] ?? 1 / 3) * 100, second: (active?.threeColumnRatios?.[1] ?? 2 / 3) * 100
   })
   const [browsingPanes, setBrowsingPanes] = useState<ReadonlySet<ChatPaneId>>(() => new Set())
+  const browsingSessionIdsRef = useRef<Partial<Record<ChatPaneId, string | null>>>({})
   const ratioRef = useRef(ratios)
   const gridRef = useRef<HTMLDivElement>(null)
   const finishResizeRef = useRef<(() => void) | null>(null)
@@ -83,6 +84,16 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     return () => cancelAnimationFrame(frame)
   }, [effectiveCount, threeColumns, activeId])
   useEffect(() => setBrowsingPanes(new Set()), [activeId, profileId, profileGeneration, serverIdentity])
+  useEffect(() => setBrowsingPanes(current => {
+    const changed = [...current].filter(pane => panes[pane] !== browsingSessionIdsRef.current[pane])
+    if (!changed.length) return current
+    const next = new Set(current)
+    for (const pane of changed) {
+      next.delete(pane)
+      delete browsingSessionIdsRef.current[pane]
+    }
+    return next
+  }), [panes])
   useEffect(() => {
     if (crossServerWorkspace && !crossServerWorkspace.pendingProfileId
       && crossServerWorkspace.activeProfileId !== profileId) onCrossServerWorkspaceChange(null)
@@ -315,9 +326,12 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
             : session && !browsing ? <ChatPane pane={pane} session={session} focused={focused === pane} split={effectiveCount > 1}
             sidebarVisible={sidebarVisible} terminalOpen={focused === pane && terminalOpen}
             onSidebarToggle={onSidebarToggle} onTerminalToggle={onTerminalToggle} sideChat={sideChat(session)}
-            onBrowsePane={() => setBrowsingPanes(current => new Set(current).add(pane))}
+            onBrowsePane={() => {
+              browsingSessionIdsRef.current[pane] = session.id
+              setBrowsingPanes(current => new Set(current).add(pane))
+            }}
             papersOpen={papersOpen} onPapersToggle={onPapersToggle} onAskPaper={onAskPaper} />
-            : <EmptyChatPane pane={pane} focused={focused === pane}
+            : <PaneProjectBrowser pane={pane} focused={focused === pane}
               selectedProfileId={assignment?.profileId ?? profileId}
               excludedSessionIds={new Set(CHAT_PANE_IDS.flatMap(candidatePane => {
                 if (candidatePane === pane) return []
@@ -337,38 +351,68 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
   </div>
 }
 
-function EmptyChatPane({ pane, focused, selectedProfileId, excludedSessionIds, onChooseServer, onSelectSession }: {
+export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedSessionIds, onChooseServer, onSelectSession }: {
   pane: ChatPaneId
   focused: boolean
   selectedProfileId: string | null
   excludedSessionIds: ReadonlySet<string>
-  onChooseServer: (profileId: string) => void | Promise<void>
+  onChooseServer?: (profileId: string) => void | Promise<void>
   onSelectSession: (sessionId: string) => void | Promise<void>
 }) {
   const sessions = useAppStore(state => state.sessions)
+  const folderOrder = useAppStore(state => state.folderOrder)
+  const creatingChat = useAppStore(state => state.creatingChat)
+  const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const [query, setQuery] = useState('')
+  const [collapsedProjects, setCollapsedProjects] = useState<ReadonlySet<string>>(() => new Set())
   const candidates = sessions.filter(session => !session.archived && !excludedSessionIds.has(session.id)
     && `${session.title} ${session.cwd}`.toLowerCase().includes(query.toLowerCase()))
   const groups = useMemo(() => {
     const grouped = new Map<string, Session[]>()
+    for (const folder of folderOrder) grouped.set(folder, [])
     for (const session of candidates) {
       const folder = session.folder?.trim() || t('chatWorkspace.generalProject')
       grouped.set(folder, [...(grouped.get(folder) ?? []), session])
     }
     return [...grouped.entries()]
-  }, [candidates])
+  }, [candidates, folderOrder])
+  const toggleProject = (folder: string) => setCollapsedProjects(current => {
+    const next = new Set(current)
+    if (next.has(folder)) next.delete(folder)
+    else next.add(folder)
+    return next
+  })
+  const createChat = async (folder?: string) => {
+    const before = new Set(useAppStore.getState().sessions.map(session => session.id))
+    await useAppStore.getState().requestNewChat(folder)
+    const created = useAppStore.getState().sessions.find(session => !before.has(session.id))
+    if (created) await onSelectSession(created.id)
+  }
   return <section className={`empty-chat-pane${focused ? ' focused' : ''}`} data-chat-pane={pane} tabIndex={-1}
     onPointerDownCapture={() => useAppStore.getState().focusChatPane(pane)} onFocusCapture={() => useAppStore.getState().focusChatPane(pane)}>
     <div className="empty-pane-heading">
       <strong>{t('chatWorkspace.chooseChat')}</strong>
-      <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={selectedProfileId} onChooseProfile={onChooseServer} /></div>
+      <div className="empty-pane-create-actions" role="group" aria-label={t('chatWorkspace.createActions')}>
+        <button type="button" className="icon-button" title={t('chatWorkspace.createProject')} aria-label={t('chatWorkspace.createProject')}
+          disabled={Boolean(switchingProfileId)} onClick={() => useAppStore.getState().setModal('folder', true)}><FolderPlus size={15} /></button>
+        <button type="button" className="icon-button" title={t('chatWorkspace.createChat')} aria-label={t('chatWorkspace.createChat')}
+          disabled={Boolean(switchingProfileId) || creatingChat} onClick={() => void createChat()}><Plus size={16} /></button>
+      </div>
+      {onChooseServer && <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={selectedProfileId} onChooseProfile={onChooseServer} /></div>}
     </div>
     <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
       value={query} onChange={event => setQuery(event.target.value)} />
     <div className="empty-pane-chat-list">
       {groups.map(([folder, chats]) => <section className="empty-pane-project" key={folder}>
-        <h3><Folder size={13} aria-hidden="true" />{folder}</h3>
-        {chats.map(session => <button type="button" key={session.id} onClick={() => void onSelectSession(session.id)}>
+        <h3>
+          <button type="button" className="empty-pane-project-toggle" aria-expanded={!collapsedProjects.has(folder)}
+            aria-label={t(collapsedProjects.has(folder) ? 'chatWorkspace.expandProject' : 'chatWorkspace.collapseProject', { project: folder })}
+            onClick={() => toggleProject(folder)}>{collapsedProjects.has(folder) ? <ChevronRight size={13} /> : <ChevronDown size={13} />}<Folder size={13} aria-hidden="true" /><span>{folder}</span><small>{chats.length}</small></button>
+          <button type="button" className="icon-button empty-pane-project-add" title={t('chatWorkspace.createChatInProject', { project: folder })}
+            aria-label={t('chatWorkspace.createChatInProject', { project: folder })} disabled={Boolean(switchingProfileId) || creatingChat}
+            onClick={() => void createChat(folder)}><Plus size={14} /></button>
+        </h3>
+        {!collapsedProjects.has(folder) && chats.map(session => <button type="button" key={session.id} onClick={() => void onSelectSession(session.id)}>
           <span>{session.title}</span><small>{session.backend}</small>
         </button>)}
       </section>)}

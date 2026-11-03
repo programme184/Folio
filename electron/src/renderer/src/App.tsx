@@ -13,7 +13,7 @@ import {
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
-import { ChatWorkspaceGrid, type CrossServerWorkspaceState } from './components/ChatWorkspaceGrid'
+import { ChatWorkspaceGrid, PaneProjectBrowser, type CrossServerWorkspaceState } from './components/ChatWorkspaceGrid'
 import { ChatPane } from './components/ChatPane'
 import { ChatHeader, WindowFrameControls } from './components/ChatHeader'
 import { AnswerFollowUp } from './components/AnswerFollowUp'
@@ -70,8 +70,8 @@ function EmbeddedPaneApp() {
   const error = useAppStore(state => state.error)
   const storageFull = useAppStore(state => state.storageFull)
   const inspectorVisible = useAppStore(state => state.inspectorVisible)
-  const [query, setQuery] = useState('')
   const [browsing, setBrowsing] = useState(false)
+  const browsingSessionIdRef = useRef<string | null>(null)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<InspectorWorkspaceTab>('files')
   const [sideChatController] = useState(() => new SideChatController())
@@ -83,11 +83,12 @@ function EmbeddedPaneApp() {
       || !sessions.some(session => session.id === requestedSessionId)) return
     void useAppStore.getState().selectSession(requestedSessionId)
   }, [initialized, requestedSessionId, selectedSessionId, sessions])
+  useEffect(() => {
+    if (browsing && selectedSessionId !== browsingSessionIdRef.current) setBrowsing(false)
+  }, [browsing, selectedSessionId])
   useEffect(() => () => sideChatController.reset(), [sideChatController])
 
   if (!initialized) return <main className="embedded-pane-boot"><LoaderCircle className="spin" size={20} /></main>
-  const candidates = sessions.filter(session => !session.archived
-    && `${session.title} ${session.cwd ?? ''}`.toLowerCase().includes(query.trim().toLowerCase()))
   const activeProfileKey = rendererWorkspaceKey(activeProfileId, activeServerIdentity)
   const selectedRenderKey = `${activeProfileKey}:generation:${profileGeneration}:${selectedSessionId ?? 'empty'}`
   return <main className={`app-shell sidebar-hidden embedded-pane-app${inspectorVisible ? ' inspector-open' : ''}`}>
@@ -96,19 +97,15 @@ function EmbeddedPaneApp() {
     <section className="conversation-pane embedded-pane-conversation">
       {selectedSession && !browsing
         ? <ChatPane pane="primary" session={selectedSession} focused split={false} terminalOpen={terminalOpen}
-          onTerminalToggle={() => setTerminalOpen(open => !open)} onBrowsePane={() => setBrowsing(true)} />
-        : <section className="embedded-pane-session-picker">
-          <strong>{t('chatWorkspace.chooseChat')}</strong>
-          <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
-            value={query} onChange={event => setQuery(event.target.value)} />
-          <div className="embedded-pane-session-list">
-            {candidates.map(session => <button type="button" key={session.id}
-              onClick={() => { setBrowsing(false); void useAppStore.getState().selectSession(session.id) }}>
-              <strong>{session.title}</strong><small>{session.backend}</small>
-            </button>)}
-            {!candidates.length && <p>{t('chatWorkspace.noChats')}</p>}
-          </div>
-        </section>}
+          onTerminalToggle={() => setTerminalOpen(open => !open)} onBrowsePane={() => {
+            browsingSessionIdRef.current = selectedSession.id
+            setBrowsing(true)
+          }} />
+        : <PaneProjectBrowser pane="primary" focused selectedProfileId={activeProfileId}
+          excludedSessionIds={new Set()} onSelectSession={async sessionId => {
+            await useAppStore.getState().selectSession(sessionId)
+            setBrowsing(false)
+          }} />}
     </section>
     <InspectorDock
       open={inspectorVisible && Boolean(selectedSession)}
