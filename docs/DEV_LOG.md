@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-11-03 — Cross-server panes retain their complete controls
+
+- A cross-server pane's server selector now occupies its own toolbar instead of
+  covering the embedded workspace tab strip. Open-file search, file-tab close,
+  chat actions, terminal and right-panel controls therefore remain visible and
+  clickable in every pane.
+- Cross-server panes also expose a dedicated close button. Closing one compacts
+  the remaining pane assignments and layout without switching the sidebar's
+  server.
+
+```text
+Source commit / app build / server version: `f8c3608e`; electron-vite production
+build and local Linux unpacked package; no server change.
+Test surface: isolated native Electron source app and packaged candidate with
+two disposable live AgentsServer instances.
+Actions exercised and observed outcomes: mounted Alpha and Beta chats together,
+opened Beta's file search from its own search button, observed the real Beta
+workspace-search request and rendered results, then closed Beta and observed the
+layout compact from two panes to one. All Beta chat/header controls remained
+visible beside the unobstructed search control.
+Focused regression / typecheck / production build: 163 workspace/grid tests pass;
+`tsc --noEmit`; Electron production build and compiled-output verification pass;
+packaged-candidate check passes.
+Remaining limitations: no provider turn was required or launched for this UI fix.
+Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
+retained as `~/.local/lib/folio/app.before-pane-controls`; not published.
+```
+
 ## 2026-11-03 — Linux server credentials remain readable after restart
 
 - Folio now selects the Linux desktop credential store before Electron becomes
