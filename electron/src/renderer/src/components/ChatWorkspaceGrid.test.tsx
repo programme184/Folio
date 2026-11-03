@@ -149,7 +149,14 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     const embedded = view.container.querySelector('[data-pane="secondary"] webview')
     expect(embedded).toHaveAttribute('src', expect.stringContaining('embeddedPane=1'))
     expect(embedded).toHaveAttribute('src', expect.stringContaining('profileId=b'))
-    expect(within(view.container.querySelector('[data-pane="secondary"]') as HTMLElement).queryByRole('button', { name: 'Activate' })).not.toBeInTheDocument()
+    const concurrentPane = within(view.container.querySelector('[data-pane="secondary"]') as HTMLElement)
+    expect(concurrentPane.queryByRole('button', { name: 'Activate' })).not.toBeInTheDocument()
+    expect(concurrentPane.getByRole('button', { name: 'Close b pane' })).toBeVisible()
+    fireEvent.click(concurrentPane.getByRole('button', { name: 'Close b pane' }))
+    const closeUpdate = onCrossServerWorkspaceChange.mock.calls.at(-1)?.[0]
+    expect(closeUpdate).toBeTypeOf('function')
+    expect(closeUpdate(concurrent)).toEqual(expect.objectContaining({ paneCount: 1, focusedPane: 'primary' }))
+    expect(useAppStore.getState().chatPaneCount).toBe(1)
   })
 
   it('does not let either column divider collapse a neighboring pane', () => {

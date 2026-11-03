@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from 'react'
-import { Columns2, Columns3, Grid2X2, PanelLeft, Square } from 'lucide-react'
+import { Columns2, Columns3, Grid2X2, PanelLeft, Square, X } from 'lucide-react'
 import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
 import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount } from '../lib/chat-panes'
@@ -249,6 +249,31 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
         : current
     })
   }
+  const closeCrossServerPane = (pane: ChatPaneId) => {
+    onCrossServerWorkspaceChange(current => {
+      if (!current || current.paneCount <= 1) return current
+      const visible = CHAT_PANE_IDS.slice(0, current.paneCount)
+      const closingIndex = visible.indexOf(pane)
+      if (closingIndex < 0) return current
+      const assignments = visible.map(candidate => current.panes[candidate])
+      assignments.splice(closingIndex, 1)
+      const nextPanes: Partial<Record<ChatPaneId, CrossServerPaneState>> = {}
+      assignments.forEach((assignment, index) => {
+        if (assignment) nextPanes[CHAT_PANE_IDS[index]] = assignment
+      })
+      const focusedIndex = visible.indexOf(current.focusedPane)
+      const nextFocusedIndex = focusedIndex === closingIndex
+        ? Math.min(closingIndex, assignments.length - 1)
+        : focusedIndex > closingIndex ? focusedIndex - 1 : focusedIndex
+      return {
+        ...current,
+        paneCount: (current.paneCount - 1) as ChatPaneCount,
+        focusedPane: CHAT_PANE_IDS[Math.max(0, nextFocusedIndex)],
+        panes: nextPanes
+      }
+    })
+    useAppStore.getState().closeChatPane(pane)
+  }
   return <div className="chat-grid-workspace">
     <header className="workspace-tabs-bar">
       {!sidebarVisible && <button type="button" className="icon-button" onClick={onSidebarToggle} aria-label={t('chatWorkspace.showSidebar')}><PanelLeft size={16} /></button>}
@@ -276,6 +301,8 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
         const session = sessions.find(candidate => candidate.id === sessionId)
         return <div key={`${pane}:${assignment?.profileId ?? profileId}:${sessionId ?? 'empty'}`} className="workspace-pane-slot" data-pane={pane}>
           {inactive ? <ConcurrentServerPane pane={pane} assignment={assignment}
+            closeable={effectiveCount > 1}
+            onClose={() => closeCrossServerPane(pane)}
             onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)} />
             : session ? <ChatPane pane={pane} session={session} focused={effectiveFocused === pane} split={effectiveCount > 1}
             sidebarVisible={sidebarVisible} terminalOpen={effectiveFocused === pane && terminalOpen}
@@ -325,10 +352,12 @@ function EmptyChatPane({ pane, focused, selectedProfileId, excludedSessionIds, o
   </section>
 }
 
-function ConcurrentServerPane({ pane, assignment, onChooseServer }: {
+function ConcurrentServerPane({ pane, assignment, closeable, onChooseServer, onClose }: {
   pane: ChatPaneId
   assignment: CrossServerPaneState
+  closeable: boolean
   onChooseServer: (profileId: string) => void | Promise<void>
+  onClose: () => void
 }) {
   const source = useMemo(() => {
     const url = new URL(window.location.href)
@@ -341,6 +370,10 @@ function ConcurrentServerPane({ pane, assignment, onChooseServer }: {
   return <section className="concurrent-server-pane" data-chat-pane={pane} data-profile-id={assignment.profileId}>
     <header className="concurrent-server-pane-header">
       <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={assignment.profileId} onChooseProfile={onChooseServer} /></div>
+      {closeable && <button type="button" className="icon-button concurrent-server-pane-close"
+        title={t('ui.ChatHeader.ChatHeader.close_this_chat_pane_4926598')}
+        aria-label={t('ui.ChatHeader.ChatHeader.close_pane_fe2672f', { title: assignment.session?.title ?? assignment.profileName })}
+        onClick={onClose}><X size={15} /></button>}
     </header>
     <webview key={source} className="concurrent-server-webview" src={source} />
   </section>
