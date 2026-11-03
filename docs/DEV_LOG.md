@@ -1,5 +1,38 @@
 # Public development log
 
+## 2026-11-03 — Workspace Files supports multiple simultaneous roots
+
+- A chat assigned to a workspace with multiple folders now shows every folder
+  as an independent, simultaneously expandable root in Files. Opening a file
+  from another root no longer changes the chat's working directory.
+- AgentsServer workspace-files capability 7 adds native-client absolute
+  directory enumeration with descriptor-relative traversal, no symlink
+  following, and native/loopback authorization. Existing absolute file reads
+  remain the path used to open files outside the chat working directory.
+
+```text
+Source commit / app build / server version: `03a60e8f`; electron-vite production
+build and local Linux unpacked package; AgentsServer workspace-files capability
+7 is implemented in source but not deployed to the running production server.
+Test surface: isolated native Electron source app and packaged candidate against
+a disposable live AgentsServer, with an AgentsDock root and a second temporary
+workspace root assigned to the same project.
+Actions exercised and observed outcomes: opened Files and observed both roots
+expanded with their real entries, opened SECOND_ROOT.md from the second root,
+and verified the chat cwd remained `/home/ubuntu/Github/AgentsDock`. Repeated the
+same root, file-content and unchanged-cwd checks in the packaged candidate.
+Focused regression / typecheck / production build: 65 server workspace-file
+tests and 386 Electron workspace/client/IPC tests pass; `tsc --noEmit` and the
+Electron production build pass. Two known runtime-catalog call-count failures
+remain in the broader Electron service subset; the full repository suite has 20
+existing failures outside this change.
+Remaining limitations: multi-root creation, rename and deletion stay disabled;
+those mutations remain deliberately scoped to the chat cwd. No production
+server deployment was authorized or performed.
+Availability: installed locally at `~/.local/lib/folio/app`; the prior build is
+retained as `~/.local/lib/folio/app.before-multi-root`; not published.
+```
+
 ## 2026-11-03 — Split-pane Files follows the selected workspace
 
 - Switching focus between same-server panes now immediately routes the Files
