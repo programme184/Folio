@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from 'react'
-import { Columns2, Columns3, Grid2X2, PanelLeft, Square, X } from 'lucide-react'
+import { Columns2, Columns3, Folder, Grid2X2, PanelLeft, Square, X } from 'lucide-react'
 import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
 import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount } from '../lib/chat-panes'
@@ -63,6 +63,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     column: (active?.columnRatio ?? 0.5) * 100, row: (active?.rowRatio ?? 0.5) * 100,
     first: (active?.threeColumnRatios?.[0] ?? 1 / 3) * 100, second: (active?.threeColumnRatios?.[1] ?? 2 / 3) * 100
   })
+  const [browsingPanes, setBrowsingPanes] = useState<ReadonlySet<ChatPaneId>>(() => new Set())
   const ratioRef = useRef(ratios)
   const gridRef = useRef<HTMLDivElement>(null)
   const finishResizeRef = useRef<(() => void) | null>(null)
@@ -81,6 +82,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     const frame = requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
     return () => cancelAnimationFrame(frame)
   }, [effectiveCount, threeColumns, activeId])
+  useEffect(() => setBrowsingPanes(new Set()), [activeId, profileId, profileGeneration, serverIdentity])
   useEffect(() => {
     if (crossServerWorkspace && !crossServerWorkspace.pendingProfileId
       && crossServerWorkspace.activeProfileId !== profileId) onCrossServerWorkspaceChange(null)
@@ -240,6 +242,12 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
       } : current)
     }
     await useAppStore.getState().selectSessionInPane(sessionId, pane)
+    setBrowsingPanes(current => {
+      if (!current.has(pane)) return current
+      const next = new Set(current)
+      next.delete(pane)
+      return next
+    })
     const snapshot = useAppStore.getState().snapshots[sessionId]
     if (snapshot) onCrossServerWorkspaceChange(current => {
       const assignment = current?.panes[pane]
@@ -298,18 +306,25 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
         const inactive = assignment && assignment.profileId !== profileId
         const sessionId = assignment ? assignment.session?.id ?? null : panes[pane]
         const session = sessions.find(candidate => candidate.id === sessionId)
+        const browsing = browsingPanes.has(pane)
         return <div key={`${pane}:${assignment?.profileId ?? profileId}:${sessionId ?? 'empty'}`} className="workspace-pane-slot" data-pane={pane}>
           {inactive ? <ConcurrentServerPane pane={pane} assignment={assignment}
             closeable={effectiveCount > 1}
             onClose={() => closeCrossServerPane(pane)}
             onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)} />
-            : session ? <ChatPane pane={pane} session={session} focused={focused === pane} split={effectiveCount > 1}
+            : session && !browsing ? <ChatPane pane={pane} session={session} focused={focused === pane} split={effectiveCount > 1}
             sidebarVisible={sidebarVisible} terminalOpen={focused === pane && terminalOpen}
             onSidebarToggle={onSidebarToggle} onTerminalToggle={onTerminalToggle} sideChat={sideChat(session)}
+            onBrowsePane={() => setBrowsingPanes(current => new Set(current).add(pane))}
             papersOpen={papersOpen} onPapersToggle={onPapersToggle} onAskPaper={onAskPaper} />
             : <EmptyChatPane pane={pane} focused={focused === pane}
               selectedProfileId={assignment?.profileId ?? profileId}
-              excludedSessionIds={new Set(Object.values(crossServerWorkspace?.panes ?? {}).flatMap(candidate => candidate?.session?.id ? [candidate.session.id] : []))}
+              excludedSessionIds={new Set(CHAT_PANE_IDS.flatMap(candidatePane => {
+                if (candidatePane === pane) return []
+                const candidate = crossServerWorkspace?.panes[candidatePane]
+                const candidateId = candidate ? candidate.session?.id : panes[candidatePane]
+                return candidateId ? [candidateId] : []
+              }))}
               onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)}
               onSelectSession={sessionId => selectSessionForPane(pane, sessionId)} />}
         </div>
@@ -334,6 +349,14 @@ function EmptyChatPane({ pane, focused, selectedProfileId, excludedSessionIds, o
   const [query, setQuery] = useState('')
   const candidates = sessions.filter(session => !session.archived && !excludedSessionIds.has(session.id)
     && `${session.title} ${session.cwd}`.toLowerCase().includes(query.toLowerCase()))
+  const groups = useMemo(() => {
+    const grouped = new Map<string, Session[]>()
+    for (const session of candidates) {
+      const folder = session.folder?.trim() || t('chatWorkspace.generalProject')
+      grouped.set(folder, [...(grouped.get(folder) ?? []), session])
+    }
+    return [...grouped.entries()]
+  }, [candidates])
   return <section className={`empty-chat-pane${focused ? ' focused' : ''}`} data-chat-pane={pane} tabIndex={-1}
     onPointerDownCapture={() => useAppStore.getState().focusChatPane(pane)} onFocusCapture={() => useAppStore.getState().focusChatPane(pane)}>
     <div className="empty-pane-heading">
@@ -343,9 +366,12 @@ function EmptyChatPane({ pane, focused, selectedProfileId, excludedSessionIds, o
     <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
       value={query} onChange={event => setQuery(event.target.value)} />
     <div className="empty-pane-chat-list">
-      {candidates.map(session => <button type="button" key={session.id} onClick={() => void onSelectSession(session.id)}>
-        <span>{session.title}</span><small>{session.backend}</small>
-      </button>)}
+      {groups.map(([folder, chats]) => <section className="empty-pane-project" key={folder}>
+        <h3><Folder size={13} aria-hidden="true" />{folder}</h3>
+        {chats.map(session => <button type="button" key={session.id} onClick={() => void onSelectSession(session.id)}>
+          <span>{session.title}</span><small>{session.backend}</small>
+        </button>)}
+      </section>)}
       {!candidates.length && <span>{t('chatWorkspace.noChats')}</span>}
     </div>
   </section>

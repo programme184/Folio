@@ -6,8 +6,10 @@ import type { ChatWorkspace } from '../lib/chat-panes'
 import { useAppStore } from '../store/app-store'
 import { ChatWorkspaceGrid, type CrossServerWorkspaceState } from './ChatWorkspaceGrid'
 
-vi.mock('./ChatPane', () => ({ ChatPane: ({ pane, focused }: { pane: string; focused: boolean }) =>
-  <div data-testid={`chat-pane-${pane}`} data-focused={String(focused)} /> }))
+vi.mock('./ChatPane', () => ({ ChatPane: ({ pane, focused, onBrowsePane }: { pane: string; focused: boolean; onBrowsePane?: () => void }) =>
+  <div data-testid={`chat-pane-${pane}`} data-focused={String(focused)}>
+    {onBrowsePane && <button type="button" onClick={onBrowsePane}>Browse {pane}</button>}
+  </div> }))
 
 const initialState = useAppStore.getState()
 const profile = (id: string): PublicServerProfile => ({
@@ -158,6 +160,38 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     expect(closeUpdate).toBeTypeOf('function')
     expect(closeUpdate(concurrent)).toEqual(expect.objectContaining({ paneCount: 1, focusedPane: 'primary' }))
     expect(useAppStore.getState().chatPaneCount).toBe(1)
+  })
+
+  it('opens a project-grouped browser from every populated pane and can move that pane to another server', async () => {
+    const folio = { id: 'folio-chat', title: 'Folio chat', backend: 'codex', cwd: '/folio', folder: 'Folio', archived: false } as Session
+    const folioOther = { id: 'folio-other', title: 'Other Folio chat', backend: 'codex', cwd: '/folio/other', folder: 'Folio', archived: false } as Session
+    const research = { id: 'research-chat', title: 'Research chat', backend: 'claude', cwd: '/research', folder: 'Research', archived: false } as Session
+    const onCrossServerWorkspaceChange = vi.fn()
+    useAppStore.setState({
+      profiles: [profile('a'), profile('b')], sessions: [folio, folioOther, research],
+      chatPanes: { primary: folio.id, secondary: research.id }, chatPaneCount: 2,
+      chatWorkspaces: [{ ...workspace('workspace-main'), panes: { primary: folio.id, secondary: research.id } }]
+    })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onCrossServerWorkspaceChange={onCrossServerWorkspaceChange}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+
+    fireEvent.click(within(view.container.querySelector('[data-pane="secondary"]') as HTMLElement).getByRole('button', { name: 'Browse secondary' }))
+    const secondary = within(view.container.querySelector('[data-pane="secondary"]') as HTMLElement)
+    expect(secondary.getByRole('heading', { name: 'Folio' })).toBeVisible()
+    expect(secondary.queryByRole('button', { name: /^Folio chat/ })).not.toBeInTheDocument()
+    expect(secondary.getByRole('button', { name: /Other Folio chat/ })).toBeVisible()
+    expect(secondary.getByRole('button', { name: /Research chat/ })).toBeVisible()
+
+    fireEvent.pointerDown(secondary.getByRole('button', { name: /a, Online.*Choose AgentsServer/ }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /b/ }))
+    expect(onCrossServerWorkspaceChange).toHaveBeenCalledWith(expect.objectContaining({
+      activeProfileId: 'a', focusedPane: 'secondary',
+      panes: expect.objectContaining({
+        primary: expect.objectContaining({ profileId: 'a', session: folio }),
+        secondary: expect.objectContaining({ profileId: 'b', session: null })
+      })
+    }))
   })
 
   it('uses live pane focus for file-tree ownership while a cross-server pane is mounted', () => {

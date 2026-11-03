@@ -71,6 +71,7 @@ function EmbeddedPaneApp() {
   const storageFull = useAppStore(state => state.storageFull)
   const inspectorVisible = useAppStore(state => state.inspectorVisible)
   const [query, setQuery] = useState('')
+  const [browsing, setBrowsing] = useState(false)
   const [terminalOpen, setTerminalOpen] = useState(false)
   const [inspectorTab, setInspectorTab] = useState<InspectorWorkspaceTab>('files')
   const [sideChatController] = useState(() => new SideChatController())
@@ -93,16 +94,16 @@ function EmbeddedPaneApp() {
     <ChatFontApplier />
     <AnswerFollowUp />
     <section className="conversation-pane embedded-pane-conversation">
-      {selectedSession
+      {selectedSession && !browsing
         ? <ChatPane pane="primary" session={selectedSession} focused split={false} terminalOpen={terminalOpen}
-          onTerminalToggle={() => setTerminalOpen(open => !open)} />
+          onTerminalToggle={() => setTerminalOpen(open => !open)} onBrowsePane={() => setBrowsing(true)} />
         : <section className="embedded-pane-session-picker">
           <strong>{t('chatWorkspace.chooseChat')}</strong>
           <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
             value={query} onChange={event => setQuery(event.target.value)} />
           <div className="embedded-pane-session-list">
             {candidates.map(session => <button type="button" key={session.id}
-              onClick={() => void useAppStore.getState().selectSession(session.id)}>
+              onClick={() => { setBrowsing(false); void useAppStore.getState().selectSession(session.id) }}>
               <strong>{session.title}</strong><small>{session.backend}</small>
             </button>)}
             {!candidates.length && <p>{t('chatWorkspace.noChats')}</p>}

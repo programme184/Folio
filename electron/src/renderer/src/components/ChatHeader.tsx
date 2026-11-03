@@ -25,6 +25,7 @@ export function ChatHeader({
   onSidebarToggle,
   onTerminalToggle,
   onInspectorToggle,
+  onBrowsePane,
   onOpenSplit,
   onSwapPanes,
   onClosePane,
@@ -39,6 +40,7 @@ export function ChatHeader({
   onSidebarToggle?: () => void
   onTerminalToggle?: () => void
   onInspectorToggle?: () => void
+  onBrowsePane?: () => void
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
   onClosePane?: () => void
@@ -157,6 +159,9 @@ export function ChatHeader({
         <small title={geminiIdentityPending ? t('gemini.session.pendingDescription') : undefined}>session {geminiIdentityPending ? t('gemini.session.pending') : shortId(sessionIdValue)}{sessionIdValue && <button type="button" className="session-id-copy" title={sessionIdCopied ? t("ui.ChatHeader.ChatHeader.copied_8d525e5") : t("ui.ChatHeader.ChatHeader.copy_session_8b985e2")} aria-label={sessionIdCopied ? t("ui.ChatHeader.ChatHeader.session_copied_673328f") : t("ui.ChatHeader.ChatHeader.copy_session_8b985e2")} onClick={copySessionId}>{sessionIdCopied ? <Check size={12} /> : <Copy size={12} />}</button>}</small>
       </div>
       <div className="header-actions">
+        {onBrowsePane && <button type="button" className="icon-button pane-browser-toggle"
+          title={t('chatWorkspace.browsePane')} aria-label={t('chatWorkspace.browsePane')}
+          onClick={onBrowsePane}><PanelLeft size={16} /></button>}
         <DropdownMenu.Root open={actionsMenuOpen} onOpenChange={open => {
           setActionsMenuOpen(open)
           if (!open) setSplitMenuRequested(false)

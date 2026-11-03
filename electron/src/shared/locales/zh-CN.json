@@ -3440,5 +3440,7 @@
   "chatWorkspace.chooseChat": "选择此窗格的会话",
   "chatWorkspace.search": "搜索会话…",
   "chatWorkspace.noChats": "没有匹配的会话。可从侧边栏新建会话。",
-  "chatWorkspace.paneNumber": "窗格 {number}"
+  "chatWorkspace.paneNumber": "窗格 {number}",
+  "chatWorkspace.browsePane": "浏览此窗格服务器上的项目和会话",
+  "chatWorkspace.generalProject": "常规"
 }

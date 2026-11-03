@@ -9551,6 +9551,24 @@ Forget is in the API card's three-dot menu and requires confirmation.
 Future entries should describe public-facing changes and validation without
 including credentials, user data, private infrastructure, or internal history.
 
+## 2026-11-03 — Per-pane server project browser
+
+- Every populated desktop chat pane now has its own project-browser button.
+  It opens that pane's server and groups available chats by Folio folder/project;
+  choosing a different saved server affects only that pane.
+- Concurrent-server embedded panes expose the same browser after a chat is open,
+  and conversations already visible in another pane are not offered twice.
+- The focused regression, TypeScript check, and production Electron build passed.
+  An isolated headless Electron app exercised the real renderer/preload/main and
+  authenticated server boundary: project groups loaded, a chat was selected, a
+  second pane was populated, and both panes retained independent browser buttons.
+  The test server lacked terminal support; terminal behavior was outside scope.
+  This is a source change only; nothing was installed, published, or deployed.
+- The full Electron suite completed with 5,652 passing, 5 skipped, and 20
+  pre-existing failures in unrelated workspace-file mocks, design/CSS checks,
+  Team Hub permissions, localization terminology, runtime defaults, and sidebar
+  fixtures. The focused pane-browser suite remained green.
+
 ## 2026-11-03 — SSH config hosts in guided server setup
 
 - Guided remote setup now offers concrete host aliases from the desktop user's

@@ -3440,5 +3440,7 @@
   "chatWorkspace.chooseChat": "Choose a chat for this pane",
   "chatWorkspace.search": "Find a chat…",
   "chatWorkspace.noChats": "No matching chats. Create one from the sidebar.",
-  "chatWorkspace.paneNumber": "Pane {number}"
+  "chatWorkspace.paneNumber": "Pane {number}",
+  "chatWorkspace.browsePane": "Browse this pane's server projects and chats",
+  "chatWorkspace.generalProject": "General"
 }

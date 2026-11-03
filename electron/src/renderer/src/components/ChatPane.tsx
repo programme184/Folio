@@ -35,6 +35,7 @@ export const ChatPane = memo(function ChatPane({
   terminalOpen,
   onSidebarToggle,
   onTerminalToggle,
+  onBrowsePane,
   papersOpen = false,
   onPapersToggle,
   onAskPaper
@@ -48,6 +49,7 @@ export const ChatPane = memo(function ChatPane({
   terminalOpen: boolean
   onSidebarToggle?: () => void
   onTerminalToggle?: () => void
+  onBrowsePane?: () => void
   papersOpen?: boolean
   onPapersToggle?: () => void
   onAskPaper?: (draft: string, submit?: boolean) => void | Promise<void>
@@ -200,6 +202,7 @@ export const ChatPane = memo(function ChatPane({
         state.focusChatPane(pane)
         state.setInspectorVisible(alreadyFocused ? !state.inspectorVisible : true)
       }}
+      onBrowsePane={onBrowsePane}
       onOpenSplit={candidateId => void useAppStore.getState().openSessionInSplit(candidateId)}
       onClosePane={split ? () => useAppStore.getState().closeChatPane(pane) : undefined}
       papersOpen={papersOpen}
