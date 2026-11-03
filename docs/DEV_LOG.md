@@ -8,8 +8,11 @@
   artifacts and other paths outside those roots use the loopback AgentsServer.
 - Focused service and editor regressions cover both routes, including a local
   `.cursor` Canvas path in a multi-root Synria-style project. TypeScript and the
-  production Electron build pass. Installed-app acceptance is recorded after
-  packaging below; no package is published and no remote server is changed.
+  production Electron build pass. In an isolated installed-app run, clicking
+  the reported Canvas link from the real Synria-group chat opened its 223-line,
+  9,907-byte local file with no UI error; the authenticated request omitted
+  `remote_host` and returned 200. The isolated state was removed and the normal
+  installed app reopened. No package is published and no remote server changed.
 
 ## 2026-11-03 — Remote groups browse project files over SSH
 
