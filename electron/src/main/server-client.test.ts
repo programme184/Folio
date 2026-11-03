@@ -2415,6 +2415,21 @@ describe('AgentServerClient live stream', () => {
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
 
+  it('rejects an unsafe remote workspace host before the native request', async () => {
+    const requests: IncomingMessage[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.end('{}')
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await expect(client.absoluteWorkspaceEntries(
+        'chat-one', '/work/other-root', 0, 40, '-oProxyCommand=bad'
+      )).rejects.toThrow('Privileged native control route is invalid')
+    })
+
+    expect(requests).toHaveLength(0)
+  })
+
   it('requests working-directory completions from the active remote server', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       input: '/srv/pro',

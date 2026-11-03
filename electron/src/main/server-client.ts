@@ -3356,9 +3356,12 @@ function isPrivilegedNativeControlTarget(
   }
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/absolute-entries$/.test(path)) {
     const keys = [...target.searchParams.keys()]
-    return method === 'GET' && keys.length === 3 && new Set(keys).size === 3
-      && keys.every(key => ['path', 'offset', 'limit'].includes(key))
+    const remoteHost = target.searchParams.get('remote_host')
+    return method === 'GET' && (keys.length === 3 || keys.length === 4) && new Set(keys).size === keys.length
+      && ['path', 'offset', 'limit'].every(key => keys.includes(key))
+      && keys.every(key => ['path', 'offset', 'limit', 'remote_host'].includes(key))
       && Boolean(target.searchParams.get('path'))
+      && (!keys.includes('remote_host') || /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? ''))
   }
   const syncedSideChat = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/side-chat(?:\/(?:requests\/)?[A-Za-z0-9_-]{1,128})?$/.exec(path)
   if (syncedSideChat) return !target.search && (path.endsWith('/side-chat') ? method === 'GET' || method === 'POST' : method === 'DELETE')

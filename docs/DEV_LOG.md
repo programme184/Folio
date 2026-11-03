@@ -15,6 +15,10 @@
   through the production HTTP boundary. Isolated state was removed. The unpacked
   Linux candidate was installed locally with an `app.asar` rollback copy; no
   package was published and no remote server was changed.
+- Follow-up packaging validation exposed and corrected the native request
+  allowlist rejecting the new `remote_host` query before it reached the server.
+  The allowlist accepts only the expected optional key and a validated SSH host;
+  a focused live-transport regression covers both valid and unsafe host values.
 
 ## 2026-11-03 — Remote groups open SSH terminals
 
