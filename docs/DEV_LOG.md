@@ -39,7 +39,11 @@
   701 px editor widths in an isolated native app. Numeric padding and gaps were
   present in computed styles, both themes rendered without alerts, and neither
   width produced horizontal document overflow. The focused viewer regression,
-  TypeScript check and production build pass.
+  TypeScript check and production build pass. The local package built from
+  `74906111` was installed and the desktop restarted; a second isolated run of
+  that installed package reopened the real chat link with 2,652 characters,
+  four cards, two tables, no alert and no horizontal overflow. No package was
+  published and no server update is required.
 
 ## 2026-11-03 — Keep local generated files local in remote groups
 
