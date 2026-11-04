@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -8,6 +8,7 @@ import {
   folioLinuxDesktopCommand,
   folioLinuxDesktopEntry,
   installElectronLaunchShim,
+  installFolioLinuxIcon,
   sandboxHelperIsReady,
   unprivilegedNamespacesFromSysctl
 } from './folio-linux-identity'
@@ -68,6 +69,21 @@ describe('Folio linux launcher', () => {
     expect(packaged).toBe('"/opt/Folio/folio"')
     expect(packaged).not.toContain('--no-sandbox')
     expect(folioLinuxDesktopEntry(blocked, '/opt/folio-icon.png')).toContain(`Exec=${blocked}`)
+    expect(folioLinuxDesktopEntry(blocked, 'folio')).toContain('Icon=folio')
+  })
+
+  it('installs the desktop icon outside app.asar at a shell-readable path', () => {
+    const home = mkdtempSync(join(tmpdir(), 'folio-icon-home-'))
+    const source = join(home, 'app.asar', 'out', 'main', 'folio-icon.png')
+    const sourceBytes = Buffer.from('folio icon')
+    mkdirSync(join(home, 'app.asar', 'out', 'main'), { recursive: true })
+    writeFileSync(source, sourceBytes)
+
+    const destination = installFolioLinuxIcon(source, home)
+
+    expect(destination).toBe(join(home, '.local', 'share', 'icons', 'hicolor', '512x512', 'apps', 'folio.png'))
+    expect(destination).not.toContain('app.asar')
+    expect(readFileSync(destination)).toEqual(sourceBytes)
   })
 
   it('puts a shim in front of the Electron binary so a menu command without --no-sandbox still starts', () => {

@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, existsSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 
 const LAUNCH_SHIM_MARK = '# folio-electron-shim'
@@ -88,6 +88,20 @@ StartupWMClass=folio
 Terminal=false
 Categories=Office;
 `
+}
+
+/**
+ * Desktop shells cannot resolve an image nested inside Electron's app.asar.
+ * Copy it to a normal per-user icon path before referencing it from the
+ * generated desktop entry.
+ */
+export function installFolioLinuxIcon(sourcePath: string, homePath: string): string {
+  const iconDirectory = join(homePath, '.local', 'share', 'icons', 'hicolor', '512x512', 'apps')
+  const iconPath = join(iconDirectory, 'folio.png')
+  mkdirSync(iconDirectory, { recursive: true })
+  writeFileSync(iconPath, readFileSync(sourcePath), { mode: 0o644 })
+  chmodSync(iconPath, 0o644)
+  return iconPath
 }
 
 /** Script placed in front of Electron so a menu that drops --no-sandbox still starts. */

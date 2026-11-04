@@ -32,6 +32,7 @@ import {
   folioLinuxDesktopCommand,
   folioLinuxDesktopEntry,
   installElectronLaunchShim,
+  installFolioLinuxIcon,
   readSysctl,
   unprivilegedNamespacesFromSysctl
 } from './folio-linux-identity'
@@ -312,7 +313,8 @@ function installFolioLinuxIdentity(iconPath: string | undefined): void {
       appPath: app.getAppPath(),
       noSandbox
     })
-    writeFileSync(join(applications, 'folio.desktop'), folioLinuxDesktopEntry(command, iconPath))
+    installFolioLinuxIcon(iconPath, app.getPath('home'))
+    writeFileSync(join(applications, 'folio.desktop'), folioLinuxDesktopEntry(command, 'folio'))
   } catch (error) {
     appLog('main', 'could not install the Folio desktop entry', errorDetails(error))
   }

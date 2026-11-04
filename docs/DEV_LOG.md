@@ -1,5 +1,20 @@
 # Public development log
 
+## 2026-11-04 — Restore the Folio icon in the Linux dock
+
+- Folio's generated Linux desktop entry now references the named `folio` icon
+  installed in the user's standard icon hierarchy instead of an image nested
+  inside `app.asar` or an absolute path, neither of which GNOME Shell's
+  applications grid resolves correctly in this environment.
+- All 5,693 Electron tests, 8 compile-output/license checks, the TypeScript
+  check, and production Electron build pass. The locally installed desktop was
+  restarted with the corrected entry; its external icon matches the packaged
+  asset byte-for-byte, the live window reports the matching `folio` WM class
+  and 128 px window icon. The real `Win+A` applications grid was opened before
+  and after the fix: the blank Folio slot now renders the packaged icon, and a
+  temporary validation entry was removed afterward. Nothing was published or
+  deployed.
+
 ## 2026-11-04 — Keep project folder browsing aligned with SSH terminals
 
 - The New Folder project's server-folder browser now routes completion and
