@@ -366,6 +366,7 @@ describe('WorkspaceEditor', () => {
   })
 
   it('shows and browses multiple project roots without changing the chat working directory', async () => {
+    const user = userEvent.setup()
     const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
     const projectSession = { ...session, folder: 'Research' }
     const previousState = useAppStore.getState()
@@ -400,6 +401,35 @@ describe('WorkspaceEditor', () => {
       expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/project', 0, 500)
       expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/notes', 0, 500)
       expect(window.agentsDock.workspace.entries).not.toHaveBeenCalled()
+
+      const newFolder = within(panel.container).getByRole('button', { name: 'New folder' })
+      const newFile = within(panel.container).getByRole('button', { name: 'New file' })
+      expect(newFolder).toBeEnabled()
+      expect(newFile).toBeEnabled()
+      await user.click(newFolder)
+      await user.type(within(panel.container).getByRole('textbox', { name: 'New folder name' }), 'drafts{Enter}')
+      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+        projectSession.id,
+        'drafts',
+        'directory'
+      ))
+
+      fireEvent.contextMenu(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
+      expect(await screen.findByRole('menuitem', { name: 'New Folder' })).toHaveAttribute('data-disabled')
+      fireEvent.keyDown(document, { key: 'Escape' })
+
+      await user.click(newFile)
+      await user.type(within(panel.container).getByRole('textbox', { name: 'New file name' }), 'notes.txt{Enter}')
+      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+        projectSession.id,
+        'notes.txt',
+        'file'
+      ))
+      await waitFor(() => expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(
+        projectSession.id,
+        '/work/project/notes.txt',
+        true
+      ))
 
       fireEvent.click(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
       expect(await screen.findByRole('textbox', { name: 'Contents of /work/notes/notes.md' })).toBeVisible()

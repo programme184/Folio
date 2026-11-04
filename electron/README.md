@@ -212,9 +212,11 @@ shows all of those roots at once; expanding or opening a second root does not
 change the chat's `cwd`. Existing files in additional roots use the native-only
 absolute file transport and retain revision-checked editing. The right-hand
 Details panel opens files in the existing workspace editor. It replaces
-the editor's separate Explorer pane and retains new file/folder, refresh and
-right-click actions (open beside, copy path, download, rename and delete), with
-the existing unsaved-edit and revision checks. Folders load on expansion or
+the editor's separate Explorer pane and retains refresh and right-click actions.
+New file/folder remains available in the chat's current working directory and
+its descendants; additional roots do not gain create, rename or delete authority.
+Existing unsaved-edit and revision checks remain in effect. Folders load on
+expansion or
 when revealing the active file; large folders have an explicit Load more button.
 Changing chat, server or working directory clears the old tree. Symlinks retain
 the server's existing access restriction. The last Details/Files selection is

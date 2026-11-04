@@ -354,6 +354,9 @@ export function WorkspaceEditor({
   })
   const multiRootExplorer = capabilityVersion >= 7 && workspaceFolders.length > 1
   const workspaceFoldersKey = workspaceFolders.join('\0')
+  const multiRootCreationAvailable = !multiRootExplorer || workspaceFolders.some(path => (
+    workspaceRelativePath(cwd, path) === ''
+  ))
   const absolutePathUsesWorkspaceHost = (path: string): boolean => {
     const roots = workspaceFolders.length ? workspaceFolders : cwd ? [cwd] : []
     return roots.some(root => workspacePathIsWithin(path, root))
@@ -1862,14 +1865,20 @@ export function WorkspaceEditor({
       return
     }
     const directory = target === null
-      ? ''
+      ? multiRootExplorer ? cwd : ''
       : target
         ? target.kind === 'directory' ? target.path : workspaceParentDirectory(target.path)
         : (() => {
             const path = currentFocusedPath()
             const file = path ? openFilesRef.current.find(candidate => candidate.path === path) : null
-            return file?.origin === 'workspace' ? workspaceParentDirectory(file.path) : ''
+            return file?.origin === 'workspace'
+              ? workspaceParentDirectory(file.path)
+              : multiRootExplorer ? cwd : ''
           })()
+    if (multiRootExplorer && workspaceRelativePath(cwd, directory) === null) {
+      setWorkspaceError(t('editor.thatFullPathIsOutsideThisChatSWorkingDirectory'))
+      return
+    }
     setWorkspaceError(null)
     setPendingCreate({
       directory,
@@ -1877,15 +1886,15 @@ export function WorkspaceEditor({
       creating: false,
       error: null
     })
-    const directoryAncestors = directory
-      ? workspaceParentDirectories(`${directory}/.agentsdock-new-entry`)
-      : []
+    const directoryAncestors = multiRootExplorer
+      ? directory ? [directory] : []
+      : directory ? workspaceParentDirectories(`${directory}/.agentsdock-new-entry`) : []
     setExpandedDirectories(current => {
       const next = new Set(current)
       for (const ancestor of directoryAncestors) next.add(ancestor)
       return next
     })
-    for (const candidate of ['', ...directoryAncestors]) {
+    for (const candidate of multiRootExplorer ? directoryAncestors : ['', ...directoryAncestors]) {
       if (!directoryAt(directoriesRef.current, candidate)) void loadDirectory(candidate)
     }
   }
@@ -1914,15 +1923,52 @@ export function WorkspaceEditor({
       } : current)
       return
     }
-    const path = [pending.directory, name].filter(Boolean).join('/')
+    const path = multiRootExplorer
+      ? absoluteWorkspacePath(pending.directory, name)
+      : [pending.directory, name].filter(Boolean).join('/')
+    const createPath = multiRootExplorer ? workspaceRelativePath(cwd, path) : path
+    if (createPath === null || !createPath) {
+      setPendingCreate(current => current ? {
+        ...current,
+        error: t('editor.thatFullPathIsOutsideThisChatSWorkingDirectory')
+      } : current)
+      return
+    }
     const mutation: PendingWorkspaceMutation = { kind: 'create', path }
     workspaceMutationRef.current = mutation
     setWorkspaceMutationPath(path)
     setPendingCreate(current => current ? { ...current, creating: true, error: null } : current)
     setWorkspaceError(null)
     try {
-      const result = await window.agentsDock.workspace.create(session.id, path, pending.kind)
+      const result = await window.agentsDock.workspace.create(session.id, createPath, pending.kind)
       setWorkspaceRoot(result.root)
+      if (multiRootExplorer) {
+        await loadDirectory(pending.directory, false)
+        setExpandedDirectories(current => {
+          const next = new Set(current)
+          next.add(pending.directory)
+          if (pending.kind === 'directory') next.add(path)
+          return next
+        })
+        if (pending.kind === 'directory') {
+          const emptyDirectory: DirectoryState = {
+            entries: [],
+            total: 0,
+            loading: false,
+            error: null
+          }
+          directoriesRef.current = { ...directoriesRef.current, [path]: emptyDirectory }
+          setDirectories(directoriesRef.current)
+        } else {
+          // The create request has completed. Release its reservation before
+          // opening the new absolute path through the normal file pipeline.
+          workspaceMutationRef.current = null
+          if (mountedRef.current) setWorkspaceMutationPath(null)
+          await openAbsoluteFile(path)
+        }
+        setPendingCreate(null)
+        return
+      }
       const parentState = directoryAt(directoriesRef.current, pending.directory)
       if (parentState && parentState.entries.length < parentState.total) {
         // A locally inserted row would shift the next server offset and skip an
@@ -4065,15 +4111,15 @@ export function WorkspaceEditor({
           directories={directories}
           expanded={expandedDirectories}
           mutationsAvailable={!multiRootExplorer && mutationsAvailable && !workspaceMutationPath}
-          creationAvailable={!multiRootExplorer && creationAvailable && !workspaceMutationPath}
-          pendingCreate={multiRootExplorer ? null : pendingCreate}
+          creationAvailable={creationAvailable && multiRootCreationAvailable && !workspaceMutationPath}
+          pendingCreate={pendingCreate}
           onOpen={path => void (multiRootExplorer ? openAbsoluteFile(path) : openFile(path))}
           onOpenToSide={tabbedPane || multiRootExplorer ? undefined : openFileToSide}
           onToggle={toggleDirectory}
           onLoadMore={path => void loadDirectory(path, true)}
           onRefresh={refreshExplorer}
           onRequestCreate={(kind, target) => {
-            if (kind === 'file') requestNewWorkspaceFile(target)
+            if (kind === 'file' && !multiRootExplorer) requestNewWorkspaceFile(target)
             else requestCreateWorkspaceEntry(kind, target)
           }}
           onCreateCommit={name => void createWorkspaceEntry(name)}
@@ -4388,11 +4434,16 @@ const Explorer = memo(function Explorer({
   const [contextEntryPath, setContextEntryPath] = useState<string | null>(null)
   const entryByPath = useMemo(() => {
     const entries = new Map<string, WorkspaceEntry>()
+    if (multiRoot) {
+      for (const path of workspaceFolders) {
+        entries.set(path, { name: folderLabel(path), path, kind: 'directory', writable: false })
+      }
+    }
     for (const directory of Object.values(directories)) {
       for (const entry of directory.entries) entries.set(entry.path, entry)
     }
     return entries
-  }, [directories])
+  }, [directories, multiRoot, workspaceFolders])
   const contextEntry = contextEntryPath ? entryByPath.get(contextEntryPath) ?? null : null
   useEffect(() => {
     const row = activeRowRef.current
@@ -4414,23 +4465,6 @@ const Explorer = memo(function Explorer({
         <button type="button" aria-label={t('editor.refreshFileExplorer')} title={t('editor.refreshExplorer')} onClick={onRefresh}><RefreshCw size={12} /></button>
       </div>
     </header>
-    {multiRoot
-      ? <div className="workspace-editor-roots workspace-editor-roots-multi" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
-        {workspaceFolders.map(path => {
-          const open = expanded.has(path)
-          return <div className="workspace-editor-root-tree" key={path}>
-            <button
-              type="button"
-              className={`workspace-editor-root-folder${path === cwd ? ' active' : ''}`}
-              title={path}
-              aria-expanded={open}
-              onClick={() => onToggle(path)}
-            ><ChevronRight className={open ? 'workspace-editor-chevron-open' : ''} size={12} aria-hidden="true" /><FolderOpen size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>
-            {open && <DirectoryRows path={path} depth={1} activePath={activePath} openPaths={openPaths} directories={directories} expanded={expanded} pendingCreate={null} activeRowRef={activeRowRef} onOpen={onOpen} onToggle={onToggle} onLoadMore={onLoadMore} onCreateCommit={onCreateCommit} onCreateErrorClear={onCreateErrorClear} onCreateCancel={onCreateCancel} />}
-          </div>
-        })}
-      </div>
-      : <div className="workspace-editor-explorer-root" title={cwd}><FolderOpen size={14} aria-hidden="true" /><strong>{root}</strong></div>}
     <ContextMenu.Root onOpenChange={open => { if (!open) setContextEntryPath(null) }}>
       <ContextMenu.Trigger asChild>
         <div className="workspace-editor-tree" onContextMenuCapture={(event: ReactMouseEvent<HTMLDivElement>) => {
@@ -4444,29 +4478,51 @@ const Explorer = memo(function Explorer({
           }
           setContextEntryPath(path)
         }}>
-          {!multiRoot && <DirectoryRows
-            path=""
-            depth={0}
-            activePath={activePath}
-            openPaths={openPaths}
-            directories={directories}
-            expanded={expanded}
-            pendingCreate={pendingCreate}
-            activeRowRef={activeRowRef}
-            onOpen={onOpen}
-            onToggle={onToggle}
-            onLoadMore={onLoadMore}
-            onCreateCommit={onCreateCommit}
-            onCreateErrorClear={onCreateErrorClear}
-            onCreateCancel={onCreateCancel}
-          />}
+          {multiRoot
+            ? <div className="workspace-editor-roots workspace-editor-roots-multi" role="group" aria-label={t('ui.WorkingDirectoryPopover.workspace_folders')}>
+              {workspaceFolders.map(path => {
+                const open = expanded.has(path)
+                return <div className="workspace-editor-root-tree" key={path}>
+                  <button
+                    type="button"
+                    data-workspace-entry-path={path}
+                    className={`workspace-editor-root-folder${path === cwd ? ' active' : ''}`}
+                    title={path}
+                    aria-expanded={open}
+                    onClick={() => onToggle(path)}
+                  ><ChevronRight className={open ? 'workspace-editor-chevron-open' : ''} size={12} aria-hidden="true" /><FolderOpen size={14} aria-hidden="true" /><span>{folderLabel(path)}</span></button>
+                  {open && <DirectoryRows path={path} depth={1} activePath={activePath} openPaths={openPaths} directories={directories} expanded={expanded} pendingCreate={pendingCreate} activeRowRef={activeRowRef} onOpen={onOpen} onToggle={onToggle} onLoadMore={onLoadMore} onCreateCommit={onCreateCommit} onCreateErrorClear={onCreateErrorClear} onCreateCancel={onCreateCancel} />}
+                </div>
+              })}
+            </div>
+            : <>
+              <div className="workspace-editor-explorer-root" title={cwd}><FolderOpen size={14} aria-hidden="true" /><strong>{root}</strong></div>
+              <DirectoryRows
+                path=""
+                depth={0}
+                activePath={activePath}
+                openPaths={openPaths}
+                directories={directories}
+                expanded={expanded}
+                pendingCreate={pendingCreate}
+                activeRowRef={activeRowRef}
+                onOpen={onOpen}
+                onToggle={onToggle}
+                onLoadMore={onLoadMore}
+                onCreateCommit={onCreateCommit}
+                onCreateErrorClear={onCreateErrorClear}
+                onCreateCancel={onCreateCancel}
+              />
+            </>}
         </div>
       </ContextMenu.Trigger>
       {contextEntry && <WorkspaceEntryContextMenu
         entry={contextEntry}
         expanded={contextEntry.kind === 'directory' ? expanded.has(contextEntry.path) : undefined}
         mutationsAvailable={mutationsAvailable}
-        creationAvailable={creationAvailable}
+        creationAvailable={creationAvailable && (!multiRoot || workspaceRelativePath(cwd, contextEntry.kind === 'directory'
+          ? contextEntry.path
+          : workspaceParentDirectory(contextEntry.path)) !== null)}
         onOpen={contextEntry.kind === 'file'
           ? () => onOpen(contextEntry.path)
           : contextEntry.kind === 'directory'
@@ -5356,6 +5412,23 @@ function equalStringSets(previous: Set<string>, next: Set<string>): boolean {
 
 function workspacePathIsWithin(path: string, parent: string): boolean {
   return path === parent || path.startsWith(`${parent}/`)
+}
+
+function workspaceRelativePath(root: string, path: string): string | null {
+  const normalizedRoot = normalizeAbsolutePath(root)
+  const normalizedPath = normalizeAbsolutePath(path)
+  if (!normalizedRoot || !normalizedPath || normalizedRoot.flavor !== normalizedPath.flavor) return null
+  const caseInsensitive = normalizedRoot.flavor === 'windows'
+  const sameRoot = caseInsensitive
+    ? normalizedRoot.root.toLocaleLowerCase() === normalizedPath.root.toLocaleLowerCase()
+    : normalizedRoot.root === normalizedPath.root
+  if (!sameRoot || normalizedPath.parts.length < normalizedRoot.parts.length) return null
+  const contains = normalizedRoot.parts.every((part, index) => (
+    caseInsensitive
+      ? part.toLocaleLowerCase() === normalizedPath.parts[index]?.toLocaleLowerCase()
+      : part === normalizedPath.parts[index]
+  ))
+  return contains ? normalizedPath.parts.slice(normalizedRoot.parts.length).join('/') : null
 }
 
 function editorViewStateKey(group: EditorGroupId, path: string): string {

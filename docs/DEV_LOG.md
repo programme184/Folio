@@ -1,5 +1,21 @@
 # Public development log
 
+## 2026-11-04 — Restore creation in multi-root Files
+
+- Multi-root Files now enables **New file** and **New folder** for the chat's
+  working-directory root and its descendants. Top-bar actions target that root,
+  and right-click creation uses the selected directory.
+- Additional workspace roots remain outside the relative mutation authority:
+  their creation actions are disabled, and rename/delete remain unavailable in
+  multi-root mode. No AgentsServer change or expanded filesystem permission is
+  required.
+- The regression creates a folder and then a file through the multi-root UI,
+  verifies the server receives cwd-relative paths, opens the new file through
+  the native absolute transport, and confirms creation stays disabled in the
+  additional root. All 158 focused Files/layout tests, TypeScript checking and
+  the production Electron build pass. Local package installation and real-app
+  acceptance are pending.
+
 ## 2026-11-03 — Support Canvas host theme tokens
 
 - The native Canvas runtime now exposes the documented `useHostTheme()` token
@@ -141,6 +157,21 @@
   unit environment lacked `croniter`. The unpacked Linux candidate was checked
   with isolated state and installed locally with an `app.asar` rollback copy;
   no package was published and no server was deployed.
+
+## 2026-11-04 — Keep the composer visible in embedded server panes
+
+- Give the embedded conversation layout a more specific single-row rule. The
+  later generic conversation rule previously won the CSS cascade, reduced the
+  chat to its 78-pixel intrinsic header height and laid the composer outside the
+  visible concurrent-server webview.
+- The focused style and workspace component regressions, desktop TypeScript
+  check and production Electron build pass. A Chromium layout probe using the
+  complete production CSS at the reported 807-by-945 viewport now places the
+  99-pixel composer at y=832–931 inside the 945-pixel embedded viewport; before
+  the fix, the chat ended at y=78 and the composer started outside that row.
+- The probe verifies the renderer and CSS boundary but does not replace a
+  hands-on run of the rebuilt app's real concurrent-server webview. Source only;
+  no package was installed or published and no server update is required.
 
 ## 2026-11-03 — Workspace Files supports multiple simultaneous roots
 
