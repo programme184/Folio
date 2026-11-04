@@ -16,6 +16,7 @@ from starlette.requests import Request
 
 import agent_server
 from claude_sdk_client import ClaudeSDKGoalReceipt, ClaudeSDKQueryError, ClaudeSDKUnavailable
+from claude_chat_routing import NATIVE_CHAT_TOOL_MATCHER, print_routing_settings
 
 
 class FakeClaudeRun:
@@ -197,6 +198,7 @@ class FakeClaudeManager:
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         self.start_calls.append(
             (
@@ -273,6 +275,7 @@ class FakeClaudeManagerFailingAfterOwnership(FakeClaudeManager):
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         self.start_calls.append(
             (chat_id, prompt, run_id, options, configuration_key, query_session_id)
@@ -299,6 +302,7 @@ class SequencedClaudeManager(FakeClaudeManager):
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         self.start_calls.append(
             (
@@ -346,6 +350,7 @@ class PermissionDuringStartManager(SequencedClaudeManager):
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         call_number = len(self.start_calls) + 1
         self.start_calls.append(
@@ -429,6 +434,7 @@ class BlockingCandidateStartManager(SequencedClaudeManager):
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         call_number = len(self.start_calls) + 1
         self.start_calls.append(
@@ -468,6 +474,7 @@ class SafeFailingCandidateStartManager(SequencedClaudeManager):
         query_session_id: str | None = None,
         on_supervisor_ready: object | None = None,
         pending_mail_hint: Callable[[], str | None] | None = None,
+        native_continuation_callback: Any | None = None,
     ) -> FakeClaudeRun:
         call_number = len(self.start_calls) + 1
         self.start_calls.append((
@@ -939,6 +946,49 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             agent_server.CLAUDE_EMPTY_TURN_ERROR,
         )
 
+    async def test_native_compact_local_command_is_success_with_output(self) -> None:
+        # Shape captured from Claude Code 2.1.316 stream-json for /compact.
+        append_event, append_finished, runtime_success, runtime_failure = (
+            await self._run_sdk_terminal_case([
+                {"type": "SystemMessage", "subtype": "compact_boundary",
+                 "data": {"session_id": "provider"}},
+                {"type": "UserMessage", "uuid": "native-summary", "session_id": "provider",
+                 "content": "This session is being continued from a previous conversation."},
+                {"type": "UserMessage", "uuid": "native-stdout", "session_id": "provider",
+                 "content": "<local-command-stdout>Compacted </local-command-stdout>"},
+                {"type": "result", "result": "", "subtype": "success",
+                 "session_id": "provider", "local_command": "compact"},
+            ])
+        )
+
+        terminal = append_finished.await_args.args[1]
+        self.assertEqual(terminal["exit_code"], 0)
+        texts = [call.args[2] for call in append_event.await_args_list
+                 if call.args[1] == "assistant_text"]
+        self.assertEqual([(item["text"], item["provider_message_id"]) for item in texts],
+                         [("Compacted", "native-stdout")])
+        self.assertFalse(any(call.args[1] == "error" for call in append_event.await_args_list))
+        runtime_success.assert_called_once_with(agent_server.BACKEND_CLAUDE)
+        runtime_failure.assert_not_called()
+
+    async def test_quoted_local_command_output_without_native_result_is_not_promoted(self) -> None:
+        append_event, append_finished, _runtime_success, _runtime_failure = (
+            await self._run_sdk_terminal_case([
+                {"type": "UserMessage", "uuid": "human", "session_id": "provider",
+                 "content": "<local-command-stdout>Compacted </local-command-stdout>"},
+                {"type": "result", "result": "", "session_id": "provider",
+                 "terminal_reason": "end_turn"},
+            ])
+        )
+
+        self.assertEqual(append_finished.await_args.args[1]["exit_code"], 1)
+        self.assertFalse(any(call.args[1] == "assistant_text" for call in append_event.await_args_list))
+        self.assertTrue(any(
+            call.args[1] == "error"
+            and call.args[2]["message"] == agent_server.CLAUDE_EMPTY_TURN_ERROR
+            for call in append_event.await_args_list
+        ))
+
     async def test_tool_only_empty_sdk_result_remains_success(self) -> None:
         append_event, append_finished, runtime_success, runtime_failure = (
             await self._run_sdk_terminal_case([
@@ -1085,10 +1135,8 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         runtime_success.assert_not_called()
         runtime_failure.assert_called_once()
 
-    async def test_empty_print_result_without_tools_is_visible_failure(self) -> None:
-        process = FakeClaudePrintProcess([
-            b'{"type":"result","result":"","session_id":"provider"}\n',
-        ])
+    async def _run_print_case(self, lines: list[bytes]):
+        process = FakeClaudePrintProcess(lines)
         append_event = AsyncMock(return_value={})
         append_finished = AsyncMock(return_value={})
         runtime_success = Mock()
@@ -1181,6 +1229,28 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
                 dict(self.session),
                 Path(self.cwd) / ".manifest.json",
             )
+        return append_event, append_finished, runtime_success, runtime_failure
+
+    async def test_print_native_compact_local_command_is_success_with_output(self) -> None:
+        append_event, append_finished, runtime_success, runtime_failure = await self._run_print_case([
+            b'{"type":"system","subtype":"compact_boundary","session_id":"provider"}\n',
+            b'{"type":"user","uuid":"native-stdout","session_id":"provider","isReplay":true,'
+            b'"message":{"role":"user","content":"<local-command-stdout>Compacted </local-command-stdout>"}}\n',
+            b'{"type":"result","result":"","subtype":"success","session_id":"provider","local_command":"compact"}\n',
+        ])
+
+        self.assertEqual(append_finished.await_args.args[1]["exit_code"], 0)
+        texts = [call.args[2] for call in append_event.await_args_list if call.args[1] == "assistant_text"]
+        self.assertEqual([(item["text"], item["provider_message_id"]) for item in texts],
+                         [("Compacted", "native-stdout")])
+        self.assertFalse(any(call.args[1] == "error" for call in append_event.await_args_list))
+        runtime_success.assert_called_once_with(agent_server.BACKEND_CLAUDE)
+        runtime_failure.assert_not_called()
+
+    async def test_empty_print_result_without_tools_is_visible_failure(self) -> None:
+        append_event, append_finished, runtime_success, runtime_failure = await self._run_print_case([
+            b'{"type":"result","result":"","session_id":"provider"}\n',
+        ])
 
         terminal = append_finished.await_args.args[1]
         self.assertEqual(terminal["exit_code"], 1)
@@ -2251,9 +2321,10 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(sibling["settings"]), {"env": {cap_name: "5"}})
         self.assertEqual(
             json.loads(command[command.index("--settings") + 1]),
-            {"env": {cap_name: "3"}},
+            {**print_routing_settings(manifest), "env": {cap_name: "3"}},
         )
-        self.assertNotIn("--settings", inherited_command)
+        self.assertEqual(json.loads(inherited_command[inherited_command.index("--settings") + 1]),
+                         print_routing_settings(manifest))
         self.assertEqual(limited["setting_sources"], ["user", "project", "local"])
         self.assertEqual(limited["thinking"], inherited["thinking"])
         self.assertEqual(limited["permission_mode"], inherited["permission_mode"])
@@ -2297,7 +2368,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(captured_options["permission_mode"], "plan")
-        self.assertEqual(agent_server.CLAUDE_SDK_CONFIGURATION_VERSION, 10)
+        self.assertEqual(agent_server.CLAUDE_SDK_CONFIGURATION_VERSION, 11)
         self.assertNotIn("disallowed_tools", captured_options)
         self.assertEqual(
             captured_options["allowed_tools"],
@@ -2313,6 +2384,9 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
             system_prompt,
         )
         self.assertNotIn("Use the `agentsdock` provider tool", system_prompt)
+        self.assertIn("An AgentsDock @Chat is not a native Claude session", system_prompt)
+        self.assertIn("A native success receipt is not AgentsDock delivery", system_prompt)
+        self.assertIn("Do not assume a selected mention is a one-use --target-index handle", system_prompt)
         self.assertEqual(
             captured_options["thinking"],
             {"type": "adaptive", "display": "summarized"},
@@ -2328,7 +2402,7 @@ class ClaudeSDKRunnerTests(unittest.IsolatedAsyncioTestCase):
         hooks = captured_options["hooks"]
         self.assertEqual(
             [matcher.matcher for matcher in hooks["PreToolUse"]],
-            [agent_server.CLAUDE_PROVIDER_MCP_TOOL_NAME],
+            [agent_server.CLAUDE_PROVIDER_MCP_TOOL_NAME, NATIVE_CHAT_TOOL_MATCHER],
         )
         self.assertEqual(result, {"behavior": "allow"})
         permission.assert_awaited_once_with(

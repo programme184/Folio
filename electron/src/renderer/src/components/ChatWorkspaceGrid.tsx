@@ -46,6 +46,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
 }) {
   useLocale()
   const workspaces = useAppStore(state => state.chatWorkspaces)
+  const barVisible = useAppStore(state => state.chatWorkspaceBarVisible)
   const activeId = useAppStore(state => state.activeChatWorkspaceId)
   const profileId = useAppStore(state => state.activeProfileId)
   const profileGeneration = useAppStore(state => state.profileGeneration)
@@ -82,7 +83,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     notifyTimelineViewportLayout('begin')
     const frame = requestAnimationFrame(() => notifyTimelineViewportLayout('end'))
     return () => cancelAnimationFrame(frame)
-  }, [effectiveCount, threeColumns, activeId])
+  }, [effectiveCount, threeColumns, activeId, barVisible])
   useEffect(() => setBrowsingPanes(new Set()), [activeId, profileId, profileGeneration, serverIdentity])
   useEffect(() => setBrowsingPanes(current => {
     const changed = [...current].filter(pane => panes[pane] !== browsingSessionIdsRef.current[pane])
@@ -292,11 +293,11 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     })
     useAppStore.getState().closeChatPane(pane)
   }
-  return <div className="chat-grid-workspace">
-    <header className="workspace-tabs-bar">
+  return <div className={`chat-grid-workspace${barVisible ? '' : ' plain-chat-mode'}`}>
+    {barVisible && <header className="workspace-tabs-bar">
       {!sidebarVisible && <button type="button" className="icon-button" onClick={onSidebarToggle} aria-label={t('chatWorkspace.showSidebar')}><PanelLeft size={16} /></button>}
       <ChatWorkspaceTabs key={JSON.stringify([profileId, profileGeneration, serverIdentity])} />
-      <div className="workspace-layout-picker" role="group" aria-label={t('chatWorkspace.layout')}>
+      {workspaces.length > 0 && <div className="workspace-layout-picker" role="group" aria-label={t('chatWorkspace.layout')}>
         {([1, 2, 3, 'columns', 4] as const).map(value => <button key={value} type="button" className="icon-button"
           aria-label={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })} title={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
           aria-pressed={value === 'columns' ? threeColumns : effectiveCount === value && !threeColumns}
@@ -307,8 +308,8 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
           }}>
           {value === 1 ? <Square size={15} /> : value === 2 ? <Columns2 size={15} /> : value === 'columns' ? <Columns3 size={15} /> : value === 4 ? <Grid2X2 size={15} /> : <span className="three-pane-icon" aria-hidden="true"><span /><span /><span /></span>}
         </button>)}
-      </div>
-    </header>
+      </div>}
+    </header>}
     <div ref={gridRef} className={`workspace-chat-grid chat-split-view${effectiveCount >= 3 && !threeColumns ? ' short' : ''}`} data-pane-count={effectiveCount} data-three-pane-layout={threeColumns ? 'columns' : 'split'}
       style={{ '--workspace-column': `${ratios.column}%`, '--workspace-row': `${ratios.row}%`,
         '--workspace-first-column': `${ratios.first}%`, '--workspace-second-column': `${ratios.second}%` } as CSSProperties}>
@@ -361,6 +362,7 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
 }) {
   const sessions = useAppStore(state => state.sessions)
   const folderOrder = useAppStore(state => state.folderOrder)
+  const workspaceId = useAppStore(state => state.activeChatWorkspaceId)
   const creatingChat = useAppStore(state => state.creatingChat)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const [query, setQuery] = useState('')
@@ -384,7 +386,7 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
   })
   const createChat = async (folder?: string) => {
     const before = new Set(useAppStore.getState().sessions.map(session => session.id))
-    await useAppStore.getState().requestNewChat(folder)
+    await useAppStore.getState().requestNewChat(workspaceId ? { workspaceId, pane, folder } : folder)
     const created = useAppStore.getState().sessions.find(session => !before.has(session.id))
     if (created) await onSelectSession(created.id)
   }
@@ -400,6 +402,10 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
       </div>
       {onChooseServer && <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={selectedProfileId} onChooseProfile={onChooseServer} /></div>}
     </div>
+    <button type="button" className="primary-button empty-pane-new-chat" disabled={creatingChat || Boolean(switchingProfileId)}
+      onClick={() => void createChat()}>
+      <Plus size={16} aria-hidden="true" />{t('chatWorkspace.newChat')}
+    </button>
     <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
       value={query} onChange={event => setQuery(event.target.value)} />
     <div className="empty-pane-chat-list">

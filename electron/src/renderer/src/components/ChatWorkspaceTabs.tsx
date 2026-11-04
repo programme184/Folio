@@ -19,6 +19,7 @@ export function ChatWorkspaceTabs() {
   const dragScope = useRef<string | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
   const title = (workspace: ChatWorkspace) => workspace.title
+    || (workspace.id === 'workspace-main' || workspace.id.startsWith('workspace-main:') ? t('chatWorkspace.default') : '')
     || sessions.find(session => session.id === workspace.panes.primary)?.title
     || t('chatWorkspace.untitled')
   const scope = () => {
@@ -83,6 +84,7 @@ export function ChatWorkspaceTabs() {
   }
 
   return <div className="workspace-tab-controls">
+    {!workspaces.length && <span className="workspace-empty-label">{t('chatWorkspace.tabs')}</span>}
     <DndContext sensors={sensors} collisionDetection={args => {
       const point = args.pointerCoordinates
       const rect = tabsRef.current?.getBoundingClientRect()
@@ -95,7 +97,7 @@ export function ChatWorkspaceTabs() {
       <div ref={tabsRef} className="chat-workspace-tabs" role="tablist" aria-label={t('chatWorkspace.tabs')}>
         <SortableContext items={workspaces.map(workspace => workspace.id)} strategy={horizontalListSortingStrategy}>
           {workspaces.map(workspace => <WorkspaceTab key={workspace.id} workspace={workspace} title={title(workspace)}
-            active={workspace.id === activeId} closeable={workspaces.length > 1} disabled={switching}
+            active={workspace.id === activeId} closeable disabled={switching}
             renaming={renaming === workspace.id} onRename={value => setRenaming(value ? workspace.id : null)} onKeyDown={keyDown} />)}
         </SortableContext>
       </div>

@@ -138,10 +138,19 @@ export interface ClaudeRuntimeSnapshot {
   context_usage_refreshed?: boolean
   /** Native Claude current/latest goal; absent on older servers. */
   goal?: ClaudeGoal | null
-  /** Native command accepted; awaiting an authoritative goal status record. */
+  /** Native goal request accepted; command confirmation can lag the goal record. */
   goal_starting?: boolean
   /** A native goal command was accepted but later rejected by Claude. */
   goal_error?: string | null
+  /** Next durable goal command waiting in the existing message queue. */
+  queued_goal?: {
+    queued_id: string
+    condition: string
+    position: number
+    paused: boolean
+    pause_reason: 'stopped' | 'delivery_uncertain' | null
+    queued_count: number
+  } | null
   /** The initial provider transcript goal projection is still loading. */
   goal_loading?: boolean
 }
@@ -989,6 +998,7 @@ export interface QueuedRunNowResponse {
   retryable?: boolean
   delivery_uncertain?: boolean
   native_steer?: boolean
+  chat_access_applied?: boolean
   replays_interrupted_message?: boolean
   message?: string | null
   remaining?: number | null
@@ -1046,6 +1056,19 @@ export interface Event extends SharedChatAttribution {
   mailbox_wake_id?: string | null
   mailbox_wake_through_seq?: number | null
   provider_generated?: boolean | null
+  /** Native background-task wake provenance; an empty input is a run boundary, not user text. */
+  parent_run_id?: string | null
+  parent_run_ids?: string[] | null
+  provider_task_id?: string | null
+  provider_task_ids?: string[] | null
+  provider_task_type?: string | null
+  provider_tool_use_id?: string | null
+  provider_wake_kind?: 'task' | 'schedule' | null
+  provider_schedule_id?: string | null
+  provider_schedule_ids?: string[] | null
+  provider_native_wake_id?: string | null
+  provider_concurrent_task_ids?: string[] | null
+  provider_admission_after_run_id?: string | null
   provider_input_sha256?: string | null
   phase?: string | null
   /** Durable summary placement at its first streamed section, without changing its ledger sequence. */
@@ -2344,6 +2367,8 @@ export interface TimelinePinsChanged {
   updated_at: string
 }
 
+export type SidebarSortMode = 'default' | 'latest' | 'name'
+
 export interface BootstrapPayload {
   /** A local write failed due to storage exhaustion during this app session. */
   storageFull?: boolean
@@ -2363,6 +2388,7 @@ export interface BootstrapPayload {
   groupUnreadChats?: boolean
   includeCronInUnread?: boolean
   groupRunningChats?: boolean
+  sidebarSortMode?: SidebarSortMode
   archivedCollapsed: boolean
   inspectorVisible: boolean
   /** Present for profile-aware bootstraps; omitted by the legacy single-server path. */

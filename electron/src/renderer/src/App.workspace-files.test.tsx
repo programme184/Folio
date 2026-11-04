@@ -66,7 +66,7 @@ describe('App split workspace files', () => {
       profiles: [{ id: 'profile-a', name: 'Alpha', serverUrl: 'https://alpha.example:7850', serverIdentity: 'server-a', hasAccessToken: true, serverSetupComplete: true, connectionState: 'online', cachedUnreadCount: 0 }],
       activeProfileId: 'profile-a', profileGeneration: 4, switchingProfileId: null, sessions,
       selectedSessionId: 'chat-a', chatPanes: { primary: 'chat-a', secondary: 'chat-b' }, focusedChatPane: 'primary',
-      chatPaneCount: 2, activeChatWorkspaceId: 'workspace-a',
+      chatPaneCount: 2, activeChatWorkspaceId: 'workspace-a', chatWorkspaceBarVisible: true,
       chatWorkspaces: [{ id: 'workspace-a', panes: { primary: 'chat-a', secondary: 'chat-b' }, focusedPane: 'primary', paneCount: 2, columnRatio: 0.5, rowRatio: 0.5 }],
       inspectorVisible: false, health: { ok: true, capabilities: { workspace_files: { available: true, version: 6, required: false, message: '', action: null } } },
       error: null, storageFull: false, uploadsBySession: {}, uploadPathsBySession: {}
@@ -221,7 +221,7 @@ describe('App split workspace files', () => {
     render(<StrictMode><App /></StrictMode>)
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: 'chat-b', path: 'image.png' } })))
     expect(await screen.findByRole('img', { name: 'image.png' })).toHaveAttribute('src', 'agentsdock-media://workspace/profile-a/4/chat-b/image.png')
-    fireEvent.click(screen.getAllByRole('button', { name: /Chat.*pinned/i })[1])
+    fireEvent.click(screen.getByRole('button', { name: /Chat.*pinned/i }))
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-agent-file', { detail: { sessionId: 'chat-a', file: { id: 'artifact', session_id: 'chat-a', filename: 'attachment.png', content_type: 'image/png' } } })))
     expect(await screen.findByRole('img', { name: 'attachment.png' })).toHaveAttribute('src', 'agentsdock-media://file/profile-a/4/chat-a/artifact')
     expect(useAppStore.getState().focusedChatPane).toBe('primary')

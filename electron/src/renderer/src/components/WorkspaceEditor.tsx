@@ -256,6 +256,7 @@ interface PendingWorkspaceCreate {
   kind: WorkspaceCreateKind
   creating: boolean
   error: string | null
+  placeholder?: string
 }
 
 interface PendingUntitledSave {
@@ -266,6 +267,7 @@ interface PendingUntitledSave {
   closeAfterSave: boolean
   overwriteConfirmed: boolean
   error: string | null
+  inline?: boolean
 }
 
 interface PendingWorkspaceFileOperation {
@@ -290,6 +292,8 @@ export type WorkspaceReferenceResolution =
 
 export interface WorkspaceEditorProps {
   chatContent: ReactNode
+  /** Replaces the redundant pinned-Chat strip while viewing a conversation. */
+  chatHeader?: ReactNode
   workspaceKey: string
   session: Session
   profileScope: WorkspaceProfileScope | null
@@ -303,7 +307,7 @@ export interface WorkspaceEditorProps {
   filesOnly?: boolean
   onActivate?: () => void
   onFileOpen?: () => void
-  /** Keep Chat and files inside one chat pane without nested editor splits. */
+  /** Scope files and commands to this chat pane, independently of its editor layout. */
   tabbedPane?: boolean
   paneActive?: boolean
   paneFocused?: boolean
@@ -318,6 +322,7 @@ function folderLabel(path: string): string {
 
 export function WorkspaceEditor({
   chatContent,
+  chatHeader,
   workspaceKey,
   session,
   profileScope,
@@ -336,14 +341,14 @@ export function WorkspaceEditor({
   paneFocused = true
 }: WorkspaceEditorProps) {
   useLocale()
-  const onFileOpenRef = useRef(onFileOpen)
-  onFileOpenRef.current = onFileOpen
   const gitLabels = useWorkspaceGitLabels()
   const [changesOpen, setChangesOpen] = useState(false)
   const [changesVisited, setChangesVisited] = useState(false)
   const changesOpenRef = useRef(changesOpen)
   changesOpenRef.current = changesOpen
   const gitAvailable = Boolean(profileScope && window.agentsDock.workspaceGit && !window.agentsDock.sharedChat)
+  const onFileOpenRef = useRef(onFileOpen)
+  onFileOpenRef.current = onFileOpen
   const instanceId = useId().replace(/:/g, '')
   const preferenceKey = `workspace-editor:${session.id}`
   const cwd = session.cwd ?? ''
@@ -383,14 +388,15 @@ export function WorkspaceEditor({
   const memoryMatches = memory?.sessionId === session.id && memory.cwd === cwd
   const memoryFiles = memoryMatches
     ? memory.openFiles.filter(file => (
-      !file.artifact || agentFileBelongsToSession(file.artifact, session.id)
+      retainWorkspaceDraft(file)
+      && (!file.artifact || agentFileBelongsToSession(file.artifact, session.id))
     ))
     : []
   const memoryPaths = new Set(memoryFiles.map(file => file.path))
   const [openFiles, setOpenFiles] = useState<OpenWorkspaceFile[]>(memoryFiles)
   const [activePath, setActivePath] = useState<string | null>(() => memory?.activePath && memoryPaths.has(memory.activePath) ? memory.activePath : null)
-  const [secondaryPath, setSecondaryPath] = useState<string | null>(() => !tabbedPane && memory?.secondaryPath && memoryPaths.has(memory.secondaryPath) ? memory.secondaryPath : null)
-  const [activeGroup, setActiveGroup] = useState<EditorGroupId>(() => !tabbedPane && memoryMatches ? memory.activeGroup ?? 'primary' : 'primary')
+  const [secondaryPath, setSecondaryPath] = useState<string | null>(() => memory?.secondaryPath && memoryPaths.has(memory.secondaryPath) ? memory.secondaryPath : null)
+  const [activeGroup, setActiveGroup] = useState<EditorGroupId>(() => memoryMatches ? memory.activeGroup ?? 'primary' : 'primary')
   const [restored, setRestored] = useState(memoryMatches)
   const pendingPaneOpenRef = useRef<(() => void) | null>(null)
   const paneOwnershipRef = useRef({ tabbedPane, paneActive, paneFocused, profileScope, sessionId: session.id, cwd, restored })
@@ -446,7 +452,7 @@ export function WorkspaceEditor({
   const [editorSplit, setEditorSplit] = useState(readEditorSplitPreference)
   const [pdfFullPath, setPdfFullPath] = useState<string | null>(null)
   const [filePresentation, setFilePresentation] = useState<FilePresentation>(() => (
-    memoryMatches ? memory.filePresentation ?? 'full' : 'full'
+    memoryMatches ? memory.filePresentation ?? (tabbedPane ? 'split' : 'full') : tabbedPane ? 'split' : 'full'
   ))
   const [markdownViewModes, setMarkdownViewModes] = useState<Map<string, MarkdownViewMode>>(() => (
     memoryMatches ? new Map(memory.markdownViewModes ?? []) : new Map()
@@ -505,6 +511,7 @@ export function WorkspaceEditor({
   const revealRequestSequence = useRef(0)
   const workspaceMutationRef = useRef<PendingWorkspaceMutation | null>(null)
   const pendingCreateRef = useRef(pendingCreate)
+  const pendingUntitledSaveRef = useRef(pendingUntitledSave)
   const workspaceFileOperationsRef = useRef(new Map<string, PendingWorkspaceFileOperation>())
   const workspaceMetadataSyncsRef = useRef(new Map<string, Set<symbol>>())
   const untitledSequenceRef = useRef(0)
@@ -534,15 +541,16 @@ export function WorkspaceEditor({
   markdownViewModesRef.current = markdownViewModes
   directoriesRef.current = directories
   pendingCreateRef.current = pendingCreate
+  pendingUntitledSaveRef.current = pendingUntitledSave
   creationAuthorityRef.current = {
     available,
     capabilityVersion,
     archived: Boolean(session.archived)
   }
 
-  const focusedPath = !tabbedPane && activeGroup === 'secondary' && secondaryPath ? secondaryPath : activePath
+  const focusedPath = activeGroup === 'secondary' && secondaryPath ? secondaryPath : activePath
   const primaryFile = openFiles.find(file => file.path === activePath) ?? null
-  const secondaryFile = !tabbedPane ? openFiles.find(file => file.path === secondaryPath) ?? null : null
+  const secondaryFile = openFiles.find(file => file.path === secondaryPath) ?? null
   const activeFile = openFiles.find(file => file.path === focusedPath) ?? null
   const paletteRenderGroup: EditorGroupId | null = paletteGroup === 'secondary'
     ? secondaryPath ? 'secondary' : activePath ? 'primary' : null
@@ -736,7 +744,8 @@ export function WorkspaceEditor({
           return next
         })
         const restoredTabs = persisted.tabs.filter(tab => (
-          !tab.artifact || agentFileBelongsToSession(tab.artifact, session.id)
+          (!tab.untitled || Boolean(tab.draft))
+          && (!tab.artifact || agentFileBelongsToSession(tab.artifact, session.id))
         ))
         const restoredFiles = restoredTabs.slice(0, MAX_OPEN_TABS).map(tab => (
           tab.artifact
@@ -753,12 +762,12 @@ export function WorkspaceEditor({
             ? persisted.activePath
             : null
         ))
-        if (!tabbedPane) setSecondaryPath(current => current ?? (
+        setSecondaryPath(current => current ?? (
           persisted.secondaryPath && restoredFiles.some(file => file.path === persisted.secondaryPath)
             ? persisted.secondaryPath
             : null
         ))
-        if (!tabbedPane) setActiveGroup(current => current === 'secondary' || persisted.activeGroup !== 'secondary'
+        setActiveGroup(current => current === 'secondary' || persisted.activeGroup !== 'secondary'
           ? current
           : persisted.secondaryPath ? 'secondary' : 'primary')
         if (!filePresentationTouchedRef.current) {
@@ -769,10 +778,12 @@ export function WorkspaceEditor({
       .catch(() => undefined)
       .finally(() => { if (!cancelled) setRestored(true) })
     return () => { cancelled = true }
-  }, [cwd, memoryMatches, preferenceKey, profileScope, session.id, tabbedPane])
+  }, [cwd, memoryMatches, preferenceKey, profileScope, session.id])
 
   const persistWorkspace = useCallback(() => {
-    const currentFiles = openFilesRef.current
+    // Empty, unnamed buffers are temporary UI, not files. Keep them visible
+    // while editing, but do not resurrect them when this chat is reopened.
+    const currentFiles = openFilesRef.current.filter(retainWorkspaceDraft)
     const currentActivePath = activePathRef.current
     const currentSecondaryPath = secondaryPathRef.current
     const currentActiveGroup = activeGroupRef.current
@@ -862,7 +873,7 @@ export function WorkspaceEditor({
   }, [persistWorkspace, restored])
 
   const currentEditorGroup = (): EditorGroupId | null => (
-    !paneOwnershipRef.current.tabbedPane && activeGroupRef.current === 'secondary' && secondaryPathRef.current
+    activeGroupRef.current === 'secondary' && secondaryPathRef.current
       ? 'secondary'
       : activePathRef.current ? 'primary' : null
   )
@@ -911,7 +922,6 @@ export function WorkspaceEditor({
 
   const requestOpenPalette = (returnToChatOnCancel = false) => {
     if (!paneOwnershipRef.current.tabbedPane) onActivate?.()
-    setChangesOpen(false)
     if (available !== true) {
       setWorkspaceError(capabilityMessage)
       return
@@ -938,8 +948,7 @@ export function WorkspaceEditor({
   }
 
   const activateFilePath = (path: string, group: EditorGroupId = activeGroupRef.current): void => {
-    if (paneOwnershipRef.current.tabbedPane) group = 'primary'
-    else {
+    if (!paneOwnershipRef.current.tabbedPane) {
       onActivate?.()
       onFileOpenRef.current?.()
     }
@@ -1797,7 +1806,7 @@ export function WorkspaceEditor({
     for (const path of nextExpanded) void loadDirectory(path, false, generation)
   }
 
-  const createUntitledFile = (directory = '') => {
+  const createUntitledFile = (directory = '', focusEditor = true) => {
     if (!creationAvailable) {
       setWorkspaceError(session.archived
         ? t('editor.archivedChatsAreReadOnly')
@@ -1827,15 +1836,29 @@ export function WorkspaceEditor({
     activateFilePath(path)
     setPendingClosePath(null)
     setWorkspaceError(null)
-    setEditorNavigation({
+    if (focusEditor) setEditorNavigation({
       path,
       line: 1,
       column: 1,
       requestId: ++editorNavigationSequence.current
     })
+    return file
   }
 
-  const requestNewWorkspaceFile = (target?: WorkspaceEntry | null) => {
+  const revealCreateDirectory = (directory: string) => {
+    const ancestors = directory ? workspaceParentDirectories(`${directory}/.agentsdock-new-entry`) : []
+    setExpandedDirectories(current => new Set([...current, ...ancestors]))
+    for (const candidate of ['', ...ancestors]) {
+      if (!directoryAt(directoriesRef.current, candidate)) void loadDirectory(candidate)
+    }
+  }
+
+  const requestNewWorkspaceFile = (target?: WorkspaceEntry | null, inline = false) => {
+    if (pendingCreateRef.current || pendingUntitledSaveRef.current?.inline) {
+      window.dispatchEvent(new Event('agentsdock:focus-pending-create'))
+      return
+    }
+    if (workspaceMutationRef.current) return
     const directory = target === null
       ? ''
       : target
@@ -1846,14 +1869,21 @@ export function WorkspaceEditor({
             if (file?.origin === 'workspace') return workspaceParentDirectory(file.path)
             return file?.origin === 'untitled' ? file.saveDirectory ?? '' : ''
           })()
-    createUntitledFile(directory)
+    const file = createUntitledFile(directory, !inline)
+    if (file && inline) {
+      setPendingUntitledSave({
+        path: file.path, directory, name: '', saving: false,
+        closeAfterSave: false, overwriteConfirmed: false, error: null, inline: true
+      })
+      revealCreateDirectory(directory)
+    }
   }
 
   const requestCreateWorkspaceEntry = (
     kind: WorkspaceCreateKind,
     target?: WorkspaceEntry | null
   ) => {
-    if (pendingCreateRef.current) {
+    if (pendingCreateRef.current || pendingUntitledSaveRef.current?.inline) {
       window.dispatchEvent(new Event('agentsdock:focus-pending-create'))
       return
     }
@@ -2365,7 +2395,7 @@ export function WorkspaceEditor({
       }
       setWorkspaceError(message)
     }
-    const targetGroup = tabbedPane ? 'primary' : paletteLease?.targetGroup ?? options.targetGroup ?? (
+    const targetGroup = paletteLease?.targetGroup ?? options.targetGroup ?? (
       activePathRef.current && activeGroupRef.current === 'secondary' ? 'secondary' : 'primary'
     )
     if (!paletteLeaseIsCurrent(paletteLease)) return false
@@ -3221,8 +3251,10 @@ export function WorkspaceEditor({
     return null
   }
 
-  async function commitUntitledSave(): Promise<void> {
-    const pending = pendingUntitledSave
+  async function commitUntitledSave(inlineName?: string): Promise<void> {
+    const pending = pendingUntitledSave && inlineName !== undefined
+      ? { ...pendingUntitledSave, name: inlineName }
+      : pendingUntitledSave
     if (!pending || pending.saving) return
     const file = openFilesRef.current.find(candidate => candidate.path === pending.path)
     if (!file || file.origin !== 'untitled') {
@@ -3265,8 +3297,8 @@ export function WorkspaceEditor({
     if (knownTarget && !pending.overwriteConfirmed) {
       setPendingUntitledSave(current => current ? {
         ...current,
-        overwriteConfirmed: true,
-        error: t('editor.targetExists', { path: targetPath })
+        overwriteConfirmed: !pending.inline,
+        error: t(pending.inline ? 'editor.newFileAlreadyExists' : 'editor.targetExists', { path: targetPath })
       } : current)
       return
     }
@@ -3321,8 +3353,8 @@ export function WorkspaceEditor({
           setPendingUntitledSave(current => current ? {
             ...current,
             saving: false,
-            overwriteConfirmed: true,
-            error: t('editor.targetExists', { path: targetPath })
+            overwriteConfirmed: !pending.inline,
+            error: t(pending.inline ? 'editor.newFileAlreadyExists' : 'editor.targetExists', { path: targetPath })
           } : current)
           return
         }
@@ -3369,7 +3401,9 @@ export function WorkspaceEditor({
       }
       setPendingClosePath(current => current === pending.path ? targetPath : current)
       setPendingReloadPath(current => current === pending.path ? targetPath : current)
-      setEditorNavigation(current => current?.path === pending.path ? { ...current, path: targetPath } : current)
+      setEditorNavigation(current => pending.inline ? {
+        path: targetPath, line: 1, column: 1, requestId: ++editorNavigationSequence.current
+      } : current?.path === pending.path ? { ...current, path: targetPath } : current)
       setWorkspaceRoot(saved.root)
       const nextExpanded = new Set(expandedDirectories)
       for (const directory of workspaceParentDirectories(targetPath)) nextExpanded.add(directory)
@@ -3552,6 +3586,7 @@ export function WorkspaceEditor({
     }
     setPendingClosePath(current => current === path ? null : current)
     setPendingReloadPath(current => current === path ? null : current)
+    setPendingUntitledSave(current => current?.path === path ? null : current)
     setOpeningPath(current => current === path ? null : current)
   }
 
@@ -3562,8 +3597,8 @@ export function WorkspaceEditor({
   const pdfPath = primaryFile?.viewerKind === 'pdf' ? primaryFile.path : null
   const pdfFull = pdfFullPath !== null && pdfFullPath === pdfPath
   const pdfReader = Boolean(pdfPath) && !tabbedPane && !onReturnToChat && !changesOpen
-  const editorOnly = fileActive && (Boolean(onReturnToChat) || (!tabbedPane && (pdfReader ? pdfFull : filePresentation === 'full')))
-  const splitActive = !changesOpen && fileActive && !onReturnToChat && (tabbedPane || (pdfReader ? !pdfFull : filePresentation === 'split'))
+  const editorOnly = fileActive && (Boolean(onReturnToChat) || (!changesOpen && (pdfReader ? pdfFull : filePresentation === 'full')))
+  const splitActive = !changesOpen && fileActive && !onReturnToChat && (pdfReader ? !pdfFull : filePresentation === 'split')
   const splitSide = pdfReader && !pdfFull ? 'right' : editorSplit.side
   const splitStyle = splitActive
     ? { '--workspace-editor-width': `${editorSplit.editorPercent}%` } as CSSProperties
@@ -3756,7 +3791,14 @@ export function WorkspaceEditor({
           ariaLabel={t('editor.contentsOf', { name: editorContentLabel(file) })}
           maxBytes={maxEditableFileBytes}
           initialViewState={viewStatesRef.current.get(editorViewStateKey(group, file.path))}
-          navigationRequest={focused && paneOwnsCommands() && activePath !== null && !changesOpen && editorNavigation?.path === file.path ? editorNavigation : undefined}
+          navigationRequest={focused && paneOwnsCommands() && activePath !== null && editorNavigation?.path === file.path ? editorNavigation : undefined}
+          intelligence={profileScope && file.origin === 'workspace' && !file.truncated ? {
+            scope: profileScope,
+            sessionId: session.id,
+            cwd,
+            active: paneActive && activePath !== null && !file.loading,
+            onNavigate: location => { void openFile(location.path, undefined, location, { targetGroup: group }) }
+          } : undefined}
           onLimitExceeded={() => updateFile(file.path, current => ({
             ...current,
             error: t('editor.editSizeLimit', { size: formatByteSize(maxEditableFileBytes) })
@@ -3823,7 +3865,7 @@ export function WorkspaceEditor({
                   })
                 }}
               >{t('editor.openCompleteFile')}</button>}
-              {!tabbedPane && group === 'primary' && !secondaryPath && <button
+              {group === 'primary' && !secondaryPath && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 aria-label={t('editor.splitEditorRight')}
@@ -3872,7 +3914,7 @@ export function WorkspaceEditor({
                 <Minimize2 size={13} aria-hidden="true" />
                 <span className="workspace-editor-expand-label">{t('editor.showChats')}</span>
               </button>}
-              {focused && !tabbedPane && !onReturnToChat && <button
+              {focused && !onReturnToChat && <button
                 type="button"
                 className="workspace-editor-expand-button"
                 aria-label={editorOnly ? t('editor.restoreChatSplitView') : t('editor.showFileWorkspaceFullScreen')}
@@ -4119,21 +4161,29 @@ export function WorkspaceEditor({
           expanded={expandedDirectories}
           mutationsAvailable={!multiRootExplorer && mutationsAvailable && !workspaceMutationPath}
           creationAvailable={creationAvailable && multiRootCreationAvailable && !workspaceMutationPath}
-          pendingCreate={pendingCreate}
+          pendingCreate={pendingUntitledSave?.inline ? {
+            directory: pendingUntitledSave.directory,
+            kind: 'file',
+            creating: pendingUntitledSave.saving,
+            error: pendingUntitledSave.error,
+            placeholder: openFiles.find(file => file.path === pendingUntitledSave.path)?.name
+          } : pendingCreate}
           onOpen={path => void (multiRootExplorer ? openAbsoluteFile(path) : openFile(path))}
-          onOpenToSide={tabbedPane || multiRootExplorer ? undefined : openFileToSide}
+          onOpenToSide={multiRootExplorer ? undefined : openFileToSide}
           onToggle={toggleDirectory}
           onLoadMore={path => void loadDirectory(path, true)}
           onRefresh={refreshExplorer}
           onRequestCreate={(kind, target) => {
-            if (kind === 'file' && !multiRootExplorer) requestNewWorkspaceFile(target)
+            if (kind === 'file' && !multiRootExplorer) requestNewWorkspaceFile(target, true)
             else requestCreateWorkspaceEntry(kind, target)
           }}
-          onCreateCommit={name => void createWorkspaceEntry(name)}
-          onCreateErrorClear={() => setPendingCreate(current => (
-            current?.error ? { ...current, error: null } : current
-          ))}
+          onCreateCommit={name => void (pendingUntitledSave?.inline ? commitUntitledSave(name) : createWorkspaceEntry(name))}
+          onCreateErrorClear={() => {
+            if (pendingUntitledSave?.inline) setPendingUntitledSave(current => current ? { ...current, error: null } : current)
+            else setPendingCreate(current => current?.error ? { ...current, error: null } : current)
+          }}
           onCreateCancel={() => {
+            if (pendingUntitledSave?.inline && !pendingUntitledSave.saving) setPendingUntitledSave(null)
             if (!pendingCreate?.creating) setPendingCreate(null)
           }}
           onCopyPath={(entry, relative) => void copyWorkspaceEntryPath(entry, relative)}
@@ -4146,9 +4196,10 @@ export function WorkspaceEditor({
           }}
         />
     </>, filesHost)}
+    {!filesOnly && (!tabbedPane || paneActive) && !fileActive && chatHeader}
     <nav
       ref={splitTabStripRef}
-      hidden={filesOnly || (tabbedPane && !paneActive)}
+      hidden={filesOnly || (tabbedPane && !paneActive) || Boolean(chatHeader && !fileActive)}
       className={`workspace-editor-tab-strip${tabbedPane ? ' workspace-editor-tabbed-pane' : ''}${splitActive ? ` workspace-editor-tab-strip-split workspace-editor-${splitSide}` : ''}`}
       aria-label={t('editor.workspaceTabs')}
       style={splitStyle}
@@ -4229,7 +4280,7 @@ export function WorkspaceEditor({
 
       {paletteOpen && paletteRenderGroup === null && renderFilePalette()}
 
-      {pendingUntitledSave && <form
+      {pendingUntitledSave && !pendingUntitledSave.inline && <form
         className="workspace-editor-save-picker"
         role="dialog"
         aria-modal="true"
@@ -4677,7 +4728,7 @@ function WorkspaceCreateRow({
         disabled={pending.creating}
         autoFocus
         aria-label={pending.kind === 'directory' ? t('editor.newFolderName') : t('editor.newFileName')}
-        placeholder={pending.kind === 'directory' ? 'folder name' : 'file name'}
+        placeholder={pending.placeholder ?? (pending.kind === 'directory' ? t('editor.newFolderName') : t('editor.newFileName'))}
         onChange={event => {
           setName(event.target.value)
           if (pending.error) onErrorClear()
@@ -4874,6 +4925,10 @@ function openExternalFile(file: WorkspaceFile, writesAvailable = false): OpenWor
     lines: countLines(file.content),
     error: null
   }
+}
+
+function retainWorkspaceDraft(file: OpenWorkspaceFile): boolean {
+  return file.origin !== 'untitled' || file.draft.length > 0 || file.saving
 }
 
 function openUntitledFile(

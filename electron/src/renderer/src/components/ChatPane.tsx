@@ -59,6 +59,7 @@ export const ChatPane = memo(function ChatPane({
   const profileGeneration = useAppStore(state => state.profileGeneration)
   const serverIdentity = useAppStore(state => state.profiles.find(profile => profile.id === state.activeProfileId)?.serverIdentity ?? null)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
+  const workspaceMode = useAppStore(state => state.chatWorkspaceBarVisible && state.chatWorkspaces.length > 0)
   const workspaceFilesAvailable = useAppStore(state => state.health === null ? null : state.health.capabilities?.workspace_files?.available === true)
   const workspaceFilesVersion = useAppStore(state => state.health?.capabilities?.workspace_files?.version)
   const workspaceFilesMaxBytes = useAppStore(state => state.health?.capabilities?.workspace_files?.max_text_file_bytes)
@@ -187,10 +188,10 @@ export const ChatPane = memo(function ChatPane({
     useAppStore.getState().setModal('digest', true)
   }
 
-  const conversation = <div className="pane-conversation">
-    <ChatHeader
+  const header = <ChatHeader
       session={session}
-      titleInTab
+      compact={workspaceMode || split}
+      onOpenFile={() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-file', { detail: { sessionId: session.id } }))}
       focused={focused}
       sidebarVisible={sidebarVisible}
       terminalOpen={terminalOpen}
@@ -208,6 +209,7 @@ export const ChatPane = memo(function ChatPane({
       papersOpen={papersOpen}
       onPapersToggle={focused ? onPapersToggle : undefined}
     />
+  const conversation = <div className="pane-conversation">
     <div
       className="chat-workspace"
       onKeyDown={onShortcut}
@@ -249,6 +251,7 @@ export const ChatPane = memo(function ChatPane({
       paneFocused={focused}
       onAskPaper={onAskPaper}
       chatContent={conversation}
+      chatHeader={header}
     />
 
   return <section

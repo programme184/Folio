@@ -52,7 +52,8 @@
       { "from": "node_modules/typescript/LICENSE.txt", "to": "licenses/TypeScript-LICENSE.txt" },
       { "from": "node_modules/typescript/ThirdPartyNoticeText.txt", "to": "licenses/TypeScript-ThirdPartyNotices.txt" },
       { "from": "packaging/connection-qr-NOTICES.txt", "to": "licenses/connection-qr-NOTICES.txt" },
-      { "from": "packaging/tiff-preview-NOTICES.txt", "to": "licenses/tiff-preview-NOTICES.txt" }
+      { "from": "packaging/tiff-preview-NOTICES.txt", "to": "licenses/tiff-preview-NOTICES.txt" },
+      { "from": "packaging/code-intelligence-NOTICES.txt", "to": "licenses/code-intelligence-NOTICES.txt" }
     ],
     "electronFuses": {
       "runAsNode": false,
@@ -140,7 +141,8 @@
     "@noble/hashes": "2.2.0",
     "electron-updater": "^6.8.9",
     "pngjs": "7.0.0",
-    "utif": "3.1.0"
+    "utif": "3.1.0",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -152,6 +154,7 @@
     "@codemirror/lang-python": "^6.2.1",
     "@codemirror/language": "^6.12.4",
     "@codemirror/legacy-modes": "^6.5.3",
+    "@codemirror/lsp-client": "6.3.0",
     "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
@@ -177,6 +180,7 @@
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "^5.2.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",

@@ -16,7 +16,7 @@ const workspaceEditor = vi.hoisted(() => ({ render: vi.fn() }))
 
 vi.mock('../lib/native-files', () => ({ nativeFileRefsFromFiles: nativeFiles.fromFiles }))
 vi.mock('./ChatHeader', () => ({
-  ChatHeader: ({ session, titleInTab, onInspectorToggle }: { session: Session; titleInTab?: boolean; onInspectorToggle?: () => void }) => <div data-testid="chat-header" data-title-in-tab={String(titleInTab)}>
+  ChatHeader: ({ session, titleInTab, compact, onInspectorToggle }: { session: Session; titleInTab?: boolean; compact?: boolean; onInspectorToggle?: () => void }) => <div data-testid="chat-header" data-title-in-tab={String(titleInTab)} data-compact={String(compact)}>
     Header:{session.id}<button type="button" className="inspector-toggle" onClick={onInspectorToggle}>Pane files</button>
   </div>
 }))
@@ -48,7 +48,7 @@ vi.mock('./Composer', () => ({
 vi.mock('./WorkspaceEditor', () => ({
   WorkspaceEditor: (props: WorkspaceEditorProps) => {
     workspaceEditor.render(props)
-    return <div data-testid="pane-workspace-editor">{props.chatContent}</div>
+    return <div data-testid="pane-workspace-editor">{props.chatHeader}{props.chatContent}</div>
   }
 }))
 
@@ -107,7 +107,8 @@ describe('ChatPane', () => {
     renderSecondary()
 
     expect(screen.getByTestId('chat-header')).toHaveTextContent('Header:chat-b')
-    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-title-in-tab', 'true')
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'true')
+    expect(screen.getAllByTestId('chat-header')).toHaveLength(1)
     expect(screen.getByTestId('timeline')).toHaveAttribute('data-session-id', secondary.id)
     expect(screen.getByTestId('timeline')).toHaveAttribute('data-focused', 'false')
     expect(screen.getByTestId('composer')).toHaveAttribute('data-session-id', secondary.id)
@@ -130,6 +131,23 @@ describe('ChatPane', () => {
 
     expect(focusChatPane).toHaveBeenCalledWith('secondary')
     expect(useAppStore.getState().inspectorVisible).toBe(true)
+  })
+
+  it('uses the two-line ordinary header until workspace mode is enabled', () => {
+    const view = render(<ChatPane pane="primary" session={primary} focused split={false} terminalOpen={false} />)
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'false')
+    act(() => useAppStore.setState({ chatWorkspaceBarVisible: true, chatWorkspaces: [{
+      id: 'workspace-main', panes: { primary: primary.id, secondary: null }, focusedPane: 'primary', paneCount: 1,
+      columnRatio: 0.5, rowRatio: 0.5
+    }] }))
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'true')
+    act(() => useAppStore.setState({ chatWorkspaceBarVisible: false }))
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'false')
+    act(() => useAppStore.setState({ chatWorkspaceBarVisible: true }))
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'true')
+    act(() => useAppStore.setState({ chatWorkspaces: [] }))
+    view.rerender(<ChatPane pane="primary" session={primary} focused split={false} terminalOpen={false} />)
+    expect(screen.getByTestId('chat-header')).toHaveAttribute('data-compact', 'false')
   })
 
   it('ignores equivalent health telemetry and unchanged parent renders', () => {

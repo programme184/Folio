@@ -41,7 +41,7 @@ describe('ChatWorkspaceGrid resize ownership', () => {
       ...initialState, activeProfileId: 'a', profileGeneration: 1, profiles: [profile('a')],
       switchingProfileId: null, sessions: [], selectedSessionId: null,
       chatPanes: { primary: null, secondary: null }, focusedChatPane: 'primary', chatPaneCount: 2,
-      activeChatWorkspaceId: 'workspace-main', chatWorkspaces: [workspace('workspace-main')]
+      activeChatWorkspaceId: 'workspace-main', chatWorkspaceBarVisible: true, chatWorkspaces: [workspace('workspace-main')]
     })
   })
 
@@ -73,6 +73,28 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     expect(divider).toHaveAttribute('aria-valuenow', '64')
     return view
   }
+
+  it('creates in the initiating empty pane even when its search has no matches', () => {
+    const requestNewChat = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({ requestNewChat })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const pane = within(view.container.querySelector('[data-chat-pane="secondary"]') as HTMLElement)
+    fireEvent.change(pane.getByRole('searchbox'), { target: { value: 'no matching chat' } })
+    fireEvent.click(pane.getByRole('button', { name: 'New chat' }))
+    expect(requestNewChat).toHaveBeenCalledExactlyOnceWith({ workspaceId: 'workspace-main', pane: 'secondary' })
+  })
+
+  it('creates an ordinary chat before opting into workspaces', () => {
+    const requestNewChat = vi.fn().mockResolvedValue(undefined)
+    useAppStore.setState({ requestNewChat, chatWorkspaces: [], chatWorkspaceBarVisible: false,
+      activeChatWorkspaceId: '', chatPaneCount: 1 })
+    render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
+    expect(requestNewChat).toHaveBeenCalledExactlyOnceWith(undefined)
+    expect(useAppStore.getState().chatWorkspaces).toEqual([])
+  })
 
   it('offers both three-pane arrangements and keeps independent widths', () => {
     const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
@@ -199,7 +221,7 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     fireEvent.click(secondary.getByRole('button', { name: 'Expand Folio' }))
     expect(secondary.getByRole('button', { name: /Other Folio chat/ })).toBeVisible()
     fireEvent.click(secondary.getByRole('button', { name: 'Create chat in Folio' }))
-    expect(requestNewChat).toHaveBeenCalledWith('Folio')
+    expect(requestNewChat).toHaveBeenCalledWith({ workspaceId: 'workspace-main', pane: 'secondary', folder: 'Folio' })
     fireEvent.click(secondary.getByRole('button', { name: 'Create project' }))
     expect(useAppStore.getState().modals.folder).toBe(true)
   })
@@ -207,8 +229,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
   it('opens a newly created project chat in the pane that launched creation', async () => {
     const current = { id: 'current', title: 'Current', backend: 'codex', cwd: '/folio', folder: 'Folio', archived: false } as Session
     const created = { ...current, id: 'created', title: 'New chat' }
-    const requestNewChat = vi.fn(async (folder?: string) => {
-      expect(folder).toBe('Folio')
+    const requestNewChat = vi.fn(async (target?: string | { folder?: string }) => {
+      expect(typeof target === 'string' ? target : target?.folder).toBe('Folio')
       useAppStore.setState({ sessions: [current, created], selectedSessionId: created.id,
         chatPanes: { primary: created.id, secondary: null } })
     })
@@ -248,6 +270,59 @@ describe('ChatWorkspaceGrid resize ownership', () => {
 
     expect(screen.getByTestId('chat-pane-primary')).toHaveAttribute('data-focused', 'false')
     expect(screen.getByTestId('chat-pane-secondary')).toHaveAttribute('data-focused', 'true')
+  })
+
+  it('does not show workspace tabs or layout controls before opting in', () => {
+    useAppStore.setState({ chatWorkspaces: [], chatWorkspaceBarVisible: false, activeChatWorkspaceId: '', chatPaneCount: 1 })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    expect(view.container.querySelector('.workspace-tabs-bar')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.workspace-layout-picker')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.chat-grid-workspace')).toHaveClass('plain-chat-mode')
+  })
+
+  it('reveals an empty bar and creates workspaces only with its plus button', async () => {
+    useAppStore.setState({ chatWorkspaces: [], chatWorkspaceBarVisible: false, activeChatWorkspaceId: '', chatPaneCount: 1 })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(view.container.querySelector('.workspace-tabs-bar')).toBeInTheDocument()
+    expect(view.container.querySelector('.workspace-layout-picker')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.chat-grid-workspace')).not.toHaveClass('plain-chat-mode')
+    expect(screen.queryAllByRole('tab')).toHaveLength(0)
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(view.container.querySelector('.workspace-tabs-bar')).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatWorkspaces).toHaveLength(0)
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'New workspace' })) })
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
+    expect(view.container.querySelector('.workspace-layout-picker')).toBeInTheDocument()
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(view.container.querySelector('.workspace-tabs-bar')).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatWorkspaces).toHaveLength(1)
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'New workspace' })) })
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
+  })
+
+  it('exits empty workspace slots with the toolbar and restores them when reopened', () => {
+    useAppStore.setState({ sessions: [{ id: 'a', title: 'Chat A', backend: 'codex' }],
+      chatPanes: { primary: 'a', secondary: null }, selectedSessionId: 'a',
+      chatWorkspaces: [{ ...workspace('workspace-main'), panes: { primary: 'a', secondary: null } }] })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const grid = view.container.querySelector('.workspace-chat-grid')!
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(view.container.querySelector('.workspace-tabs-bar')).not.toBeInTheDocument()
+    expect(grid).toHaveAttribute('data-pane-count', '1')
+    expect(screen.queryByText('Choose a chat for this pane')).not.toBeInTheDocument()
+    expect(useAppStore.getState().chatWorkspaces).toHaveLength(1)
+    act(() => useAppStore.getState().toggleChatWorkspaceBar())
+    expect(view.container.querySelector('.workspace-chat-grid')).toBe(grid)
+    expect(grid).toHaveAttribute('data-pane-count', '2')
+    expect(screen.getByText('Choose a chat for this pane')).toBeVisible()
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
   })
 
   it('does not let either column divider collapse a neighboring pane', () => {

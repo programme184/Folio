@@ -18,6 +18,7 @@ import { teamAllServersAliasAvailable, teamBulletinAliasAvailable, type TeamNetw
 import { chatBackendChoice, chatBackendSelection, codexCustomProviderAvailable, cursorBackendAvailable, cursorBackendUnavailableReason, runtimeCatalogOptions, runtimeEffortOptions, runtimeSelectionError, runtimeSendAdmissionError, selectableChatBackendChoices } from '@shared/runtime-catalog'
 import { trackEvent } from '../lib/analytics'
 import { messageAnalyticsProps } from '../lib/session-analytics'
+import { COMPOSER_DRAFT_APPEND_EVENT, type ComposerDraftAppendDetail } from '../lib/composer-draft-append'
 import { modelCommandArgument, resolveModelCommand, sessionModelPatch } from '../lib/model-command'
 import { backendLabel, formatBytes, runtimeLabel } from '../lib/format'
 import { CodexModelDiscovery } from './CodexModelDiscovery'
@@ -52,6 +53,13 @@ import {
   type ComposerCommandMetadata,
   type ComposerCommandTrigger
 } from '../lib/composer-commands'
+import {
+  caretAllowsHistoryStep,
+  loadComposerHistory,
+  recordComposerHistory,
+  stepComposerHistory,
+  type ComposerHistoryCursor
+} from '../lib/composer-history'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import {
   canonicalizeLocalRouteHints,
@@ -82,6 +90,7 @@ import {
   isReorderableQueuedTurn,
   isScheduledJobQueuedTurn,
   isSecurePeerDeliveryQueuedTurn,
+  isUserQueuedTurn,
   isSteeringCancellation,
   isSteeringPending,
   isVisibleQueuedTurn,
@@ -136,6 +145,7 @@ import { GeminiImportConnection } from './GeminiImportConnection'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { WorkingDirectoryInput } from './WorkingDirectoryInput'
 import { WorkingDirectoryPopover } from './WorkingDirectoryPopover'
+import { CodeReferencePicker, CodeReferenceShelf, codeReferenceText } from './CodeReferencePicker'
 
 const EMPTY_UPLOADS: AgentFile[] = []
 const EMPTY_UPLOAD_PATHS: NativeFileRef[] = []
@@ -583,6 +593,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const editorLayoutFrameRef = useRef<number | null>(null)
   const paletteBlurTimerRef = useRef<number | null>(null)
   const pendingCaretRef = useRef<number | null>(null)
+  const historyCursorRef = useRef<{ workspaceKey: string; cursor: ComposerHistoryCursor } | null>(null)
   const pendingSelectionRef = useRef<{ start: number; end: number; direction: 'forward' | 'backward' | 'none' } | null>(null)
   const nativeEditSelectionRef = useRef<ComposerNativeEditSelection | null>(null)
   const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
@@ -1049,6 +1060,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       void Promise.all(writes).catch(() => undefined)
     }
     draftContextRef.current = { profileId: activeProfileId, profileGeneration, serverIdentity, sessionId: selectedId, workspaceKey }
+    historyCursorRef.current = null
     setMention(null)
     setMentionCandidates([])
     setTeamMention(null)
@@ -1570,6 +1582,13 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         if (message) setSendFailure({ context: sendContext, message })
       }
       if (sent) {
+        if (consumeComposer && promptOverride === undefined && workspaceKey) {
+          // This closure owns the submitting workspace, even after navigation.
+          recordComposerHistory(workspaceKey, rawOutgoing.trim())
+          if (composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) {
+            historyCursorRef.current = null
+          }
+        }
         trackEvent('message_sent', messageProps)
         if (boundProviderCommand) {
           trackEvent(boundProviderCommand.kind.toLowerCase() === 'skill' ? 'slash_skill_used' : 'slash_command_used')
@@ -1649,6 +1668,13 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     }
   }
 
+  // Shared by the Stop button and Escape in the composer.
+  const requestStop = () => {
+    if (!session || writeDisabled || stopping || !(running || liveCodexChildren > 0)) return
+    if (!confirmInboundDeliveryInterruption(session.id, 'stop')) return
+    void useAppStore.getState().stopTurnForSession(session.id)
+  }
+
   const steerFirstQueued = async () => {
     if (running && session?.backend === 'opencode') { reportActionError(t('opencode.steerUnavailable')); return }
     if (writeDisabled) return
@@ -1664,7 +1690,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         const source = state.sessions.find(candidate => candidate.id === selectedId) ?? session
         return queuedTurnRuntimeAdmissionError(turn, source, state.health, state.runtimeCatalog)
       }, () => Boolean(confirmInboundDeliveryInterruption(selectedId, 'send_now', steerConsent)),
-      asyncQueuedMessageControlsAvailable(useAppStore.getState().health))
+      asyncQueuedMessageControlsAvailable(useAppStore.getState().health), message => reportSteeringNotice(steeringScope, message))
       if (profileIsActive(activeProfileId, profileGeneration)) {
         useAppStore.getState().applyQueuedTurnsResponse(selectedId, request, result.turns)
       }
@@ -1766,6 +1792,32 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     setMentionCandidates(nextMention && selectedId ? currentMentionCandidates(nextMention, selectedId, supportedTargetBackends, crossChatSupported) : [])
     setMentionIndex(0)
   }
+  const appendDraftRef = useRef<(text: string) => void>(() => {})
+  appendDraftRef.current = text => {
+    const existing = draftRef.current
+    const next = `${existing}${existing ? '\n\n' : ''}${text}`
+    pendingCaretRef.current = next.length
+    updateComposerDraft(next, next.length)
+    useAppStore.getState().setDraftForSession(selectedId!, next)
+  }
+  useEffect(() => {
+    const append = (event: Event) => {
+      const detail = (event as CustomEvent<ComposerDraftAppendDetail>).detail
+      const current = useAppStore.getState(), context = draftContextRef.current
+      const sourcePane = event.target instanceof Element ? event.target.closest('[data-chat-pane]') : null
+      const composerPane = textareaRef.current?.closest('[data-chat-pane]') ?? null
+      if (event.defaultPrevented || writeDisabled || !mountedRef.current || !textareaRef.current || !detail?.scope
+        || sourcePane !== composerPane || detail.sessionId !== selectedId || context.sessionId !== selectedId
+        || detail.scope.profileId !== activeProfileId || detail.scope.profileGeneration !== profileGeneration
+        || detail.scope.serverIdentity !== serverIdentity || current.activeProfileId !== activeProfileId
+        || current.profileGeneration !== profileGeneration || activeIdentity(current) !== serverIdentity
+        || current.switchingProfileId || typeof detail.text !== 'string' || !detail.text.trim()) return
+      event.preventDefault()
+      appendDraftRef.current(detail.text)
+    }
+    window.addEventListener(COMPOSER_DRAFT_APPEND_EVENT, append)
+    return () => window.removeEventListener(COMPOSER_DRAFT_APPEND_EVENT, append)
+  }, [activeProfileId, profileGeneration, selectedId, serverIdentity, writeDisabled])
   const focusCommandSession = () => {
     const state = useAppStore.getState()
     const pane = Object.entries(state.chatPanes).find(([, id]) => id === session?.id)?.[0]
@@ -2033,8 +2085,21 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       />
         </fieldset>
       {(uploads.length > 0 || uploadPaths.length > 0) && <AttachmentShelf sessionId={session.id} profileId={activeProfileId} profileGeneration={profileGeneration} files={uploads} pending={uploadPaths} />}
+      <CodeReferenceShelf draft={draft} disabled={writeDisabled} onEdit={(start, end) => {
+        textareaRef.current?.focus()
+        textareaRef.current?.setSelectionRange(composerSourceToDisplay(messageProjection, start), composerSourceToDisplay(messageProjection, end))
+      }} onRemove={(start, end) => {
+        if (writeDisabled) return
+        const text = draftRef.current
+        const from = start > 0 && text[start - 1] === '\n' ? start - 1 : start
+        const to = from === start && text[end] === '\n' ? end + 1 : end
+        const next = text.slice(0, from) + text.slice(to)
+        pendingCaretRef.current = from
+        updateComposerDraft(next, from)
+      }} />
       <GeminiImportConnection key={`${activeProfileId}:${profileGeneration}:${session.id}`} session={session} />
-      <RuntimeHealthNotice backend={session.backend} codexProvider={(session.provider_connection === 'custom' ? 'custom' : session.codex_provider)} sessionId={session.id} admissionError={(sendFailure?.context === sendContext ? cleanActionError(sendFailure.message) : undefined) || (geminiImportRecovery ? undefined : selectedRuntimeError) || undefined} />
+      <RuntimeHealthNotice backend={session.backend} codexProvider={(session.provider_connection === 'custom' ? 'custom' : session.codex_provider)} sessionId={session.id} admissionError={(sendFailure?.context === sendContext ? cleanActionError(sendFailure.message) : undefined) || (geminiImportRecovery ? undefined : selectedRuntimeError) || undefined}
+        onConnectionRecovered={() => setSendFailure(previous => previous === sendFailure ? null : previous)} />
       {activeInboundDeliveryKind && activeInboundDeliveryKind !== 'unknown' && <span className="chat-reference-warning" role="status">{activeInboundDeliveryKind === 'secure_peer'
           ? 'An incoming encrypted peer delivery is running. Stop or Send now will interrupt it.'
           : t("ui.Composer.Composer.an_incoming_delivery_is_running_stop_or_se_92e6678", { "delivery": 'chat-to-chat' })}</span>}
@@ -2198,6 +2263,12 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           onScroll={event => recordEditorMirrorAlignment(syncComposerEditorMirror(event.currentTarget, editorMirrorRef.current))}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing) return
+            // A held send/selection key is not a second, deliberate Send now.
+            // Keep Shift/Alt+Enter multiline editing unchanged.
+            if (event.key === 'Enter' && event.repeat && !event.shiftKey && !event.altKey) {
+              event.preventDefault()
+              return
+            }
             const projection = projectTeamMessageComposer(draftRef.current)
             const atomicSpans = [
               ...orderedComposerReferenceSpans(referencesRef.current, teamReferencesRef.current),
@@ -2309,15 +2380,53 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
                 return
               }
             }
+            if (
+              workspaceKey
+              && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+              && (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+            ) {
+              const direction = event.key === 'ArrowUp' ? 'older' : 'newer'
+              const displayText = event.currentTarget.value
+              if (caretAllowsHistoryStep(displayText, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, direction)) {
+                const current = historyCursorRef.current?.workspaceKey === workspaceKey ? historyCursorRef.current.cursor : null
+                const step = stepComposerHistory(loadComposerHistory(workspaceKey), current, draftRef.current, direction)
+                if (step) {
+                  event.preventDefault()
+                  historyCursorRef.current = { workspaceKey, cursor: step.cursor }
+                  pendingCaretRef.current = step.text.length
+                  updateComposerDraft(step.text, step.text.length)
+                  return
+                }
+              }
+            }
+            // Like the Codex and Claude CLIs, Escape interrupts the running
+            // agent once no composer palette is left to close.
+            if (
+              event.key === 'Escape'
+              && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+              && !event.repeat
+              && (running || liveCodexChildren > 0)
+            ) {
+              event.preventDefault()
+              event.stopPropagation()
+              requestStop()
+              return
+            }
             if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
               event.preventDefault()
               const forceSend = (event.metaKey || event.ctrlKey) && !steeringPending && session.backend !== 'opencode'
+              const composerEmpty = !draft.trim() && uploads.length === 0 && uploadPaths.length === 0
               if (canSend) void send(forceSend)
+              else if (composerEmpty && (event.metaKey || event.ctrlKey)) void steerFirstQueued()
+              // A second Enter on an empty composer is Send now for the first
+              // queued message: Claude takes it as a native follow-up, while
+              // plain Codex turns are stopped and continued with it.
               else if (
-                (event.metaKey || event.ctrlKey)
-                && !draft.trim()
-                && uploads.length === 0
-                && uploadPaths.length === 0
+                composerEmpty
+                && running
+                && !steeringPending
+                && session.backend !== 'opencode'
+                && queuedTurns.some(isUserQueuedTurn)
               ) void steerFirstQueued()
             }
           }}
@@ -2391,6 +2500,21 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
               {[t("ui.Composer.Composer.status_report_b784026"), t("ui.Composer.Composer.keep_going_8fc6411"), t("ui.Composer.Composer.verify_the_result_carefully_b07a805")].map(phrase => <DropdownMenu.Item key={phrase} className="menu-item" onSelect={() => void send(false, phrase, false)}>{phrase}</DropdownMenu.Item>)}
             </DropdownMenu.Content></DropdownMenu.Portal>
           </DropdownMenu.Root>
+          {!window.agentsDock.sharedChat && activeProfileId && <CodeReferencePicker
+            key={`${workspaceKey}:${profileGeneration}:${connectionGeneration}:${session.cwd ?? ''}`}
+            session={session} scope={{ profileId: activeProfileId, profileGeneration, serverIdentity }} disabled={writeDisabled}
+            onSelect={reference => {
+              if (writeDisabled || !composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) return
+              const text = draftRef.current
+              const referenceText = codeReferenceText(reference)
+              const next = `${text}${text && !text.endsWith('\n') ? '\n' : ''}${referenceText}\n`
+              pendingCaretRef.current = next.length
+              updateComposerDraft(next, next.length)
+              window.requestAnimationFrame(() => {
+                if (composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, session.id, draftContextRef, mountedRef)) textareaRef.current?.focus()
+              })
+            }}
+          />}
           {!window.agentsDock.sharedChat && <BackendMenu session={session} running={running} admitting={admitting} />}
           <RuntimeMenu
             session={session}
@@ -2422,17 +2546,16 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
                   ? t('timeline.status.running')
                 : t("ui.Composer.Composer.starting_bbe5fc3")
           }</span></span>}
-          {(running || liveCodexChildren > 0) && <button
+          {(running || liveCodexChildren > 0) && <ShortcutTooltip
+            shortcut="stopAgent"
+            label={stopping ? t("ui.Composer.Composer.stopping_agent_ec42789") : t("ui.Composer.Composer.stop_f9da57a", { "provider": String(session.title) })}
+          ><button
             type="button"
             className="stop-button"
             aria-label={stopping ? t("ui.Composer.Composer.stopping_bbe8574") : stopLabel}
             disabled={writeDisabled || stopping}
-            onClick={() => {
-              if (!confirmInboundDeliveryInterruption(session.id, 'stop')) return
-              void useAppStore.getState().stopTurnForSession(session.id)
-            }}
-            title={stopping ? t("ui.Composer.Composer.stopping_agent_ec42789") : t("ui.Composer.Composer.stop_f9da57a", { "provider": String(session.title) })}
-          ><span className="activity-ring" /><Square size={12} fill="currentColor" /><span className="stop-button-label">{stopping ? t("ui.Composer.Composer.stopping_bbe8574") : stopLabel}</span></button>}
+            onClick={requestStop}
+          ><span className="activity-ring" /><Square size={12} fill="currentColor" /><span className="stop-button-label">{stopping ? t("ui.Composer.Composer.stopping_bbe8574") : stopLabel}</span></button></ShortcutTooltip>}
           <ShortcutTooltip shortcut={running && session.backend !== 'opencode' ? ['sendMessage', 'steerMessage'] : 'sendMessage'} label={running ? session.backend === 'opencode' ? t("ui.Composer.Composer.queue_message_891d4ef") : activeCodexGoal ? t('composer.queueMessageDuringGoal') : t("ui.Composer.Composer.queue_message_steer_now_eea53cb") : t("ui.Composer.Composer.send_message_93a26b1")}><button className="send-button" aria-label={sessionId === undefined ? (running ? t("ui.Composer.Composer.queue_message_891d4ef") : t("ui.Composer.Composer.send_message_93a26b1")) : t(running ? 'ui.composer.queueFor' : 'ui.composer.sendTo', { title: session.title })} disabled={!canSend} onClick={() => void send()}><Send size={17} /></button></ShortcutTooltip>
         </div>
       </fieldset>
@@ -4033,7 +4156,8 @@ const QueueShelf = memo(function QueueShelf({
         if (steer) {
           const promotion = useAppStore.getState().beginQueuedTurnsRequest(sessionId)
           const remaining = await steerQueuedTurn(steeringScope, editing.queued_id,
-            () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent)))
+            () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent)),
+            message => reportSteeringNotice(steeringScope, message))
           if (profileIsActive(profileId, profileGeneration)) useAppStore.getState().applyQueuedTurnsResponse(sessionId, promotion, remaining)
         }
         return
@@ -4109,7 +4233,8 @@ const QueueShelf = memo(function QueueShelf({
         const turns = await steerQueuedTurn(
           steeringScope,
           editing.queued_id,
-          () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent))
+          () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent)),
+          message => reportSteeringNotice(steeringScope, message)
         )
         if (!profileIsActive(profileId, profileGeneration)) return
         useAppStore.getState().applyQueuedTurnsResponse(sessionId, request, turns)
@@ -4537,7 +4662,8 @@ function QueuedRow({ profileId, profileGeneration, steeringScope, turn, sourceSe
       const turns = await steerQueuedTurn(
         steeringScope,
         turn.queued_id,
-        () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent))
+        () => Boolean(confirmInboundDeliveryInterruption(sessionId, 'send_now', steerConsent)),
+        message => reportSteeringNotice(steeringScope, message)
       )
       if (profileIsActive(profileId, profileGeneration)) {
         useAppStore.getState().applyQueuedTurnsResponse(sessionId, request, turns)
@@ -4706,6 +4832,14 @@ function isStandaloneMcpCommand(value: string): boolean {
 
 function reportActionError(error: unknown): void {
   useAppStore.getState().setError(error instanceof Error ? error.message : String(error))
+}
+
+function reportSteeringNotice(scope: SteeringScope, message: string): void {
+  const state = useAppStore.getState()
+  if (profileIsActive(scope.profileId, scope.profileGeneration)
+    && activeIdentity(state) === scope.serverIdentity && state.selectedSessionId === scope.sessionId) {
+    state.setError(message)
+  }
 }
 
 function cleanActionError(error: unknown): string {

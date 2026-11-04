@@ -294,8 +294,18 @@ describe('WorkspaceEditor', () => {
     expect(chat).toBeVisible()
     expect(chat.closest('.workspace-editor-chat-panel')).not.toHaveAttribute('inert')
     expect(onFileOpen).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: 'Split editor right' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Split editor right' })).toBeVisible()
     expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
+
+    expect(chat).toBeVisible()
+    expect(chat.closest('.workspace-editor-chat-panel')).not.toHaveAttribute('inert')
+    expect(view.container.querySelector('.workspace-editor-content-split')).not.toBeNull()
+    fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize chat and file editor' }), { key: 'ArrowLeft' })
+    fireEvent.click(screen.getByRole('button', { name: 'Editor left' }))
+    expect(view.container.querySelector('.workspace-editor-content-split')).toHaveClass('workspace-editor-left')
+    fireEvent.click(screen.getByRole('button', { name: 'Show file workspace full screen' }))
+    expect(chat).not.toBeVisible()
+    expect(editor).toHaveValue('unsaved edit')
 
     fireEvent.click(screen.getByRole('button', { name: 'Chat (pinned)' }))
     expect(screen.getByRole('textbox', { name: 'Chat draft' })).toBe(chat)
@@ -346,8 +356,15 @@ describe('WorkspaceEditor', () => {
     expect(editorA).not.toHaveAttribute('data-editor-navigation-line')
     fireEvent.change(editorA, { target: { value: 'draft a' } })
     fireEvent.change(editorB, { target: { value: 'draft b' } })
+    fireEvent.click(within(screen.getByTestId('pane-b')).getByRole('button', { name: 'Split editor right' }))
+    act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', {
+      detail: { sessionId: second.id, path: 'b-side.ts' }
+    })))
+    const secondaryB = await screen.findByRole('textbox', { name: 'Contents of b-side.ts' })
+    fireEvent.change(secondaryB, { target: { value: 'draft b side' } })
     fireEvent.keyDown(window, { key: 's', metaKey: true })
-    await waitFor(() => expect(window.agentsDock.workspace.write).toHaveBeenCalledExactlyOnceWith('chat-b', 'b.ts', 'draft b', 'rev-1'))
+    await waitFor(() => expect(window.agentsDock.workspace.write).toHaveBeenCalledExactlyOnceWith('chat-b', 'b-side.ts', 'draft b side', 'rev-1'))
+    expect(editorB).toHaveValue('draft b')
     expect(within(screen.getByTestId('pane-a')).getByRole('complementary', { name: 'File explorer' })).toBeInTheDocument()
     expect(within(screen.getByTestId('pane-b')).getByRole('complementary', { name: 'File explorer' })).toBeInTheDocument()
 
@@ -546,7 +563,7 @@ describe('WorkspaceEditor', () => {
     expect(await screen.findByRole('textbox', { name: 'Contents of a.ts' })).toBeVisible()
   })
 
-  it('applies the latest pane file request after hydration without restoring an old split', async () => {
+  it('applies the latest pane file request to its restored split after hydration', async () => {
     const hydration = deferred<unknown>()
     vi.mocked(window.agentsDock.preferences.getScoped).mockReturnValueOnce(hydration.promise)
     const props = { workspaceKey: 'tabbed:chat-a', session,
@@ -563,9 +580,46 @@ describe('WorkspaceEditor', () => {
       tabs: [{ path: 'previous.ts' }, { path: 'side.ts' }] }))
     expect(await screen.findByRole('textbox', { name: 'Contents of latest.ts' })).toBeVisible()
     expect(window.agentsDock.workspace.read).not.toHaveBeenCalledWith(session.id, 'first.ts')
-    expect(view.container.querySelector('.workspace-editor-editor-groups-split')).toBeNull()
-    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split', 'workspace-editor-right')
+    expect(view.container.querySelector('.workspace-editor-editor-groups-split')).not.toBeNull()
+    expect(view.container.querySelector('.workspace-editor-content-split')).not.toBeNull()
+    expect(within(screen.getByRole('region', { name: 'Secondary file editor' }))
+      .getByRole('textbox', { name: 'Contents of latest.ts' })).toBeVisible()
     expect(screen.getByRole('tab', { name: 'previous.ts' })).toBeInTheDocument()
+  })
+
+  it('opens files beside a pane editor and restores both groups, drafts and chat split after reopening', async () => {
+    const props = { workspaceKey: 'tabbed:split-restore', session,
+      profileScope: { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' },
+      available: true, capabilityVersion: 6, tabbedPane: true, chatContent: <p>Chat timeline</p> }
+    const first = render(<WorkspaceEditor {...props} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Open README.md' }))
+    await screen.findByRole('heading', { name: 'Project' })
+    fireEvent.click(screen.getByRole('button', { name: 'src' }))
+    fireEvent.contextMenu(await screen.findByRole('button', { name: 'Open src/App.tsx' }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open to the Side' }))
+    const secondary = await screen.findByRole('region', { name: 'Secondary file editor' })
+    const editor = await within(secondary).findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    fireEvent.change(editor, { target: { value: 'unsaved secondary draft' } })
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Primary file editor' })).getByRole('heading', { name: 'Project' })).toBeVisible()
+    await act(async () => window.dispatchEvent(new Event('agentsdock:flush-draft')))
+    await waitFor(() => expect(window.agentsDock.preferences.setScoped).toHaveBeenCalledWith(props.profileScope,
+      'workspace-editor:chat-a', expect.objectContaining({ activePath: 'README.md', secondaryPath: 'src/App.tsx',
+        activeGroup: 'secondary', filePresentation: 'split' })))
+    const saved = vi.mocked(window.agentsDock.preferences.setScoped).mock.calls.at(-1)?.[2]
+    first.unmount()
+    resetWorkspaceEditorMemoryForTests()
+    vi.mocked(window.agentsDock.preferences.getScoped).mockResolvedValueOnce(saved)
+    render(<WorkspaceEditor {...props} />)
+    expect(await within(await screen.findByRole('region', { name: 'Secondary file editor' }))
+      .findByRole('textbox', { name: 'Contents of src/App.tsx' })).toHaveValue('unsaved secondary draft')
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    fireEvent.keyDown(window, { key: 's', metaKey: true })
+    await waitFor(() => expect(window.agentsDock.workspace.write).toHaveBeenCalledWith('chat-a', 'src/App.tsx', 'unsaved secondary draft', 'rev-1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Close secondary editor' }))
+    expect(screen.queryByRole('region', { name: 'Secondary file editor' })).not.toBeInTheDocument()
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'App.tsx' })).toBeInTheDocument()
   })
 
   it('uses one Markdown preview in a pane even when a split view was saved', async () => {
@@ -1286,7 +1340,100 @@ describe('WorkspaceEditor', () => {
     expect(screen.getByRole('button', { name: 'Open src/App.tsx' })).toBeEnabled()
   })
 
-  it('opens an editable untitled buffer and asks for its path only on first save', async () => {
+  it('names a new file inline, preserves its draft and detects Python from the extension', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('button', { name: 'New file' })
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    const name = screen.getByRole('textbox', { name: 'New file name' })
+    expect(name).toHaveFocus()
+    expect(name).toHaveAttribute('placeholder', 'Untitled-1')
+    expect(screen.getByRole('tab', { name: 'Untitled-1' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(window.agentsDock.workspace.create).not.toHaveBeenCalled()
+    await user.type(screen.getByRole('textbox', { name: 'Contents of Untitled-1' }), 'print(42)')
+    await user.type(name, 'demo.py{Enter}')
+    await screen.findByRole('tab', { name: 'demo.py' })
+    expect(window.agentsDock.workspace.create).toHaveBeenCalledWith('chat-a', 'demo.py', 'file')
+    expect(window.agentsDock.workspace.write).toHaveBeenCalledWith('chat-a', 'demo.py', 'print(42)', 'rev-demo.py')
+    expect(screen.getByText('Python')).toBeVisible()
+    expect(screen.getByRole('textbox', { name: 'Contents of demo.py' })).toHaveValue('print(42)')
+    expect(screen.queryByRole('textbox', { name: 'New file name' })).not.toBeInTheDocument()
+  })
+
+  it('refocuses a pending inline name instead of creating duplicate empty tabs', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await user.click(await screen.findByRole('button', { name: 'New file' }))
+    await user.type(screen.getByRole('textbox', { name: 'New file name' }), 'part')
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    expect(screen.getByRole('textbox', { name: 'New file name' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'New file name' })).toHaveValue('part')
+    expect(screen.queryByRole('tab', { name: 'Untitled-2' })).not.toBeInTheDocument()
+    expect(window.agentsDock.workspace.create).not.toHaveBeenCalled()
+  })
+
+  it('never overwrites an existing file through inline creation, including repeated Enter', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await screen.findByRole('button', { name: 'Open README.md' })
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    const name = screen.getByRole('textbox', { name: 'New file name' })
+    await user.type(name, 'README.md{Enter}{Enter}')
+    expect(screen.getByRole('alert')).toHaveTextContent('already exists. Choose a different filename.')
+    expect(window.agentsDock.workspace.create).not.toHaveBeenCalled()
+    expect(window.agentsDock.workspace.write).not.toHaveBeenCalled()
+    await user.clear(name)
+    await user.type(name, 'different.py{Enter}')
+    expect(await screen.findByRole('tab', { name: 'different.py' })).toBeVisible()
+  })
+
+  it('preserves an inline draft after a failed save and permits retry', async () => {
+    const user = userEvent.setup()
+    renderEditor()
+    await user.click(await screen.findByRole('button', { name: 'New file' }))
+    await user.type(screen.getByRole('textbox', { name: 'Contents of Untitled-1' }), 'print(42)')
+    vi.mocked(window.agentsDock.workspace.write).mockRejectedValueOnce(new Error('Disconnected'))
+    const name = screen.getByRole('textbox', { name: 'New file name' })
+    await user.type(name, 'retry.py{Enter}')
+    await waitFor(() => expect(name).toBeEnabled())
+    expect(screen.getByRole('textbox', { name: 'Contents of Untitled-1' })).toHaveValue('print(42)')
+    expect(window.agentsDock.workspace.remove).toHaveBeenCalledWith('chat-a', 'retry.py', 'entry-retry.py', false)
+    await user.type(name, '{Enter}')
+    expect(await screen.findByRole('tab', { name: 'retry.py' })).toBeVisible()
+  })
+
+  it.each([false, true])('drops only empty unnamed buffers when reopening a chat (cold restore: %s)', async cold => {
+    const user = userEvent.setup()
+    const first = renderEditor()
+    await user.click(await screen.findByRole('button', { name: 'New file' }))
+    await user.type(screen.getByRole('textbox', { name: 'New file name' }), 'empty.py{Enter}')
+    await screen.findByRole('tab', { name: 'empty.py' })
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    await user.type(screen.getByRole('textbox', { name: 'Contents of Untitled-2' }), 'draft to keep')
+    await user.type(screen.getByRole('textbox', { name: 'New file name' }), '{Escape}')
+    await user.click(screen.getByRole('button', { name: 'New file' }))
+    expect(screen.getByRole('tab', { name: 'Untitled-3' })).toBeVisible()
+    first.unmount()
+    const stored = vi.mocked(window.agentsDock.preferences.setScoped).mock.calls.at(-1)?.[2]
+    expect(stored).toMatchObject({ tabs: [
+      { path: 'empty.py' },
+      { untitled: true, draft: 'draft to keep' }
+    ] })
+    if (cold) {
+      resetWorkspaceEditorMemoryForTests()
+      vi.mocked(window.agentsDock.preferences.getScoped).mockResolvedValueOnce(stored)
+    }
+    renderEditor()
+    expect(await screen.findByRole('tab', { name: 'empty.py' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: 'Untitled-2' })).toBeVisible()
+    expect(screen.queryByRole('tab', { name: 'Untitled-3' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Untitled-2' }))
+    expect(screen.getByRole('textbox', { name: 'Contents of Untitled-2' })).toHaveValue('draft to keep')
+    expect(window.agentsDock.workspace.remove).not.toHaveBeenCalled()
+  })
+
+  it('can still use Save As for an untitled buffer instead of naming it inline', async () => {
     const user = userEvent.setup()
     renderEditor()
     act(() => {
@@ -3226,7 +3373,7 @@ describe('WorkspaceEditor', () => {
     expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('includes Changes in workspace tab navigation without acting on a hidden editor', async () => {
+  it('keeps Changes in workspace tab navigation when Git is available', async () => {
     window.agentsDock.workspaceGit = {
       status: vi.fn().mockResolvedValue({ root: '/work/project', branch: 'main', head: 'head', revision: 'rev', operation: null, files: [], staged_count: 0, conflict_count: 0 }),
       diff: vi.fn(), conflict: vi.fn(), action: vi.fn()
@@ -3235,18 +3382,35 @@ describe('WorkspaceEditor', () => {
     act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: 'chat-a', path: 'src/App.tsx' } })))
     await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
     fireEvent.keyDown(window, { key: '2', metaKey: true })
-    expect(await screen.findByRole('region', { name: 'Workspace changes' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'false')
-    fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true })
+    await waitFor(() => expect(window.agentsDock.workspaceGit.status).toHaveBeenCalled())
+    fireEvent.keyDown(window, { key: '3', metaKey: true })
     expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true, shiftKey: true })
     expect(screen.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true')
-    const close = new Event('agentsdock:workspace-close-active', { cancelable: true })
-    act(() => window.dispatchEvent(close))
-    expect(close.defaultPrevented).toBe(true)
+    fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true, shiftKey: true })
     expect(screen.getByRole('button', { name: /Chat.*pinned/i })).toHaveAttribute('aria-pressed', 'true')
-    expect(screen.getByRole('tab', { name: 'App.tsx' })).toBeInTheDocument()
+    fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true })
+    expect(screen.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true })
+    expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('uses one chat header and reveals file tabs only while viewing a file', async () => {
+    const view = render(<WorkspaceEditor workspaceKey="compact-chat" session={session}
+      profileScope={{ profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }}
+      available tabbedPane chatHeader={<header>Compact chat header</header>} chatContent={<p>Chat timeline</p>} />)
+    expect(screen.getByText('Compact chat header')).toBeVisible()
+    expect(view.container.querySelector('.workspace-editor-tab-strip')).toHaveAttribute('hidden')
+    act(() => window.dispatchEvent(new CustomEvent('agentsdock:open-workspace-path', { detail: { sessionId: 'chat-a', path: 'src/App.tsx' } })))
+    await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
+    expect(screen.queryByText('Compact chat header')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.workspace-editor-tab-strip')).not.toHaveAttribute('hidden')
+    fireEvent.click(screen.getByRole('button', { name: /Chat.*pinned/i }))
+    expect(screen.getByText('Compact chat header')).toBeVisible()
+    expect(view.container.querySelector('.workspace-editor-tab-strip')).toHaveAttribute('hidden')
+    fireEvent.keyDown(window, { key: '2', metaKey: true })
+    expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('navigates quick-open results with the keyboard', async () => {
