@@ -1,128 +1,199 @@
-<h1 align="center">AgentsDock: an IDE designed for agentic AI research</h1>
-
-<div align="center">
-  <a href="https://agentsdock.net">
-    <img
-      src="https://img.shields.io/badge/website-agentsdock.net-0EA5E9"
-      alt="AgentsDock website"
-    />
-  </a>
-  <a href="https://github.com/ZhengyiLuo/AgentsDock/releases/latest">
-    <img
-      src="https://img.shields.io/github/v/release/ZhengyiLuo/AgentsDock?label=desktop&amp;color=EA7233"
-      alt="Latest stable desktop release"
-    />
-  </a>
-  <a href="https://discord.gg/ZGDrhEWqPt">
-    <img
-      src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&amp;logoColor=white"
-      alt="Join the AgentsDock Discord"
-    />
-  </a>
-  <img
-    src="https://img.shields.io/badge/backend-self--hosted-2563EB"
-    alt="Self-hosted backend"
-  />
-  <a href="CONTRIBUTING.md">
-    <img
-      src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg"
-      alt="Contributions welcome"
-    />
-  </a>
-</div>
+<h1 align="center">Folio</h1>
 
 <p align="center">
-  <a href="https://agentsdock.net">
-    <img
-      src="docs/assets/agentsdock-overview.png"
-      alt="AgentsDock desktop and mobile apps showing agent chats and file previews"
-      width="760"
-    />
-  </a>
+  <img
+    src="docs/assets/folio-icon.png"
+    alt="Folio"
+    width="96"
+  />
+</p>
+
+<p align="center">
+  <strong>A paper-reading desk for agentic work.</strong><br />
+  Keep the chat beside the page. Explain or translate a paragraph in place.<br />
+  Use Claude Code, Codex, Cursor, OpenCode, and Gemini on a server you control.
 </p>
 
 <div align="center">
-  AgentsDock brings <strong>Claude Code</strong>, <strong>Codex</strong>,
-  <strong>Cursor</strong>, and <strong>OpenCode</strong> into one desktop and
-  mobile workspace for coding and research.
-  <strong>Gemini</strong> is also supported on desktop through an API connection
-  in versions containing the Gemini integration.
-  <br />
-  <br />
-  <strong>Desktop:</strong>
-  <a href="https://github.com/ZhengyiLuo/AgentsDock/releases/latest">Download for macOS, Windows or Linux — latest stable</a>
-  ·
-  <a href="https://github.com/ZhengyiLuo/AgentsDock/releases">All releases and release notes</a>
-  <br />
-  <strong>Mobile:</strong>
-  <a href="https://apps.apple.com/us/app/agentsdock/id6769275751">iPhone &amp; iPad</a>
-  ·
-  <a href="https://github.com/ZhengyiLuo/AgentsDock-Releases/releases/download/android-v0.1.1-beta.8/AgentsDock-0.1.1-android-arm64-beta.8.apk">Android</a>
-  <br />
-  <br />
-  <a href="https://agentsdock.net">Website</a>
-  ·
-  <a href="https://agentsdock.net/setup.html">Setup guide</a>
-  ·
-  <a href="https://agentsdock.net/features.html">Features</a>
+
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![Backend](https://img.shields.io/badge/backend-self--hosted-2563EB)](server/README.md)
+
 </div>
 
-## What you can do
+## What Folio is
 
-- Work with multiple agents and servers in one place.
-- Review code, plots, images, and videos right in your chats.
-- Browse files, use terminals, and schedule jobs.
-- Continue your work from desktop or mobile.
+Folio is a desktop workspace for reading papers and driving coding agents in
+the same window. Open a PDF folder, select a passage, and ask the connected
+agent — or translate the passage without leaving the page.
 
-See the [website](https://agentsdock.net) for screenshots and
-[feature walkthroughs](https://agentsdock.net/features.html).
+Behind the desktop sits **AgentsServer**, a self-hosted backend that runs your
+agent CLIs, stores chat history, and owns the project files. Folio connects to
+that server from the same machine or another device on your network / Tailscale.
 
-## How it works
+This repository continues the AgentsDock client/server architecture with
+Folio’s paper-reading desk and desktop branding.
 
-**AgentsServer** runs your agents on a computer you control.
-**AgentsDock** connects to it from your desktop or phone. The server and desktop
-app can run on the same computer.
+## Install
 
-## Get started
+Folio has two parts:
 
-1. **Prepare your computer.** Use Linux or an Apple silicon Mac with
-   Node.js **22.14+**, `uv`, and `tmux`.
-   [Prerequisite instructions →](server/README.md#1-prepare-the-server-machine)
-2. **Install the server.** Run on that computer, without `sudo`:
+1. **AgentsServer** — runs agents and holds workspaces (required).
+2. **Folio desktop** — the Electron app you use day to day.
 
-   ```sh
-   npm install -g agentsdock
-   ```
+There is no published Folio binary release yet. Install the server from npm,
+then build and run the desktop from this source tree.
 
-   First installation automatically sets up and starts the server.
-3. **Connect the app.** [Download AgentsDock](https://agentsdock.net/#downloads).
-   Run `agentsdock list` and `agentsdock token default` on the server, then add
-   its URL and token in the app. For another device, use the listed LAN or
-   Tailscale address.
-4. **Start chatting.** Install and sign in to your preferred agent CLI on the
-   server, then choose an agent and workspace in the app.
+### 1. Prepare the server machine
 
-Follow the [full setup guide](https://agentsdock.net/setup.html) for connection
-help. Already have a server? npm leaves it unchanged; update through
-**Settings → Updates** in the desktop app.
+Use **Linux** or an **Apple silicon Mac**. Native Windows server installation is
+not supported (the Windows desktop can still connect to a supported host).
+
+| Prerequisite | Notes |
+| --- | --- |
+| Node.js **22.14+** and npm | [Download](https://nodejs.org/en/download) |
+| [`uv`](https://docs.astral.sh/uv/getting-started/installation/) | Prepares the server’s Python runtime |
+| `tmux` | Needed for persistent terminals and managed updates; basic chats work without it |
+
+On macOS with Homebrew:
+
+```sh
+brew install node uv tmux
+```
+
+On Linux, install Node.js and `uv` from their guides, and install `tmux` from
+your distribution. Confirm in the same terminal:
+
+```sh
+node --version
+npm --version
+uv --version
+tmux -V
+```
+
+Client-only devices do not need these prerequisites.
+
+### 2. Install AgentsServer
+
+On the machine that will run your agents, as the server owner, **without**
+`sudo`:
+
+```sh
+npm install -g agentsdock
+agentsdock list
+agentsdock token default
+```
+
+On a fresh machine, the global install creates and starts the default server
+(normally port **7850**). Confirm `default` is `running` in `agentsdock list`.
+Keep the access token private.
+
+Already have a server? Reinstalling the npm CLI leaves it unchanged. Update
+through **Settings → Updates** in the desktop app, or see
+[server/README.md](server/README.md).
+
+More detail, custom ports, multiple instances, and troubleshooting:
+[server/README.md](server/README.md) ·
+[CLI reference](server/npm/agentsdock/README.md).
+
+### 3. Build and run Folio desktop
+
+Use **Node.js 24** and **pnpm 11.9.0** (pinned by the project).
+
+```sh
+git clone https://github.com/programme184/Folio.git
+cd Folio/electron
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm test
+pnpm dev
+```
+
+`pnpm build` compiles the app without packaging. Platform packaging scripts live
+under `scripts/` and are documented in [electron/README.md](electron/README.md).
+
+On Linux, a packaged local install is commonly placed at
+`~/.local/lib/folio/app` after you build and copy the tarball yourself; the
+desktop entry name is **Folio**.
+
+### 4. Connect the app to the server
+
+1. Open Folio.
+2. Add the server URL and the token from `agentsdock token default`.
+3. Pick the address that matches where the app is running:
+
+| App location | Server URL |
+| --- | --- |
+| Same computer as the server | This-machine URL, normally `http://127.0.0.1:7850` |
+| Another device on the same Wi-Fi / LAN | The listed LAN address and port |
+| Another network | The listed Tailscale address (both devices on your tailnet) |
+
+Do not enter `127.0.0.1` on a phone or another computer to reach a remote
+server. Do not expose the agent port to the public internet.
+
+If Folio and the server share a machine and the server was installed for your
+user, Folio can also discover that local install automatically.
+
+### 5. Sign in agent CLIs on the server
+
+Install and authenticate the providers you want **on the server machine**, not
+only on the laptop that runs Folio:
+
+```sh
+# Examples — use the CLIs you actually need
+claude auth login
+codex login
+opencode auth login
+cursor-agent login   # or: agent login
+```
+
+Gemini uses an API connection in **Settings → My Agents**, not Google/CLI
+sign-in. See [server docs for Gemini](server/docs/GEMINI_PROVIDER_PREVIEW.md)
+when your build includes it.
+
+In Folio, open **Settings → My Agents**, confirm the providers you need, then
+start a chat with an agent and a working directory on the server.
+
+## Usage
+
+### Chat with agents
+
+- Create a chat, pick an agent (Claude Code, Codex, Cursor, OpenCode, Gemini).
+- Choose a workspace / folder on the connected server.
+- Review files, images, videos, and diffs in the chat.
+- Open the chat’s persistent terminal when `tmux` is available.
+- Connect multiple servers and switch between them from one desktop.
+
+### Read papers beside the chat
+
+- Open **Papers** and choose a folder of PDFs (or change the folder later).
+- Browse the shelf, open a PDF beside the chat, zoom, and use the outline.
+- Hover or select a paragraph, then **Explain**, **Ask**, or **Translate**.
+  Explain / Ask go to the active chat (or Side chat when that path is ready).
+  Translate can run in place without sending the passage to an agent.
+- Attach Markdown notes next to a PDF (`Paper.pdf` → `Paper.notes/`).
+
+### Keep long-running work organized
+
+- Group chats, search history, and schedule recurring jobs on the server.
+- Continue from desktop; the same AgentsServer can also serve compatible
+  mobile clients when you deploy them separately.
 
 ## Develop from source
 
-Use Git, **Node.js 24**, and **pnpm 11.9.0** (the version pinned by the project).
-Desktop and mobile are separate packages; install dependencies in the package
-you are working on. You also need a running AgentsServer to use the app.
+Desktop and mobile are separate packages. Install dependencies in the package
+you are changing. You still need a running AgentsServer to use the app end to
+end.
 
-```bash
-git clone https://github.com/ZhengyiLuo/AgentsDock.git
-cd AgentsDock
+```sh
+git clone https://github.com/programme184/Folio.git
+cd Folio
 ```
 
 ### Desktop
 
-The current desktop app is built with Electron, React, and TypeScript. From
-the repository root:
-
-```bash
+```sh
 cd electron
 pnpm install --frozen-lockfile
 pnpm typecheck
@@ -130,67 +201,62 @@ pnpm test
 pnpm dev
 ```
 
-`pnpm build` compiles the app without packaging or publishing it. For desktop
-architecture and platform-specific packaging, see
-[electron/README.md](electron/README.md).
+See [electron/README.md](electron/README.md) for packaging and platform notes.
 
-### Mobile: iPhone, iPad, and Android source
+### Mobile (optional)
 
-The current iPhone/iPad app lives in **`mobile-react/`**, using React Native
-and Expo. Android source and native modules live in that same package. From
-the repository root:
+iPhone / iPad / Android source lives in `mobile-react/`. Read
+[mobile-react/README.md](mobile-react/README.md) before installing on a device —
+using the published bundle identifier can replace an installed app.
 
-```bash
+```sh
 cd mobile-react
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test:history
-pnpm test:server-setup
 ```
 
-For local iOS development on macOS with Xcode, continue in `mobile-react/`:
+### Server from this checkout
 
-```bash
-pnpm exec expo prebuild --platform ios
-pnpm exec expo run:ios
+```sh
+cd server
+./install.sh
 ```
 
-Use a simulator or your own signing configuration. Read the
-[mobile development guide](mobile-react/README.md) before installing on a
-device: using the existing bundle identifier can replace your installed app.
-Android development requires the Android toolchain.
+The maintained backend is `server/`. Prefer the npm CLI for ordinary installs;
+use the checkout installer for development. See
+[docs/SERVER_SOURCE_MIGRATION.md](docs/SERVER_SOURCE_MIGRATION.md) before
+exporting or coordinating a release.
 
 ## Where things live
 
 | Directory | Purpose |
 | --- | --- |
-| [`electron/`](electron/) | Current desktop client for macOS, Linux, and Windows |
-| [`mobile-react/`](mobile-react/) | Current React Native mobile client, including native modules in `modules/` |
-| [`website/`](website/) | Product website and user guides |
-| [`team-hub/`](team-hub/) | Team Hub service code and tests |
-| [`docs/`](docs/) | Architecture, development notes, and release-channel documentation |
-| [`server/`](server/) | Maintained AgentsServer runtime, installer, and server-only tests |
-| `Sources/`, `Apps/`, `ZenithDock.xcodeproj` | Legacy Swift clients, not the current Electron or React Native apps |
-
-The maintained backend lives in `server/`. Its Python dependencies and installer
-are self-contained; server users do not need to build either client. See
-[the source migration notes](docs/SERVER_SOURCE_MIGRATION.md) before exporting
-changes or preparing a coordinated release.
+| [`electron/`](electron/) | Folio desktop (Electron, React, TypeScript) |
+| [`mobile-react/`](mobile-react/) | React Native mobile client and native modules |
+| [`server/`](server/) | AgentsServer runtime, installer, and server tests |
+| [`website/`](website/) | Product website and setup pages |
+| [`docs/`](docs/) | Architecture, operations, and release notes |
+| [`team-hub/`](team-hub/) | Team Hub service |
+| `Sources/`, `Apps/`, `ZenithDock.xcodeproj` | Legacy Swift clients |
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and contribution guidelines.
-Keep changes scoped and add regression tests where appropriate. Use synthetic
-test data; do not commit credentials, private infrastructure details, chat
-transcripts, or screenshots containing user data.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Keep changes scoped, add regression
+tests where appropriate, and use synthetic test data. Do not commit
+credentials, private paths, chat transcripts, or screenshots with user data.
 
-The repository's CI verifies source. It does not publish desktop releases,
-upload mobile builds, or deploy servers. Official binaries and update feeds
-are managed separately; see [release channels](docs/DIRECT_RELEASES.md).
+Source CI verifies code. It does not publish desktop releases, upload mobile
+builds, or deploy servers. Follow [docs/APP_DEV_OPERATIONS.md](docs/APP_DEV_OPERATIONS.md)
+for app features and bug fixes.
+
+## Contributors
+
+- [AgentsDock](https://github.com/ZhengyiLuo/AgentsDock) — original repository
+  (client/server architecture that Folio continues)
 
 ## License
 
-AgentsDock's original code is licensed under the [Apache License 2.0](LICENSE),
-except where a component explicitly states another license. See [NOTICE](NOTICE)
-for attribution and separately licensed components. Existing third-party
-copyrights, licenses, and notices remain in effect.
+Original code is licensed under the [Apache License 2.0](LICENSE), except where
+a component states otherwise. See [NOTICE](NOTICE) for attribution and
+separately licensed components. Folio builds on the AgentsDock / AgentsServer
+lineage; third-party copyrights and notices remain in effect.

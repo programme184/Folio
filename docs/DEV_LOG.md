@@ -1,5 +1,14 @@
 # Public development log
 
+## 2026-11-04 — Rewrite Folio README for install and usage
+
+- Replaced the upstream AgentsDock-oriented README with Folio-focused
+  installation and usage guidance: AgentsServer via `npm install -g agentsdock`,
+  desktop build from this source tree, connection rules, agent CLI sign-in, and
+  paper-reading workflows (shelf, Explain / Ask / Translate, notes).
+- Linked the Folio mark under `docs/assets/folio-icon.png`. No binary release,
+  server change, or deployment was published.
+
 ## 2026-11-04 — Run remote-profile chats on their remote AgentsServer
 
 - Selecting a saved remote server now makes that server the execution boundary
