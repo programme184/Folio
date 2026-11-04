@@ -63,7 +63,8 @@ brew install node uv tmux
 ```
 
 On Linux, install Node.js and `uv` from their guides, and install `tmux` from
-your distribution. Confirm in the same terminal:
+your distribution. AgentsServer needs Python 3.11 or newer; `uv` supplies it.
+Confirm in the same terminal:
 
 ```sh
 node --version
@@ -88,6 +89,12 @@ agentsdock token default
 On a fresh machine, the global install creates and starts the default server
 (normally port **7850**). Confirm `default` is `running` in `agentsdock list`.
 Keep the access token private.
+
+Folio’s guided setup can install that server for you. It downloads the signed
+release, installs `uv` and Python 3.12 when they are missing, and forwards
+`HTTPS_PROXY`, `HTTP_PROXY`, and `ALL_PROXY` into the package download when
+those variables are already set. Set the proxy in the environment before
+opening Folio; the app does not ask for a proxy port.
 
 Already have a server? Reinstalling the npm CLI leaves it unchanged. Update
 through **Settings → Updates** in the desktop app, or see
@@ -232,7 +239,7 @@ exporting or coordinating a release.
 | Directory | Purpose |
 | --- | --- |
 | [`electron/`](electron/) | Folio desktop (Electron, React, TypeScript) |
-| [`mobile-react/`](mobile-react/) | React Native mobile client and native modules |
+| [`mobile-react/`](mobile-react/) | React Native mobile client and native modules. Android builds stay on the separate feed: [AgentsDock-Releases/releases/download/android-v0.1.1-beta.8](https://github.com/ZhengyiLuo/AgentsDock-Releases/releases/download/android-v0.1.1-beta.8/AgentsDock-0.1.1-android-arm64-beta.8.apk) |
 | [`server/`](server/) | AgentsServer runtime, installer, and server tests |
 | [`website/`](website/) | Product website and setup pages |
 | [`docs/`](docs/) | Architecture, operations, and release notes |

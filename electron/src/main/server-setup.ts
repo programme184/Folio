@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { app, net } from 'electron'
 import type {
   ServerSetupCapabilities,
@@ -120,8 +120,115 @@ case "$AGENTSDOCK_PREFLIGHT_OS" in
       agentsdock_preflight_fail "The systemctl --user session is unavailable. Sign in as the target user or ask an administrator to enable that user's systemd manager, verify 'systemctl --user show-environment', then retry guided setup without sudo."
     fi
     ;;
-  *) agentsdock_preflight_fail "Guided setup does not support $AGENTSDOCK_PREFLIGHT_OS. Use a macOS launchd GUI user session or a Linux systemd user session." ;;
+    *) agentsdock_preflight_fail "Guided setup does not support $AGENTSDOCK_PREFLIGHT_OS. Use a macOS launchd GUI user session or a Linux systemd user session." ;;
 esac
+`
+// The published installer still selects Python >=3.10, drops proxy variables,
+// and treats systemd 249's silent is-enabled as an unknown service state.
+// Prepare those three before running that installer. $1 is a private bin
+// directory; $2 is the extracted install.sh when it should be patched.
+export const SERVER_SETUP_HOST_PREP_SCRIPT = `set -eu
+COMPAT_BIN="\${1:?}"
+INSTALLER="\${2:-}"
+mkdir -p "$COMPAT_BIN" "$HOME/.local/bin"
+
+folio_safe_value() {
+  case "$1" in
+    *[[:space:]]*) return 1 ;;
+  esac
+  printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._~:/?@+,=%-]+$' || return 1
+  printf '%s' "$1"
+}
+
+folio_safe_proxy() {
+  case "$1" in
+    http://*|https://*|socks5://*|socks5h://*) ;;
+    *) return 1 ;;
+  esac
+  folio_safe_value "$1"
+}
+
+folio_install_uv() {
+  folio_arch="$(uname -m)"
+  folio_os="$(uname -s)"
+  case "$folio_os:$folio_arch" in
+    Linux:x86_64) folio_target="x86_64-unknown-linux-gnu" ;;
+    Linux:aarch64|Linux:arm64) folio_target="aarch64-unknown-linux-gnu" ;;
+    Darwin:arm64) folio_target="aarch64-apple-darwin" ;;
+    Darwin:x86_64) folio_target="x86_64-apple-darwin" ;;
+    *) echo "Guided setup cannot install uv on $folio_os $folio_arch." >&2; return 1 ;;
+  esac
+  folio_archive="$(mktemp)"
+  folio_extract="$(mktemp -d)"
+  curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 \\
+    "https://github.com/astral-sh/uv/releases/latest/download/uv-\${folio_target}.tar.gz" -o "$folio_archive"
+  tar -xzf "$folio_archive" -C "$folio_extract"
+  install -m 755 "$folio_extract"/uv-*/uv "$HOME/.local/bin/uv"
+  rm -rf "$folio_archive" "$folio_extract"
+}
+
+if ! command -v uv >/dev/null 2>&1 || ! uv --version >/dev/null 2>&1; then
+  folio_install_uv
+fi
+UV_BIN="$(command -v uv)"
+if ! PY="$("$UV_BIN" python find 3.12 2>/dev/null)"; then
+  "$UV_BIN" python install 3.12
+  PY="$("$UV_BIN" python find 3.12)"
+fi
+PY_RESOLVED="$(readlink -f "$PY" 2>/dev/null || printf '%s' "$PY")"
+case "$UV_BIN" in
+  *[!A-Za-z0-9._~:/@+-]*) echo "Guided setup found uv at an unsupported path." >&2; exit 1 ;;
+esac
+if [ -O "$PY_RESOLVED" ]; then
+  chmod go-w "$PY_RESOLVED"
+fi
+
+if [ "$(uname -s)" = "Linux" ]; then
+  cat > "$COMPAT_BIN/systemctl" <<'EOF'
+#!/bin/sh
+if [ "$1" = "--user" ] && [ "$2" = "is-enabled" ]; then
+  folio_err="$(mktemp)"
+  folio_out="$(/usr/bin/systemctl "$@" 2>"$folio_err")"
+  folio_code="$?"
+  if [ -z "$folio_out" ] && [ "$folio_code" -eq 1 ] && grep -q "No such file or directory" "$folio_err"; then
+    rm -f "$folio_err"
+    echo not-found
+    exit 1
+  fi
+  rm -f "$folio_err"
+  if [ -n "$folio_out" ]; then
+    printf '%s\\n' "$folio_out"
+  fi
+  exit "$folio_code"
+fi
+exec /usr/bin/systemctl "$@"
+EOF
+  chmod 755 "$COMPAT_BIN/systemctl"
+fi
+
+folio_proxy_script="$COMPAT_BIN/uv"
+{
+  printf '%s\\n' '#!/bin/sh'
+  for folio_name in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY; do
+    eval "folio_value=\\\${$folio_name:-}"
+    case "$folio_name" in
+      no_proxy|NO_PROXY) folio_safe="$(folio_safe_value "$folio_value" 2>/dev/null || true)" ;;
+      *) folio_safe="$(folio_safe_proxy "$folio_value" 2>/dev/null || true)" ;;
+    esac
+    if [ -n "$folio_safe" ]; then
+      printf "export %s='%s'\\n" "$folio_name" "$folio_safe"
+    fi
+  done
+  printf "exec '%s' \\"\\$@\\"\\n" "$UV_BIN"
+} > "$folio_proxy_script"
+chmod 755 "$folio_proxy_script"
+
+if [ -n "$INSTALLER" ] && [ -f "$INSTALLER" ] && grep -q -- "--python '>=3.10'" "$INSTALLER"; then
+  folio_tmp="$(mktemp)"
+  sed "s/--python '>=3.10'/--python '>=3.11'/" "$INSTALLER" > "$folio_tmp"
+  cat "$folio_tmp" > "$INSTALLER"
+  rm -f "$folio_tmp"
+fi
 `
 export function localReleaseBootstrap(release: PinnedServerRelease): string {
   return `set -eu
@@ -197,6 +304,11 @@ cancel_remote_install() {
   exit 130
 }
 trap cancel_remote_install HUP INT TERM
+mkdir -p "\$DIR/compat-bin"
+cat > "\$DIR/host-prep.sh" <<'AGENTSDOCK_HOST_PREP'
+${SERVER_SETUP_HOST_PREP_SCRIPT}AGENTSDOCK_HOST_PREP
+/bin/sh "\$DIR/host-prep.sh" "\$DIR/compat-bin" "\$SOURCE/install.sh"
+export PATH="\$DIR/compat-bin:\$PATH"
 if [ "$TEAM_HUB_HOST" = "true" ]; then
   set -- --non-interactive --port "$PORT" --team-hub-host
 else
@@ -439,13 +551,28 @@ export class ServerSetupManager {
         { phase: 'download', message: `Downloading verified AgentsServer ${release.version}…` }
       )
       this.throwIfCancelled()
+      const compatBin = join(directory, 'compat-bin')
+      this.emitProgress(progress, { phase: 'runtime', message: 'Preparing Python and installer compatibility…' })
+      await this.runProcess(
+        '/bin/sh',
+        ['-s', '--', compatBin, join(directory, 'AgentsServer', 'install.sh')],
+        SERVER_SETUP_HOST_PREP_SCRIPT,
+        progress,
+        false,
+        { phase: 'runtime', message: 'Preparing Python and installer compatibility…' }
+      )
+      this.throwIfCancelled()
       return await this.runInstaller('/bin/bash', [
         join(directory, 'AgentsServer', 'install.sh'),
         '--non-interactive',
         '--port',
         String(port),
         ...(teamHubHost ? ['--team-hub-host'] : [])
-      ], undefined, progress)
+      ], undefined, progress, {
+        phase: 'runtime',
+        message: 'Preparing the AgentsServer runtime…',
+        environment: { PATH: `${compatBin}${delimiter}${serverSetupProcessPath(process.env.PATH)}` }
+      })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -509,7 +636,8 @@ export class ServerSetupManager {
       this.throwIfCancelled()
       const result = await this.runProcess(command, args, stdin, progress, true, {
         phase: 'service',
-        message: 'Retrying the AgentsServer service restart…'
+        message: 'Retrying the AgentsServer service restart…',
+        environment: options.environment
       })
       if (!result) throw new Error('AgentsServer setup completed without connection details.')
       return result
