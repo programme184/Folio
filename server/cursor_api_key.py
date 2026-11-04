@@ -12,7 +12,7 @@ import re
 import tempfile
 
 from fastapi import HTTPException
-from cursor_agent_client import parse_cursor_models_list
+from cursor_agent_client import merge_cursor_grok_composer_models, parse_cursor_models_list
 from side_questions import run_isolated_command, SideQuestionError
 
 ENDPOINT = "https://api2.cursor.sh"
@@ -53,8 +53,13 @@ async def catalog(selected: dict, *, executable: str | None, env: dict) -> dict:
         with tempfile.TemporaryDirectory(prefix="agentsdock-cursor-key-") as cwd:
             output = await run_isolated_command([executable, "--list-models"], prompt="", cwd=cwd,
                 env={**env, **overrides(selected["api_key"])}, timeout=20)
+        parsed = parse_cursor_models_list(output)
+        # Only a real CLI catalog is extended. Empty or rejected output must
+        # stay empty so an invalid key is not treated as verified.
+        if parsed:
+            parsed = merge_cursor_grok_composer_models(parsed)
         models = [{"value": item["id"], "label": item["label"]}
-                  for item in parse_cursor_models_list(output)
+                  for item in parsed
                   if re.fullmatch(r"[\x21-\x7e]{1,256}", item["id"])
                   and selected["api_key"] not in item["id"] + item["label"]]
         if not models:

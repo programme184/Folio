@@ -376,7 +376,7 @@ export interface AppServiceOptions {
   initialProfileId?: string
   /** Avoid duplicate discovery and inactive-profile polling for an embedded pane service. */
   embeddedPane?: boolean
-  /** Production keeps chat execution and storage on the loopback AgentsServer; tests can opt in explicitly. */
+  /** Legacy test seam for the retired loopback-execution/server-group projection. */
   localChatExecution?: boolean
 }
 
@@ -499,7 +499,12 @@ export class AppService {
   constructor(options: AppServiceOptions = {}) {
     this.embeddedPane = options.embeddedPane === true
     this.persistProfileSelection = !this.embeddedPane
-    this.localChatExecution = options.localChatExecution ?? (!options.settings && !options.clientFactory)
+    // A saved server profile is an execution boundary, not a display-only
+    // group. Production must send sessions, turns, files, terminals and
+    // provider processes to that profile's AgentsServer. Keeping this legacy
+    // projection opt-in preserves its isolated migration tests without ever
+    // making a remote-looking chat execute on the loopback server.
+    this.localChatExecution = options.localChatExecution === true
     this.localServerDiscovery = options.localServerDiscovery ?? (options.settings || options.clientFactory ? async () => [] : discoverLocalServers)
     appLog('startup', 'loading settings')
     this.settings = options.settings ?? new SettingsStore()

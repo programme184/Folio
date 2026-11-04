@@ -3306,7 +3306,10 @@ function ChatMentionPalette({
       .some(value => value?.toLocaleLowerCase().includes(query)))
   ))
 
-  useEffect(() => onCandidates([...candidates, ...fileEntries]), [candidates, fileEntries, onCandidates])
+  // Keep the keyboard registry in lockstep with the options committed to the
+  // DOM. A passive effect leaves one painted frame where a file option is
+  // visible but Enter still reads the preceding candidate list.
+  useLayoutEffect(() => onCandidates([...candidates, ...fileEntries]), [candidates, fileEntries, onCandidates])
   useEffect(() => {
     optionRefs.current[selectedIndex]?.scrollIntoView?.({ block: 'nearest' })
   }, [selectedIndex])

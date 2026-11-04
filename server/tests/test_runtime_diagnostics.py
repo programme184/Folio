@@ -1109,6 +1109,8 @@ class RuntimeDiagnosticTests(unittest.TestCase):
         self.assertNotIn("locked", by_value["auto"])
         self.assertTrue(by_value["gpt-5.2"]["locked"])
         self.assertIn("free plan", by_value["gpt-5.2"]["locked_reason"])
+        self.assertTrue(by_value["grok-4.7-high-fast"]["locked"])
+        self.assertTrue(by_value["composer-2.5-fast"]["locked"])
         # The synthetic "Server default" entry mirrors "auto" (the default),
         # so it must stay selectable too - only named models lock.
         self.assertNotIn("locked", by_value[""])
@@ -1133,6 +1135,9 @@ class RuntimeDiagnosticTests(unittest.TestCase):
 
         for option in catalog["models"]:
             self.assertNotIn("locked", option)
+        by_value = {option["value"]: option for option in catalog["models"]}
+        self.assertEqual(by_value["grok-4.7-high-fast"]["label"], "Grok 4.7 High Fast")
+        self.assertEqual(by_value["composer-2.5-fast"]["label"], "Composer 2.5 Fast")
 
     def test_cursor_catalog_does_not_assume_unknown_tier_is_free(self) -> None:
         list_models_output = "Available models\n\nauto - Auto (default)\ngpt-5.2 - GPT-5.2\n"

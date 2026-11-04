@@ -61142,6 +61142,7 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
     """
     from cursor_agent_client import (
         cursor_account_is_free_tier,
+        merge_cursor_grok_composer_models,
         parse_cursor_account_tier,
         parse_cursor_models_list,
     )
@@ -61154,6 +61155,8 @@ def discover_cursor_catalog(*, executable: str | None = None) -> dict[str, Any]:
         model_source = f"{Path(executable).name} --list-models"
         output = run_catalog_command([executable, "--list-models"])
         parsed = parse_cursor_models_list(output)
+        if parsed:
+            parsed = merge_cursor_grok_composer_models(parsed)
     except Exception as exc:
         logger.warning(
             "cursor model discovery failed error_type=%s",
@@ -68718,6 +68721,12 @@ async def run_cursor(
     if not has_authority:
         return await run_cursor_process(session_id, run_id, prompt, sess, manifest_path,
                                         standalone_provider_context=standalone_provider_context)
+    from cursor_agent_client import cursor_workspace_directory
+    try:
+        workspace = cursor_workspace_directory(str(sess.get("cwd") or DEFAULT_CWD))
+    except FileNotFoundError:
+        return await run_cursor_process(session_id, run_id, prompt, sess, manifest_path,
+                                        standalone_provider_context=standalone_provider_context)
     owner = secrets.token_urlsafe(48)
 
     async def execute(value: Any, key: str) -> tuple[str, bool]:
@@ -68730,7 +68739,7 @@ async def run_cursor(
             return str(exc), True
 
     broker = CursorToolBroker(codex_provider_mcp_tool_definition(), execute)
-    profile = CursorRuntimeProfile(agent_runner_env(session_id), existing_cwd(str(sess.get("cwd") or DEFAULT_CWD)))
+    profile = CursorRuntimeProfile(agent_runner_env(session_id), workspace)
     try:
         tool_env = await broker.start()
         profile.env.update(tool_env)
@@ -68763,13 +68772,39 @@ async def run_cursor_process(
         CursorEventParseError,
         build_cursor_cmd,
         cursor_approval_request_text,
+        cursor_workspace_directory,
         normalize_cursor_stream_event,
     )
 
     if standalone_provider_context:
         sess = standalone_provider_session(sess)
     requested_cwd = str(sess.get("cwd") or DEFAULT_CWD)
-    cwd = existing_cwd(requested_cwd)
+    try:
+        cwd = cursor_workspace_directory(requested_cwd)
+    except FileNotFoundError as error:
+        released = await release_turn_slot(session_id, expected_run_id=run_id)
+        try:
+            if released:
+                await append_event(session_id, "error", {
+                    "run_id": run_id,
+                    "backend": BACKEND_CURSOR,
+                    "message": str(error),
+                    **run_event_metadata(run_id),
+                })
+                await append_turn_finished_event(session_id, {
+                    "run_id": run_id,
+                    "backend": BACKEND_CURSOR,
+                    "exit_code": None,
+                    "result_text": "",
+                    "is_error": True,
+                    **run_event_metadata(run_id),
+                })
+        finally:
+            RUN_METADATA.pop(run_id, None)
+            STOPPED_RUNS.discard(run_id)
+            if released:
+                schedule_next_queued_turn(session_id)
+        return
     diff_baseline = await capture_git_baseline(session_id, run_id, cwd)
     if str(Path(requested_cwd).expanduser()) != cwd:
         await append_event(session_id, "cwd_fallback", {"run_id": run_id, "requested_cwd": requested_cwd, "cwd": cwd})

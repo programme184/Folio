@@ -20,7 +20,14 @@ class CursorKeyTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(cursor_api_key, "run_isolated_command", run):
             result = await cursor_api_key.catalog(INPUT, executable="/fixture/agent", env=original)
         self.assertEqual(result["discovery_status"], "ready")
-        self.assertEqual(len(result["models"]), 2)
+        self.assertEqual([item["value"] for item in result["models"]], [
+            "auto",
+            "grok-4.7-high-fast",
+            "grok-4.6-high-fast",
+            "composer-2.5-fast",
+            "composer-2.5",
+            "sonnet",
+        ])
         call = run.call_args_list[1]
         self.assertEqual(call.args[0], ["/fixture/agent", "--list-models"])
         self.assertEqual(call.kwargs["env"]["CURSOR_API_KEY"], INPUT["api_key"])
@@ -51,6 +58,12 @@ class CursorKeyTests(unittest.IsolatedAsyncioTestCase):
             other = connections.ConnectionStore(Path(temporary) / "instance-two")
             saved = store.write("cursor", 0, INPUT, "verified")
             self.assertEqual(saved["model"], "auto")
+            listed = {item["value"]: item["label"] for item in store.catalog("cursor")["models"]}
+            self.assertEqual(listed["auto"], "Auto")
+            self.assertEqual(listed["grok-4.7-high-fast"], "Grok 4.7 High Fast")
+            self.assertEqual(listed["grok-4.6-high-fast"], "Grok 4.6 High Fast")
+            self.assertEqual(listed["composer-2.5-fast"], "Composer 2.5 Fast")
+            self.assertEqual(listed["composer-2.5"], "Composer 2.5")
             self.assertNotIn(INPUT["api_key"], repr(saved))
             session = {"backend": "cursor", "provider_connection": "custom"}
             bound = store.bind(session)

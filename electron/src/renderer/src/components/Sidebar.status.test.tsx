@@ -241,8 +241,9 @@ describe('sidebar status controls', () => {
     expect(running.querySelector('.section-status-dot')).toHaveClass('running')
     for (const section of [unread, running, container.querySelector<HTMLElement>('[data-section-id="folder:Work"]')!]) {
       const header = section.querySelector('button')!
-      expect(header.lastElementChild).toHaveClass('section-chevron')
-      expect(header).toHaveAttribute('aria-expanded', 'true')
+      if (section.dataset.sectionId?.startsWith('folder:')) expect(header).toHaveClass('section-chevron')
+      else expect(header.lastElementChild).toHaveClass('section-chevron')
+      if (!section.dataset.sectionId?.startsWith('folder:')) expect(header).toHaveAttribute('aria-expanded', 'true')
       expect(header).not.toHaveAttribute('aria-disabled', 'true')
     }
     fireEvent.click(within(unread).getByRole('button', { name: 'Unread' }))

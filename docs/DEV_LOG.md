@@ -1,5 +1,43 @@
 # Public development log
 
+## 2026-11-04 — Run remote-profile chats on their remote AgentsServer
+
+- Selecting a saved remote server now makes that server the execution boundary
+  for sessions, provider processes, turns, files and terminals. The desktop no
+  longer presents a remote profile while silently running its chat and provider
+  tools on the loopback AgentsServer. The retired loopback-group projection is
+  retained only as an explicit test seam.
+- The configured Synria server and local machine have the same file-backed
+  Codex login, so the corrected remote runner keeps the existing local-source
+  account while executing in the remote workspace. A real disposable Codex
+  request crossed the Synria AgentsServer boundary, returned `turn_started` for
+  `/home/ubuntu/Synria/geom`, and emitted no `cwd_fallback`; the native provider
+  remained waiting at thread status and did not produce a final model reply
+  within the acceptance window. The disposable chats were stopped and removed.
+- The focused regression verifies that sessions, directory completion,
+  absolute files and terminals reach only the selected remote client. All 464
+  service tests and the complete Electron suite (5,696 passed, 5 skipped),
+  TypeScript checking and the production build pass. The packaged desktop was
+  installed locally with a rollback copy and restarted successfully; startup,
+  remote-profile sync and renderer bootstrap completed. Native app clicking
+  remains untested because the computer-control surface exposed no applications
+  and this host has no `xvfb-run`. Nothing was published or deployed, and no
+  server was changed.
+
+## 2026-11-04 — Start a prompt below a standalone file reference
+
+- Choosing a workspace file with the `@` picker now places the caret on a new
+  line when that reference is the only content on its line. Inline file
+  references keep their existing separating space, and Enter remains the send
+  shortcut for ordinary prompt text.
+- The focused workspace-mention and Composer regressions pass (247 tests), as
+  do the Electron TypeScript check and production build. An isolated production
+  Electron client launched successfully against a disposable profile, but the
+  available computer-control surface exposed no native windows, so clicking the
+  real picker and visually confirming the multiline field remain untested.
+  This is a source-only desktop change; no server update, installation,
+  publication, or deployment was performed.
+
 ## 2026-11-04 — Restore the Folio icon in the Linux dock
 
 - Folio's generated Linux desktop entry now references the named `folio` icon
@@ -43,6 +81,37 @@
   installed with a rollback archive and restarted successfully; no package was
   published or deployed. The matching local AgentsServer source is installed
   in place and takes effect on its post-task restart.
+
+## 2026-11-04 — Cursor model menu, shell access, and workspace folder
+
+- The Cursor model menu lists Grok 4.7 High Fast, Grok 4.6 High Fast,
+  Composer 2.5 Fast, and Composer 2.5 in Folio even when the saved catalog
+  only contains Auto. A live catalog entry with the same id keeps its label.
+- Cursor defaults now pass `--force`. The CLI allowlist that only permits
+  `ls` was rejecting every other shell command, and Folio has no approval
+  prompt. Plan mode stays read-only. Explicit Cursor deny rules still apply.
+- A Cursor chat whose folder does not exist yet is created under that parent
+  and the turn runs there. Folio no longer substitutes the home directory,
+  which made a Synria workspace look disconnected.
+- Focused catalog, permission, and workspace tests passed, as did the
+  Electron typecheck and production build. The local Folio package was
+  installed at `~/.local/lib/folio/app`; the previous archive is
+  `resources/app.asar.before-cursor-menu`. The local AgentsServer on
+  127.0.0.1:7850 was restarted and reported healthy. Folio was restarted onto
+  that package and reconnected. No live model request was sent, and the model
+  menu was not clicked in the desktop window. Nothing was published.
+
+## 2026-11-04 — Show Grok and Composer in the Cursor model menu
+
+- Folio's Cursor model menu now includes the Grok and Composer choices shown
+  in Cursor: Grok 4.7 High Fast, Grok 4.6 High Fast, Composer 2.5 Fast, and
+  Composer 2.5. They appear after Auto for both CLI login and a Cursor API
+  key. A model the CLI already listed keeps that account's label. A failed
+  key check still returns no models.
+- Colored `agent --list-models` output is parsed without treating the color
+  codes as part of the model id.
+- Focused catalog tests passed. The open Folio window and its connected
+  server were not restarted, and no live model request was sent.
 
 ## 2026-11-04 — Restore creation in multi-root Files
 

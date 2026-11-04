@@ -8,7 +8,9 @@ fixtures.
 """
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from cursor_agent_client import (
     CURSOR_PERMISSION_MODES,
@@ -17,7 +19,9 @@ from cursor_agent_client import (
     canonical_cursor_call_id,
     cursor_account_is_free_tier,
     cursor_permission_flags,
+    cursor_workspace_directory,
     normalize_cursor_stream_event,
+    merge_cursor_grok_composer_models,
     parse_cursor_account_tier,
     parse_cursor_auth_status,
     parse_cursor_models_list,
@@ -651,6 +655,43 @@ class ParseCursorModelsListTests(unittest.TestCase):
     def test_empty_output_yields_no_models(self) -> None:
         self.assertEqual(parse_cursor_models_list(""), [])
 
+    def test_colored_list_keeps_the_model_id(self) -> None:
+        # cursor-agent 2026.10.22 paints the id cyan and the label dim when
+        # stdout is a terminal. The escape bytes are not part of the id.
+        colored = (
+            "Available models\n\n"
+            "\x1b[36mgrok-4.7-high-fast\x1b[0m \x1b[2m- Grok 4.7 High Fast\x1b[0m\n"
+            "\x1b[36mcomposer-2.5-fast\x1b[0m \x1b[2m- Composer 2.5 Fast\x1b[0m\n"
+        )
+        models = parse_cursor_models_list(colored)
+        self.assertEqual(
+            [(model["id"], model["label"]) for model in models],
+            [
+                ("grok-4.7-high-fast", "Grok 4.7 High Fast"),
+                ("composer-2.5-fast", "Composer 2.5 Fast"),
+            ],
+        )
+
+    def test_grok_and_composer_fill_gaps_without_replacing_a_live_entry(self) -> None:
+        listed = parse_cursor_models_list(REAL_MODELS_LIST_OUTPUT)
+        listed.append({
+            "id": "composer-2.5-fast",
+            "label": "Composer 2.5 Fast (account)",
+            "is_router": False,
+            "is_default": False,
+        })
+        merged = merge_cursor_grok_composer_models(listed)
+        by_id = {model["id"]: model for model in merged}
+        self.assertEqual([model["id"] for model in merged[:5]], [
+            "auto",
+            "grok-4.7-high-fast",
+            "grok-4.6-high-fast",
+            "composer-2.5",
+            "gpt-5.3-codex-low",
+        ])
+        self.assertEqual(by_id["composer-2.5-fast"]["label"], "Composer 2.5 Fast (account)")
+        self.assertEqual(merge_cursor_grok_composer_models([]), [])
+
 
 class ParseCursorAuthStatusTests(unittest.TestCase):
     def test_not_logged_in(self) -> None:
@@ -772,10 +813,10 @@ class CursorAccountIsFreeTierTests(unittest.TestCase):
 
 
 class CursorPermissionFlagsTests(unittest.TestCase):
-    def test_default_is_trust_only_no_shell_auto_approval(self) -> None:
-        # Real behavior confirmed live: --trust alone lets file edits through
-        # but shell calls come back {"result": {"rejected": ...}}.
-        self.assertEqual(cursor_permission_flags("default"), ["--trust"])
+    def test_default_lifts_the_shell_allowlist(self) -> None:
+        # Cursor CLI defaults to approvalMode allowlist and Shell(ls). Without
+        # --force, headless Folio rejects every other command.
+        self.assertEqual(cursor_permission_flags("default"), ["--trust", "--force"])
 
     def test_unrecognized_mode_fails_safe_to_trust_only(self) -> None:
         self.assertEqual(cursor_permission_flags("not_a_real_mode"), ["--trust"])
@@ -796,12 +837,31 @@ class CursorPermissionFlagsTests(unittest.TestCase):
         )
 
 
+class CursorWorkspaceDirectoryTests(unittest.TestCase):
+    def test_missing_synria_folder_is_created_under_its_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "Synria"
+            parent.mkdir()
+            target = parent / "geom_dev"
+            self.assertEqual(cursor_workspace_directory(str(target)), str(target))
+            self.assertTrue(target.is_dir())
+
+    def test_existing_directory_is_used_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(cursor_workspace_directory(temporary), temporary)
+
+    def test_missing_parent_does_not_fall_back_to_another_directory(self) -> None:
+        missing = "/tmp/agentsdock-missing-synria-parent/geom_dev"
+        with self.assertRaises(FileNotFoundError):
+            cursor_workspace_directory(missing)
+
+
 class BuildCursorCmdTests(unittest.TestCase):
     def test_first_turn_has_no_resume_flag(self) -> None:
         cmd = build_cursor_cmd({}, cursor_bin="agent")
         self.assertEqual(
             cmd,
-            ["agent", "-p", "--output-format", "stream-json", "--trust"],
+            ["agent", "-p", "--output-format", "stream-json", "--trust", "--force"],
         )
 
     def test_resume_uses_real_session_id_shape(self) -> None:
@@ -815,7 +875,7 @@ class BuildCursorCmdTests(unittest.TestCase):
             [
                 "agent", "-p", "--output-format", "stream-json",
                 "--resume", "00000000-0000-4000-8000-000000000002",
-                "--trust",
+                "--trust", "--force",
             ],
         )
 

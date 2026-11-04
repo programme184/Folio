@@ -125,6 +125,50 @@ describe('embedded pane services', () => {
 })
 
 describe('local chat execution across server groups', () => {
+  it('uses the selected remote AgentsServer for chats, files and terminals by default', async () => {
+    const { settings } = profileSettings('http://127.0.0.1:7850')
+    settings.updateProfile('a', { serverIdentity: 'local-server', serverSetupComplete: true })
+    settings.updateProfile('b', { serverIdentity: 'remote-server', serverSetupComplete: true })
+    const cache = new LocalCache(':memory:')
+    const urls: string[] = []
+    const remote = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'remote-server', active: [], active_sessions: [] }),
+      sessions: async () => [{ id: 'remote-chat', title: 'Remote', backend: 'codex', cwd: '/remote/project', archived: false } as Session]
+    })
+    const local = fakeClient({
+      health: async () => ({ ok: true, server_identity: 'local-server', active: [], active_sessions: [] }),
+      sessions: async () => []
+    })
+    const service = new AppService({
+      settings,
+      cache,
+      clientFactory: (url: string) => {
+        urls.push(url)
+        return (url.includes('b.test') ? remote : local) as unknown as AgentServerClient
+      }
+    })
+    cleanup.push(() => { service.stop(); cache.close() })
+
+    const remoteBootstrap = await service.switchServer('b')
+    expect((await service.listSessions())).toEqual([expect.objectContaining({ id: 'remote-chat', cwd: '/remote/project' })])
+    await service.completeWorkingDirectory('/remote/pro', 12)
+    await service.absoluteWorkspaceEntries('remote-chat', '/remote/project')
+    await service.connectTerminal('b', remoteBootstrap.profileGeneration, 'remote-chat', {
+      cwd: '/remote/project', columns: 80, rows: 24
+    })
+
+    expect(urls).toContain('http://b.test:7850')
+    expect(remote.sessions).toHaveBeenCalled()
+    expect(remote.completeWorkingDirectory).toHaveBeenCalledWith('/remote/pro', 12, null)
+    expect(remote.absoluteWorkspaceEntries).toHaveBeenCalledWith('remote-chat', '/remote/project', 0, 500, null)
+    expect(remote.terminal).toHaveBeenCalledWith('remote-chat', expect.objectContaining({
+      cwd: '/remote/project', remoteHost: null
+    }), expect.any(Function), expect.any(Function))
+    expect(local.completeWorkingDirectory).not.toHaveBeenCalled()
+    expect(local.absoluteWorkspaceEntries).not.toHaveBeenCalled()
+    expect(local.terminal).not.toHaveBeenCalled()
+  })
+
   it('fails closed when an older local server cannot browse the selected SSH host', async () => {
     const completeWorkingDirectory = vi.fn()
     const scope = { profileId: 'remote', generation: 1, namespace: 'remote-server', client: { completeWorkingDirectory } }
@@ -9205,7 +9249,7 @@ describe('server profile lifecycle', () => {
     const { service } = createProfileService({
       'http://a.test:7850': [client]
     }, cache => {
-      cache.putPreference('profile:a', 'runtimeCatalog:v1', runtimeCatalog)
+      cache.putPreference('profile:a', 'runtimeCatalog:v2', runtimeCatalog)
     })
     const payload = await service.bootstrap()
 
@@ -9228,7 +9272,7 @@ describe('server profile lifecycle', () => {
     const { service } = createProfileService({
       'http://a.test:7850': [client]
     }, cache => {
-      cache.putPreference('profile:a', 'runtimeCatalog:v1', runtimeCatalog)
+      cache.putPreference('profile:a', 'runtimeCatalog:v2', runtimeCatalog)
     })
     const payload = await service.bootstrap()
 

@@ -14,6 +14,14 @@ const runtimeCustomProperties = new Set([
   '--workspace-editor-width',
   '--workspace-explorer-width',
   '--workspace-markdown-source-percent',
+  '--papers-chat-width',
+  '--scale-factor',
+  '--min-font-size',
+  '--font-height',
+  '--rotate',
+  '--scale-x',
+  '--paper-highlight',
+  '--paper-underline',
   '--radix-dropdown-menu-content-transform-origin',
   '--radix-popover-content-available-height'
 ])

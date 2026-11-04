@@ -169,6 +169,28 @@ export function cursorBackendUnavailableReason(
   return 'Cursor is unavailable. It is supported, but its CLI is not ready. Install or update Cursor, sign in, then recheck CLIs.'
 }
 
+/** Cursor menu rows the IDE shows. A live catalog entry with the same id wins. */
+const CURSOR_GROK_COMPOSER_MODELS: RuntimeOption[] = [
+  { value: 'grok-4.7-high-fast', label: 'Grok 4.7 High Fast' },
+  { value: 'grok-4.6-high-fast', label: 'Grok 4.6 High Fast' },
+  { value: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
+  { value: 'composer-2.5', label: 'Composer 2.5' },
+]
+
+export function cursorGrokComposerModel(model: string | null | undefined): boolean {
+  const selected = model?.trim()
+  return Boolean(selected && CURSOR_GROK_COMPOSER_MODELS.some(option => option.value === selected))
+}
+
+function withCursorGrokComposerModels(options: RuntimeOption[]): RuntimeOption[] {
+  const present = new Set(options.map(option => option.value))
+  const missing = CURSOR_GROK_COMPOSER_MODELS.filter(option => !present.has(option.value))
+  if (!missing.length) return options
+  const autoIndex = options.findIndex(option => option.value === 'auto')
+  const insertAt = autoIndex >= 0 ? autoIndex + 1 : Math.min(1, options.length)
+  return [...options.slice(0, insertAt), ...missing, ...options.slice(insertAt)]
+}
+
 export function runtimeCatalogOptions(
   catalog: RuntimeCatalog | null | undefined,
   backend: string,
@@ -195,6 +217,7 @@ export function runtimeCatalogOptions(
   if (selected && !replacements?.[selected] && !options.some(option => option.value === selected)) {
     options.push({ value: selected, label: selected })
   }
+  if (backend === 'cursor' && type === 'models') return withCursorGrokComposerModels(options)
   if (backend === 'codex' && codexProvider === 'custom' && type === 'models') {
     return options.map(option => {
       const model = option.value || backendCatalog?.default_model
@@ -271,7 +294,7 @@ export function runtimeSelectionError(
   }
   if (backend === 'opencode' && !opencodeBackendAvailable(health, catalog)) return opencodeBackendUnavailableReason(health, catalog)
   const selected = model?.trim()
-  if (backend === 'cursor' && selected && !catalog?.backends.cursor?.models.some(option => option.value === selected)) {
+  if (backend === 'cursor' && selected && !cursorGrokComposerModel(selected) && !catalog?.backends.cursor?.models.some(option => option.value === selected)) {
     return `${selected} is not offered by Cursor on this AgentsServer. Choose an available model before running Cursor work.`
   }
   if (backend === 'opencode' && selected && !catalog?.backends.opencode?.models.some(option => option.value === selected)) {

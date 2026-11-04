@@ -980,8 +980,7 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
-.workspace-editor-pdf-focus > .workspace-editor-explorer,
-.workspace-editor-pdf-focus > .workspace-editor-explorer-resize-handle {
+.workspace-editor-pdf-focus > .workspace-editor-explorer {
   display: none;
 }
 

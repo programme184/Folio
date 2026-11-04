@@ -9,13 +9,14 @@ describe('private media protocol privileges', () => {
       source.indexOf('protocol.registerSchemesAsPrivileged(['),
       source.indexOf('])', source.indexOf('protocol.registerSchemesAsPrivileged([')) + 2
     )
+    const mediaRegistration = registration.split('\n').find(line => line.includes("scheme: 'agentsdock-media'")) ?? ''
 
-    expect(registration).toContain("scheme: 'agentsdock-media'")
-    expect(registration).toContain('standard: true')
-    expect(registration).toContain('secure: true')
-    expect(registration).toContain('stream: true')
-    expect(registration).not.toContain('supportFetchAPI')
-    expect(registration).not.toContain('corsEnabled')
-    expect(registration).not.toContain('bypassCSP')
+    expect(mediaRegistration).toContain("scheme: 'agentsdock-media'")
+    expect(mediaRegistration).toContain('standard: true')
+    expect(mediaRegistration).toContain('secure: true')
+    expect(mediaRegistration).toContain('stream: true')
+    expect(mediaRegistration).not.toContain('supportFetchAPI')
+    expect(mediaRegistration).not.toContain('corsEnabled')
+    expect(mediaRegistration).not.toContain('bypassCSP')
   })
 })

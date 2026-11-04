@@ -7,8 +7,8 @@ an authenticated Cursor CLI, and the server independently probes the selected
 executable before advertising this backend.
 
 Permission names describe headless behavior, not an interactive approval UI:
-``default`` uses Cursor's configured permissions without forcing tools,
-``full_access`` force-allows commands except explicit Cursor deny rules, and
+``default`` and ``full_access`` force-allow commands except explicit Cursor
+deny rules, because this runner cannot answer an allowlist prompt, and
 ``plan`` requests planning mode. Cursor's
 interactive auto-review mode is intentionally not exposed until AgentsServer
 has a bounded approval bridge. The
@@ -21,6 +21,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any, Iterator
 
 
@@ -531,7 +532,8 @@ def parse_cursor_models_list(output: str) -> list[dict[str, Any]]:
     """
     models: list[dict[str, Any]] = []
     for raw_line in output.splitlines():
-        line = raw_line.strip()
+        # Current CLI builds color the id and label when stdout is a terminal.
+        line = CURSOR_ANSI_ESCAPE_RE.sub("", raw_line).strip()
         if not line or line.startswith("Available models") or line.startswith("Tip:"):
             continue
         if " - " not in line:
@@ -555,28 +557,93 @@ def parse_cursor_models_list(output: str) -> list[dict[str, Any]]:
     return models
 
 
+# Ids the current Cursor client shows and `agent --model` accepts. A live
+# `--list-models` result stays authoritative: these fill only the gaps, in the
+# same order as Cursor's picker (Grok, then Composer, after Auto).
+CURSOR_GROK_COMPOSER_MODELS: tuple[tuple[str, str], ...] = (
+    ("grok-4.7-high-fast", "Grok 4.7 High Fast"),
+    ("grok-4.6-high-fast", "Grok 4.6 High Fast"),
+    ("composer-2.5-fast", "Composer 2.5 Fast"),
+    ("composer-2.5", "Composer 2.5"),
+)
+
+
+def merge_cursor_grok_composer_models(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add Grok and Composer when a Cursor catalog omitted them.
+
+    An empty list stays empty so a failed key check cannot look successful.
+    An id the CLI already returned keeps that entry's label and metadata.
+    """
+    if not models:
+        return models
+    key = "value" if any("value" in model for model in models) else "id"
+    present = {str(model.get(key) or "") for model in models}
+    missing = [
+        (model_id, label)
+        for model_id, label in CURSOR_GROK_COMPOSER_MODELS
+        if model_id not in present
+    ]
+    if not missing:
+        return models
+    extras: list[dict[str, Any]] = []
+    for model_id, label in missing:
+        if key == "id":
+            extras.append({
+                "id": model_id,
+                "label": label,
+                "is_router": False,
+                "is_default": False,
+            })
+        else:
+            extras.append({"value": model_id, "label": label})
+    insert_at = next(
+        (
+            index + 1
+            for index, model in enumerate(models)
+            if model.get("is_router") or str(model.get(key) or "") == "auto"
+        ),
+        0,
+    )
+    return [*models[:insert_at], *extras, *models[insert_at:]]
+
+
 CURSOR_PERMISSION_MODES = ("default", "full_access", "plan")
 
 
 def cursor_permission_flags(mode: str) -> list[str]:
-    """Translate a single-enum permission mode (matching the precedent set by
-    AgentsDock's ClaudePermissionMenu.tsx - one user-chosen mode per session,
-    not a server-hardcoded default) into real Cursor CLI flags.
+    """Translate a single-enum permission mode into real Cursor CLI flags.
 
-    ``--trust`` acknowledges workspace trust but does not override Cursor's
-    global/project permission configuration. ``--force`` auto-allows commands
-    except operations explicitly denied by Cursor configuration. Interactive
-    auto-review is deliberately unavailable because this headless runner
-    cannot answer approval prompts.
+    Cursor's own CLI config defaults to an allowlist of ``Shell(ls)``. In
+    headless Folio there is no approval prompt, so that allowlist rejects
+    every other command. ``default`` and ``full_access`` pass ``--force``,
+    which runs commands unless Cursor configuration explicitly denies them.
+    ``plan`` stays read-only. Unrecognized modes stay trust-only.
     """
     if mode == "plan":
         return ["--trust", "--mode", "plan"]
-    if mode == "full_access":
+    if mode in {"default", "full_access"}:
         return ["--trust", "--force"]
-    # "default" and any unrecognized mode use Cursor's configured permissions
-    # without force. This is not an interactive "ask" mode and clients must
-    # not label it as one.
     return ["--trust"]
+
+
+def cursor_workspace_directory(requested: str | None) -> str:
+    """Use the chat's selected folder, creating it when its parent exists.
+
+    A missing Synria workspace must not be silently replaced by the home
+    directory. The turn then cannot see the project it is connected to.
+    """
+    raw = str(requested or "").strip()
+    if not raw or "\x00" in raw or len(raw) > 4096:
+        raise FileNotFoundError("Working directory is not available")
+    path = Path(raw).expanduser()
+    if path.is_dir():
+        return str(path)
+    parent = path.parent
+    if path.name and parent.is_dir():
+        path.mkdir(mode=0o755, exist_ok=True)
+        if path.is_dir():
+            return str(path)
+    raise FileNotFoundError(f"Working directory is not available: {raw}")
 
 
 def build_cursor_cmd(

@@ -229,8 +229,11 @@ class ConnectionStore:
                     self.catalog_cache[cache_key] = (time.monotonic(), models)
                     if len(self.catalog_cache) > 32:
                         self.catalog_cache.pop(next(iter(self.catalog_cache)))
-                if backend == "cursor" and not models:
-                    models = [{"value": "auto", "label": "Auto"}]
+                if backend == "cursor":
+                    if not models:
+                        models = [{"value": "auto", "label": "Auto"}]
+                    from cursor_agent_client import merge_cursor_grok_composer_models
+                    models = merge_cursor_grok_composer_models(models)
                 if backend == "gemini":
                     from gemini_api import model_options
                     models = model_options(value, models)

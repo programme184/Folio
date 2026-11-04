@@ -288,7 +288,7 @@ describe('controlled permission menus', () => {
 
     expect(screen.getByRole('button', { name: 'Cursor permissions: Cursor defaults' })).toBeEnabled()
     expect(screen.getAllByRole('radio').map(option => option.getAttribute('aria-label'))).toEqual(['Cursor defaults'])
-    expect(screen.getByText(/Cursor’s configured permissions/)).toBeInTheDocument()
+    expect(screen.getByText(/Allows tools and shell commands/)).toBeInTheDocument()
   })
 
   it('recovers a legacy auto-review session as the safe default instead of hiding the menu', () => {

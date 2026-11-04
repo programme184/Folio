@@ -12,4 +12,12 @@ describe('workspace file mentions', () => {
     expect(insertWorkspaceFileMention('hi', 2, 2, 'a.ts').text).toBe('hi @a.ts ')
     expect(insertWorkspaceFileMention('x @q tail', 2, 4, 'a.ts').text).toBe('x @a.ts tail')
   })
+  it('starts a new line after a standalone file reference', () => {
+    expect(insertWorkspaceFileMention('@ab', 0, 3, 'src/abc.ts')).toEqual({
+      text: '@src/abc.ts\n', caret: 12
+    })
+    expect(insertWorkspaceFileMention('  @ab', 2, 5, 'src/abc.ts')).toEqual({
+      text: '  @src/abc.ts\n', caret: 14
+    })
+  })
 })

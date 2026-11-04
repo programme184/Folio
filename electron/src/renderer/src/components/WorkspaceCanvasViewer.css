@@ -26,7 +26,7 @@
 .workspace-canvas-error pre {
   margin: 8px 0 0;
   white-space: pre-wrap;
-  font: 12px/1.5 var(--mono);
+  font: 12px/1.5 var(--font-mono);
 }
 
 .workspace-canvas-runtime-error {

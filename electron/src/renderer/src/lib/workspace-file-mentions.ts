@@ -25,7 +25,9 @@ export function insertWorkspaceFileMention(
   const prefix = text.slice(0, from)
   const suffix = text.slice(to)
   const lead = prefix.length > 0 && !/\s$/u.test(prefix) ? ' ' : ''
-  const trail = suffix.length === 0 || !/^\s/u.test(suffix) ? ' ' : ''
+  const currentLinePrefix = prefix.slice(prefix.lastIndexOf('\n') + 1)
+  const standaloneAtDraftEnd = suffix.length === 0 && currentLinePrefix.trim().length === 0
+  const trail = standaloneAtDraftEnd ? '\n' : suffix.length === 0 || !/^\s/u.test(suffix) ? ' ' : ''
   const inserted = `${lead}${workspaceMentionText(path, kind)}${trail}`
   return { text: `${prefix}${inserted}${suffix}`, caret: from + inserted.length }
 }

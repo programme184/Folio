@@ -1203,7 +1203,7 @@ describe('instant new chat defaults', () => {
     await useAppStore.getState().requestNewChat()
 
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      folder: 'Fresh', cwd: '/work/research', backend: 'claude'
+      folder: 'Fresh', cwd: '/work/research', backend: 'codex', model: 'gpt-current'
     }))
   })
 

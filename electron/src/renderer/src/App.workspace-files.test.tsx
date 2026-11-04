@@ -10,7 +10,7 @@ import { handleMenuCommand, useAppStore } from './store/app-store'
 import { requestOpenWorkspaceReference } from './lib/workspace-file-links'
 
 vi.mock('./components/Sidebar', () => ({ Sidebar: () => null }))
-vi.mock('./components/ChatHeader', () => ({ ChatHeader: () => null }))
+vi.mock('./components/ChatHeader', () => ({ ChatHeader: () => null, WindowFrameControls: () => null }))
 vi.mock('./components/Timeline', () => ({ Timeline: ({ sessionId }: { sessionId?: string }) => {
   const selectedSessionId = useAppStore(state => state.selectedSessionId)
   const owner = sessionId ?? selectedSessionId!

@@ -197,6 +197,25 @@ describe('Composer', () => {
     })
   })
 
+  it('moves to a new line after choosing a standalone workspace file reference', async () => {
+    const search = vi.fn().mockResolvedValue({
+      entries: [{ path: '/work/grasp_all_controller.py', name: 'grasp_all_controller.py', kind: 'file' }]
+    })
+    window.agentsDock.workspace = { search } as unknown as AgentsDockAPI['workspace']
+    const user = userEvent.setup()
+    render(<Composer />)
+
+    const editor = screen.getByPlaceholderText('Message')
+    await user.type(editor, '@grasp')
+    await screen.findByRole('option', { name: /grasp_all_controller\.py/ })
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    expect(editor).toHaveValue('@/work/grasp_all_controller.py\n')
+    expect(editor).toHaveFocus()
+    expect(editor).toHaveProperty('selectionStart', 31)
+    expect(editor).toHaveProperty('selectionEnd', 31)
+  })
+
   describe('typed model commands and message routing analytics', () => {
     let tracker: MockInstance<typeof analytics.trackEvent>
     const claude: Session = {id:'chat-1',title:'QA',backend:'claude',model:'sonnet',provider_connection:'default'}

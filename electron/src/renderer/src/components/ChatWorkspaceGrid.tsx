@@ -416,7 +416,8 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
           <span>{session.title}</span><small>{session.backend}</small>
         </button>)}
       </section>)}
-      {!candidates.length && <span>{t('chatWorkspace.noChats')}</span>}
+      {!candidates.length && <span>{t(!query && sessions.some(session => !session.archived && excludedSessionIds.has(session.id))
+        ? 'chatWorkspace.allChatsOpen' : 'chatWorkspace.noChats')}</span>}
     </div>
   </section>
 }

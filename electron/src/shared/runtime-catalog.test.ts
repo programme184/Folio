@@ -243,7 +243,11 @@ describe('runtimeCatalogHasSelectableModels', () => {
     }
     expect(runtimeCatalogOptions(withCursor, 'cursor', 'models')).toEqual([
       { value: '', label: 'Server default' },
-      { value: 'auto', label: 'Auto' }
+      { value: 'auto', label: 'Auto' },
+      { value: 'grok-4.7-high-fast', label: 'Grok 4.7 High Fast' },
+      { value: 'grok-4.6-high-fast', label: 'Grok 4.6 High Fast' },
+      { value: 'composer-2.5-fast', label: 'Composer 2.5 Fast' },
+      { value: 'composer-2.5', label: 'Composer 2.5' }
     ])
   })
 
@@ -389,6 +393,8 @@ describe('optional Cursor backend admission', () => {
     expect(runtimeSelectionError({ ok: true }, cursorCatalog, 'cursor', 'auto')).toMatch(/Cursor is unavailable/)
     expect(runtimeSelectionError(cursorHealth, validCatalog, 'cursor', 'auto')).toMatch(/Cursor is unavailable/)
     expect(runtimeSelectionError(cursorHealth, cursorCatalog, 'cursor', 'legacy-custom')).toMatch(/not offered by Cursor/)
+    expect(runtimeSelectionError(cursorHealth, cursorCatalog, 'cursor', 'grok-4.7-high-fast')).toBeNull()
+    expect(runtimeSelectionError(cursorHealth, cursorCatalog, 'cursor', 'composer-2.5-fast')).toBeNull()
   })
 })
 
