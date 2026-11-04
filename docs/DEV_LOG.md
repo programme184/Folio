@@ -13,8 +13,19 @@
   verifies the server receives cwd-relative paths, opens the new file through
   the native absolute transport, and confirms creation stays disabled in the
   additional root. All 158 focused Files/layout tests, TypeScript checking and
-  the production Electron build pass. Local package installation and real-app
-  acceptance are pending.
+  the production Electron build pass.
+- Source commit / app build / server version: `4c39a73c`; Electron 0.2.0 local
+  Linux package; the existing workspace-files capability 7 server is unchanged.
+  The package is installed at `~/.local/lib/folio/app`, its renderer contains
+  both fixes, the desktop restarted and its production transport reconnected to
+  the live server. The prior installation is retained at
+  `~/.local/lib/folio/app.before-files-create`; nothing was published.
+- Packaged GUI interaction remains unaccepted: the available computer-control
+  surface reported no desktop apps, and the package verifier reached its native
+  smoke step but this machine has no `xvfb-run`. The broader Electron suite has
+  21 existing failures outside this change (5,666 passed, 5 skipped); do not treat the
+  local installation as a release candidate until those gates and the two real
+  UI journeys are exercised.
 
 ## 2026-11-03 — Support Canvas host theme tokens
 
@@ -170,8 +181,10 @@
   99-pixel composer at y=832–931 inside the 945-pixel embedded viewport; before
   the fix, the chat ended at y=78 and the composer started outside that row.
 - The probe verifies the renderer and CSS boundary but does not replace a
-  hands-on run of the rebuilt app's real concurrent-server webview. Source only;
-  no package was installed or published and no server update is required.
+  hands-on run of the rebuilt app's real concurrent-server webview. The local
+  package from `4c39a73c` is installed with the Files fix described above, but
+  computer control could not expose its desktop window for interaction. No
+  package was published and no server update is required.
 
 ## 2026-11-03 — Workspace Files supports multiple simultaneous roots
 
