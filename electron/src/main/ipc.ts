@@ -463,6 +463,7 @@ export function registerIpc(
   handle('workspace:preview-bytes', (sessionId, path) => service.workspacePreviewBytes(sessionId, path))
   handle('workspace:download', (sessionId, path) => service.downloadWorkspaceFile(sessionId, path))
   handle('workspace:create', (sessionId, path, kind) => service.createWorkspaceEntry(sessionId, path, kind))
+  handle('workspace:create-absolute', (sessionId, path, kind, remoteWorkspace) => service.createAbsoluteWorkspaceEntry(sessionId, path, kind, remoteWorkspace === true))
   handle('workspace:write', (sessionId, path, content, expectedRevision) => service.writeWorkspaceFile(sessionId, path, content, expectedRevision))
   handle('workspace:overwrite', (sessionId, path, content) => service.overwriteWorkspaceFile(sessionId, path, content))
   handle('workspace:rename', (sessionId, path, newName, expectedRevision) => service.renameWorkspaceEntry(sessionId, path, newName, expectedRevision))

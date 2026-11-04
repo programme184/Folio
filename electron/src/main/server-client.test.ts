@@ -2415,6 +2415,32 @@ describe('AgentServerClient live stream', () => {
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
 
+  it('creates an absolute workspace entry through the native transport', async () => {
+    const requests: IncomingMessage[] = []
+    const bodies: string[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      let body = ''
+      incoming.on('data', chunk => { body += chunk })
+      incoming.on('end', () => {
+        bodies.push(body)
+        response.setHeader('Content-Type', 'application/json')
+        response.end(JSON.stringify({ root: '/work/other root', entry: { name: 'drafts', path: '/work/other root/drafts', kind: 'directory' } }))
+      })
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await expect(client.createAbsoluteWorkspaceEntry('chat-one', '/work/other root/drafts', 'directory', 'Synria')).resolves.toMatchObject({
+        root: '/work/other root'
+      })
+    })
+
+    expect(requests[0]?.method).toBe('POST')
+    expect(requests[0]?.url).toBe('/api/sessions/chat-one/workspace/absolute-entry?remote_host=Synria')
+    expect(JSON.parse(bodies[0] ?? '{}')).toEqual({ path: '/work/other root/drafts', kind: 'directory' })
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+  })
+
   it('rejects an unsafe remote workspace host before the native request', async () => {
     const requests: IncomingMessage[] = []
     await withLocalHTTPServer((incoming, response) => {
@@ -2450,6 +2476,33 @@ describe('AgentServerClient live stream', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('http://example.test:7850/api/working-directories/complete?path=%2Fsrv%2Fpro&limit=12')
     expect(new Headers(init.headers).get('X-AgentsDock-Token')).toBe('secret')
+  })
+
+  it('requests SSH working-directory completions through the native transport', async () => {
+    const requests: IncomingMessage[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({
+        input: '/srv/pro', resolved_path: '/srv/pro', exists: false, base_path: '/srv',
+        suggestions: [{ name: 'project', path: '/srv/project/' }], truncated: false, message: null
+      }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await expect(client.completeWorkingDirectory('/srv/pro', 12, 'Synria')).resolves.toMatchObject({
+        suggestions: [{ path: '/srv/project/' }]
+      })
+    })
+
+    expect(requests[0]?.url).toBe('/api/working-directories/complete?path=%2Fsrv%2Fpro&limit=12&remote_host=Synria')
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+  })
+
+  it('rejects an unsafe SSH working-directory host before the native request', async () => {
+    const client = new AgentServerClient('http://127.0.0.1:9', 'secret')
+    await expect(client.completeWorkingDirectory('/srv/pro', 12, '-oProxyCommand=bad'))
+      .rejects.toThrow('Privileged native control route is invalid')
   })
 
   it('proxies workspace previews with encoded paths, HEAD, and Range without forwarding unrelated headers', async () => {

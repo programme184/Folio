@@ -398,6 +398,7 @@ const api: AgentsDockAPI = {
     previewBytes: (sessionId, path) => ipcRenderer.invoke('workspace:preview-bytes', sessionId, path),
     download: (sessionId, path) => ipcRenderer.invoke('workspace:download', sessionId, path),
     create: (sessionId, path, kind) => ipcRenderer.invoke('workspace:create', sessionId, path, kind),
+    createAbsolute: (sessionId, path, kind, remoteWorkspace) => ipcRenderer.invoke('workspace:create-absolute', sessionId, path, kind, remoteWorkspace),
     write: (sessionId, path, content, expectedRevision) => ipcRenderer.invoke('workspace:write', sessionId, path, content, expectedRevision),
     overwrite: (sessionId, path, content) => ipcRenderer.invoke('workspace:overwrite', sessionId, path, content),
     rename: (sessionId, path, newName, expectedRevision) => ipcRenderer.invoke('workspace:rename', sessionId, path, newName, expectedRevision),

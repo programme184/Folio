@@ -206,11 +206,13 @@ Status groups are not folder drop targets; dragging a chat out can still assign
 it to a real folder.
 
 Every selected chat also owns a lightweight workspace surface rooted at its
-server-side `cwd`. When its Folio folder contains multiple configured workspace
-directories and AgentsServer advertises workspace-files v7, the **Files** tab
-shows all of those roots at once; expanding or opening a second root does not
-change the chat's `cwd`. Existing files in additional roots use the native-only
-absolute file transport and retain revision-checked editing. The right-hand
+server-side `cwd`. When its Folio folder contains configured workspace
+directories and AgentsServer advertises workspace-files v8, the **Files** tab
+uses those explicit roots even when there is only one. This keeps SSH-backed
+project files on the same host as the terminal. With multiple directories it
+shows all roots at once; expanding or opening a second root does not change the
+chat's `cwd`. Existing files in additional roots use the native-only absolute
+file transport and retain revision-checked editing. The right-hand
 Details panel opens files in the existing workspace editor. It replaces
 the editor's separate Explorer pane and retains refresh and right-click actions.
 New file/folder remains available in the chat's current working directory and
@@ -227,6 +229,13 @@ the file picker does not change the panel. In split chat, Files follows the focu
 does not cover the conversations until a file editor or dialog is needed.
 Opening a file waits for saved editor tabs to restore, so the requested file
 becomes selected instead of leaving the split-chat return screen visible.
+
+The project New Folder and Change Folders dialogs browse the filesystem that
+matches the selected group. Loopback groups query the local AgentsServer;
+SSH-backed groups send the bounded working-directory completion request through
+the group's validated SSH alias, so a selected project root matches Terminal
+and Files even before that group has a chat.
+
 TIFF attachments and workspace images use a PNG preview of the first page in
 the desktop media viewer; downloading or opening the original keeps the TIFF
 file unchanged. Preview decoding runs outside the app's main thread.

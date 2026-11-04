@@ -1857,9 +1857,11 @@ export class AgentServerClient {
     return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/search?${params}`)
   }
 
-  completeWorkingDirectory(path: string, limit = 24): Promise<WorkingDirectoryCompletion> {
+  completeWorkingDirectory(path: string, limit = 24, remoteHost?: string | null): Promise<WorkingDirectoryCompletion> {
     const query = new URLSearchParams({ path, limit: String(limit) })
-    return this.get(`/api/working-directories/complete?${query}`)
+    if (!remoteHost) return this.get(`/api/working-directories/complete?${query}`)
+    query.set('remote_host', remoteHost)
+    return this.privilegedNativeRequest(`/api/working-directories/complete?${query}`)
   }
 
   workspaceFile(sessionId: string, path: string): Promise<WorkspaceFile> {
@@ -1935,6 +1937,21 @@ export class AgentServerClient {
       path,
       kind
     })
+  }
+
+  createAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    kind: 'file' | 'directory',
+    remoteHost?: string | null
+  ): Promise<WorkspaceCreateResult> {
+    const query = new URLSearchParams()
+    if (remoteHost) query.set('remote_host', remoteHost)
+    const suffix = query.size ? `?${query}` : ''
+    return this.privilegedNativeRequest(
+      `/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entry${suffix}`,
+      { method: 'POST', body: JSON.stringify({ path, kind }) }
+    )
   }
 
   writeWorkspaceFile(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile> {
@@ -3343,6 +3360,13 @@ function isPrivilegedNativeControlTarget(
   ) return false
   const path = target.pathname.slice(serverPrefix.length)
   if (path === '/api/connection-addresses') return !target.search && method === 'GET'
+  if (path === '/api/working-directories/complete') {
+    const keys = [...target.searchParams.keys()]
+    const remoteHost = target.searchParams.get('remote_host')
+    return method === 'GET' && keys.length === 3 && new Set(keys).size === keys.length
+      && ['path', 'limit', 'remote_host'].every(key => keys.includes(key))
+      && /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? '')
+  }
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/claude\/goal$/.test(path)) {
     return !target.search && (method === 'PUT' || method === 'DELETE')
   }
@@ -3362,6 +3386,12 @@ function isPrivilegedNativeControlTarget(
       && keys.every(key => ['path', 'offset', 'limit', 'remote_host'].includes(key))
       && Boolean(target.searchParams.get('path'))
       && (!keys.includes('remote_host') || /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? ''))
+  }
+  if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/absolute-entry$/.test(path)) {
+    const keys = [...target.searchParams.keys()]
+    const remoteHost = target.searchParams.get('remote_host')
+    return method === 'POST' && keys.length <= 1 && keys.every(key => key === 'remote_host')
+      && (!keys.length || /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? ''))
   }
   const syncedSideChat = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/side-chat(?:\/(?:requests\/)?[A-Za-z0-9_-]{1,128})?$/.exec(path)
   if (syncedSideChat) return !target.search && (path.endsWith('/side-chat') ? method === 'GET' || method === 'POST' : method === 'DELETE')

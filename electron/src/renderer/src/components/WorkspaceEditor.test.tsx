@@ -215,6 +215,17 @@ describe('WorkspaceEditor', () => {
             },
             ...(kind === 'file' ? { file: workspaceFile(path, '', `rev-${path}`) } : {})
           })),
+          createAbsolute: vi.fn().mockImplementation((_sessionId: string, path: string, kind: 'file' | 'directory') => Promise.resolve({
+            root: path.slice(0, path.lastIndexOf('/')),
+            entry: {
+              name: path.split('/').at(-1) ?? path,
+              path,
+              kind,
+              writable: true,
+              revision: `entry-${path}`
+            },
+            ...(kind === 'file' ? { file: { ...workspaceFile(path, '', `rev-${path}`), path, scope: 'absolute' as const } } : {})
+          })),
           write: vi.fn().mockImplementation((_sessionId: string, path: string, content: string) => Promise.resolve(workspaceFile(path, content, 'rev-2'))),
           overwrite: vi.fn().mockImplementation((_sessionId: string, path: string, content: string) => Promise.resolve(workspaceFile(path, content, 'rev-2'))),
           rename: vi.fn().mockImplementation((_sessionId: string, path: string, name: string) => {
@@ -365,6 +376,59 @@ describe('WorkspaceEditor', () => {
     expect(window.agentsDock.workspace.entries).toHaveBeenCalledExactlyOnceWith(session.id, '', 0, 500)
   })
 
+  it('browses a single configured project root through the absolute workspace transport', async () => {
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    const projectSession = { ...session, folder: 'Research' }
+    const previousState = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [projectSession],
+      projectWorkspaces: { Research: { directories: ['/work/project'] } }
+    })
+    vi.mocked(window.agentsDock.workspace.absoluteEntries).mockResolvedValue({
+      root: '/work/project',
+      path: '/work/project',
+      entries: [{
+        name: 'remote-only.md',
+        path: '/work/project/remote-only.md',
+        kind: 'file',
+        size: 12,
+        writable: false,
+        revision: 'entry-remote'
+      }],
+      total: 1,
+      offset: 0,
+      limit: 500,
+      has_more: false
+    })
+    const panel = render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="single-project-root" session={projectSession} profileScope={scope}
+        available capabilityVersion={7} chatContent={<p>Chat</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
+    </WorkspaceFilesProvider>)
+    try {
+      const remoteFile = await within(panel.container).findByRole('button', { name: 'Open /work/project/remote-only.md' })
+      expect(remoteFile).toBeVisible()
+      expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledExactlyOnceWith(
+        projectSession.id,
+        '/work/project',
+        0,
+        500
+      )
+      expect(window.agentsDock.workspace.entries).not.toHaveBeenCalled()
+
+      fireEvent.click(remoteFile)
+      expect(await screen.findByRole('textbox', { name: 'Contents of /work/project/remote-only.md' })).toBeVisible()
+      expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(
+        projectSession.id,
+        '/work/project/remote-only.md',
+        true
+      )
+      expect(window.agentsDock.workspace.read).not.toHaveBeenCalled()
+    } finally {
+      act(() => useAppStore.setState(previousState))
+    }
+  })
+
   it('shows and browses multiple project roots without changing the chat working directory', async () => {
     const user = userEvent.setup()
     const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
@@ -392,7 +456,7 @@ describe('WorkspaceEditor', () => {
     }))
     const panel = render(<WorkspaceFilesProvider>
       <RealWorkspaceEditor workspaceKey="multi-root" session={projectSession} profileScope={scope}
-        available capabilityVersion={7} chatContent={<p>Chat</p>} />
+        available capabilityVersion={8} chatContent={<p>Chat</p>} />
       <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
     </WorkspaceFilesProvider>)
     try {
@@ -408,22 +472,24 @@ describe('WorkspaceEditor', () => {
       expect(newFile).toBeEnabled()
       await user.click(newFolder)
       await user.type(within(panel.container).getByRole('textbox', { name: 'New folder name' }), 'drafts{Enter}')
-      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+      await waitFor(() => expect(window.agentsDock.workspace.createAbsolute).toHaveBeenCalledWith(
         projectSession.id,
-        'drafts',
-        'directory'
+        '/work/project/drafts',
+        'directory',
+        true
       ))
 
       fireEvent.contextMenu(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
-      expect(await screen.findByRole('menuitem', { name: 'New Folder' })).toHaveAttribute('data-disabled')
+      expect(await screen.findByRole('menuitem', { name: 'New Folder' })).not.toHaveAttribute('data-disabled')
       fireEvent.keyDown(document, { key: 'Escape' })
 
       await user.click(newFile)
       await user.type(within(panel.container).getByRole('textbox', { name: 'New file name' }), 'notes.txt{Enter}')
-      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+      await waitFor(() => expect(window.agentsDock.workspace.createAbsolute).toHaveBeenCalledWith(
         projectSession.id,
-        'notes.txt',
-        'file'
+        '/work/project/notes.txt',
+        'file',
+        true
       ))
       await waitFor(() => expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(
         projectSession.id,

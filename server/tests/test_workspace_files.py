@@ -100,6 +100,24 @@ class WorkspaceFilesTests(unittest.TestCase):
         ])
         self.assertEqual(listed["entries"][1]["kind"], "symlink")
 
+    def test_creates_an_explicit_absolute_entry_without_changing_session_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            chat_root = base / "chat"
+            other_root = base / "other"
+            chat_root.mkdir()
+            other_root.mkdir()
+            destination = other_root / "drafts"
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(chat_root)}):
+                result = agent_server.create_workspace_entry_sync(
+                    "session-1", str(destination), "directory", True
+                )
+                exists = destination.is_dir()
+
+        self.assertEqual(result["entry"]["path"], str(destination))
+        self.assertEqual(result["entry"]["kind"], "directory")
+        self.assertTrue(exists)
+
     def test_remote_absolute_directory_uses_validated_ssh_and_read_only_results(self) -> None:
         payload = {
             "result": {
@@ -154,6 +172,54 @@ class WorkspaceFilesTests(unittest.TestCase):
                 "session-1", "-oProxyCommand=bad", "entries", "/remote/project", 0, 500
             )
 
+    def test_remote_absolute_create_uses_validated_ssh(self) -> None:
+        payload = {"result": {"root": "/remote/project", "entry": {
+            "name": "drafts", "path": "/remote/project/drafts", "kind": "directory",
+            "size": None, "mtime_ns": 1, "hidden": False, "writable": True, "revision": "r1",
+        }}}
+        captured: dict[str, object] = {}
+
+        def run(command, **options):
+            captured["command"] = command
+            captured["options"] = options
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+        with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(Path("/unused"))}), \
+             patch.object(agent_server.shutil, "which", return_value="/usr/bin/ssh"), \
+             patch.object(agent_server.subprocess, "run", side_effect=run):
+            result = agent_server.remote_workspace_request(
+                "session-1", "Synria", "create", "/remote/project/drafts", "directory"
+            )
+
+        self.assertEqual(result["entry"]["path"], "/remote/project/drafts")
+        self.assertEqual(captured["command"][-1], "python3 - create /remote/project/drafts directory")
+        self.assertIn('elif operation == "create"', captured["options"]["input"])
+
+    def test_remote_working_directory_completion_uses_validated_ssh_without_a_chat(self) -> None:
+        payload = {"result": {
+            "input": "/home/ubuntu/Synria", "resolved_path": "/home/ubuntu/Synria",
+            "exists": True, "base_path": "/home/ubuntu/Synria",
+            "suggestions": [{"name": "project", "path": "/home/ubuntu/Synria/project/", "symlink": False}],
+            "truncated": False, "message": None,
+        }}
+        captured: dict[str, object] = {}
+
+        def run(command, **options):
+            captured["command"] = command
+            captured["options"] = options
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+        with patch.object(agent_server.shutil, "which", return_value="/usr/bin/ssh"), \
+             patch.object(agent_server.subprocess, "run", side_effect=run):
+            result = agent_server.remote_working_directory_completion(
+                "Synria", "/home/ubuntu/Synria", 50
+            )
+
+        self.assertTrue(result["exists"])
+        self.assertEqual(result["suggestions"][0]["path"], "/home/ubuntu/Synria/project/")
+        self.assertEqual(captured["command"][-1], "python3 - complete /home/ubuntu/Synria 50")
+        self.assertIn('if operation == "complete"', captured["options"]["input"])
+
     def test_absolute_directory_control_is_native_only_and_allows_local_tokenless_desktop(self) -> None:
         with patch.object(agent_server, "AGENT_TOKEN", ""):
             agent_server.require_native_workspace_directory_control(
@@ -171,7 +237,7 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(remote.exception.status_code, 503)
         self.assertEqual(browser.exception.status_code, 403)
 
-    def test_workspace_capability_v7_entries_have_opaque_revisions_and_preview_limits(self) -> None:
+    def test_workspace_capability_v8_entries_have_opaque_revisions_and_preview_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "app.py"
@@ -183,7 +249,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 path.write_text("second, longer\n")
                 changed = agent_server.list_workspace_entries_sync("session-1", "", 0, 20)["entries"][0]
 
-        self.assertEqual(info["capability_version"], 7)
+        self.assertEqual(info["capability_version"], 8)
         self.assertEqual(info["max_preview_file_bytes"], agent_server.MAX_WORKSPACE_PREVIEW_BYTES)
         self.assertIn("application/pdf", info["preview_media_types"])
         self.assertIn("image/png", info["preview_media_types"])
@@ -203,7 +269,7 @@ class WorkspaceFilesTests(unittest.TestCase):
 
         self.assertEqual(info["max_text_file_bytes"], 32 * 1024 * 1024)
         self.assertEqual(health["capabilities"]["workspace_files"]["max_text_file_bytes"], 32 * 1024 * 1024)
-        self.assertEqual(health["capabilities"]["working_directory_completion"]["version"], 1)
+        self.assertEqual(health["capabilities"]["working_directory_completion"]["version"], 2)
 
     def test_working_directory_completion_lists_only_matching_server_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

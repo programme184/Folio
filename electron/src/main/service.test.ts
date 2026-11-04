@@ -125,6 +125,21 @@ describe('embedded pane services', () => {
 })
 
 describe('local chat execution across server groups', () => {
+  it('fails closed when an older local server cannot browse the selected SSH host', async () => {
+    const completeWorkingDirectory = vi.fn()
+    const scope = { profileId: 'remote', generation: 1, namespace: 'remote-server', client: { completeWorkingDirectory } }
+    const service = Object.assign(Object.create(AppService.prototype), {
+      scope,
+      health: { ok: true, capabilities: { working_directory_completion: { available: true, version: 1 } } },
+      ensureValidatedScope: vi.fn().mockResolvedValue(undefined),
+      remoteSSHHost: vi.fn().mockReturnValue('Synria')
+    }) as unknown as AppService
+
+    await expect(service.completeWorkingDirectory('/home/ubuntu/Synria', 50))
+      .rejects.toThrow('Update the local AgentsServer')
+    expect(completeWorkingDirectory).not.toHaveBeenCalled()
+  })
+
   it('keeps every chat request on loopback and filters local sessions by the selected server profile', async () => {
     const { settings } = profileSettings('http://127.0.0.1:7850')
     settings.updateProfile('a', { serverIdentity: 'local-server', serverSetupComplete: true })
@@ -158,6 +173,7 @@ describe('local chat execution across server groups', () => {
     expect(await service.listSessions()).toEqual([])
     await service.createSession({ title: 'Remote group', folder: 'General', cwd: '/work/local', backend: 'codex' })
     await service.sendTurn({ sessionId: 'remote-new', prompt: 'hello', fileIds: [] })
+    await service.completeWorkingDirectory('/remote/pro', 12)
     await service.absoluteWorkspaceEntries('remote-new', '/remote/project')
     await service.absoluteFile('remote-new', '/remote/project/README.md', true)
     await service.absoluteFile('remote-new', '/home/ubuntu/.cursor/generated.canvas.tsx')
@@ -166,6 +182,9 @@ describe('local chat execution across server groups', () => {
     })
     expect((await service.listSessions()).map(session => session.id)).toEqual(['remote-new'])
     expect(settings.getProfile('b')?.serverIdentity).toBe('remote-server')
+    expect(clients.some(client => client.completeWorkingDirectory.mock.calls.some(call => (
+      call[0] === '/remote/pro' && call[1] === 12 && call[2] === 'B'
+    )))).toBe(true)
     expect(clients.some(client => client.absoluteWorkspaceEntries.mock.calls.some(call => (
       call[0] === 'remote-new' && call[1] === '/remote/project' && call[4] === 'B'
     )))).toBe(true)
@@ -3818,7 +3837,7 @@ function fakeClient(options: FakeClientOptions = {}) {
       root: path, path, entries: [], total: 0, offset, limit, has_more: false
     })),
     workspaceSearch: vi.fn(async () => ({ root: '/work', query: '', entries: [], scanned: 0, truncated: false, limit: 100 })),
-    completeWorkingDirectory: vi.fn(async path => ({
+    completeWorkingDirectory: vi.fn(async (path, _limit = 24, _remoteHost?: string | null) => ({
       input: path,
       resolved_path: path,
       exists: true,

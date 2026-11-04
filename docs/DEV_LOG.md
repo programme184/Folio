@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-11-04 — Keep project folder browsing aligned with SSH terminals
+
+- The New Folder project's server-folder browser now routes completion and
+  directory listing through the selected group's validated SSH alias instead
+  of showing the loopback AgentsServer filesystem. It remains local for the
+  loopback group. A project with one configured directory also uses the remote
+  absolute Files transport, matching projects with multiple roots.
+- The remote completion route is native-client-only, rejects unsafe SSH host
+  values, strips provider secrets from the SSH helper environment, bounds scan
+  and result sizes, and does not require an existing chat. Focused server and
+  Electron regressions cover the service, native HTTP client, SSH transport,
+  folder dialog, and single-root Files route.
+- A real read-only SSH check against the configured Synria alias resolved the
+  selected workspace and returned its 12 remote directories, rather than the
+  different local list shown before the fix. An isolated production
+  `AgentServerClient` request crossed the real native HTTP authorization and
+  SSH boundary and returned 200. All 70 workspace server tests, 5,692 Electron
+  tests, 8 compile-output/license checks, TypeScript checking, and the
+  production Electron build pass.
+- The complete 6,418-test server run still reports 20 failures and 47 errors in
+  pre-existing execution-recovery, managed-update, OpenCode and Cursor work;
+  examples include release fixtures missing `cursor_desktop_login.py`, the
+  development tmux systemd cgroup, and live cross-instance ownership state.
+  The computer-control surface could not attach to the native app window, so
+  installed-app clicking remains untested. The local desktop package was
+  installed with a rollback archive and restarted successfully; no package was
+  published or deployed. The matching local AgentsServer source is installed
+  in place and takes effect on its post-task restart.
+
 ## 2026-11-04 — Restore creation in multi-root Files
 
 - Multi-root Files now enables **New file** and **New folder** for the chat's

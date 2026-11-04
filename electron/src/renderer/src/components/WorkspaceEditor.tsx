@@ -352,11 +352,14 @@ export function WorkspaceEditor({
     if (!folder || folder.toLocaleLowerCase() === 'general') return EMPTY_WORKSPACE_DIRECTORIES
     return state.projectWorkspaces?.[folder]?.directories ?? EMPTY_WORKSPACE_DIRECTORIES
   })
-  const multiRootExplorer = capabilityVersion >= 7 && workspaceFolders.length > 1
+  // Configured project roots may live on the selected SSH host even when the
+  // project contains only one directory. Always use the absolute workspace
+  // transport for them so Files and the terminal observe the same filesystem.
+  const multiRootExplorer = capabilityVersion >= 7 && workspaceFolders.length > 0
   const workspaceFoldersKey = workspaceFolders.join('\0')
-  const multiRootCreationAvailable = !multiRootExplorer || workspaceFolders.some(path => (
-    workspaceRelativePath(cwd, path) === ''
-  ))
+  const multiRootCreationAvailable = !multiRootExplorer || (
+    capabilityVersion >= 8
+  )
   const absolutePathUsesWorkspaceHost = (path: string): boolean => {
     const roots = workspaceFolders.length ? workspaceFolders : cwd ? [cwd] : []
     return roots.some(root => workspacePathIsWithin(path, root))
@@ -1926,7 +1929,9 @@ export function WorkspaceEditor({
     const path = multiRootExplorer
       ? absoluteWorkspacePath(pending.directory, name)
       : [pending.directory, name].filter(Boolean).join('/')
-    const createPath = multiRootExplorer ? workspaceRelativePath(cwd, path) : path
+    const createPath = multiRootExplorer
+      ? absolutePathUsesWorkspaceHost(path) ? path : null
+      : path
     if (createPath === null || !createPath) {
       setPendingCreate(current => current ? {
         ...current,
@@ -1940,7 +1945,9 @@ export function WorkspaceEditor({
     setPendingCreate(current => current ? { ...current, creating: true, error: null } : current)
     setWorkspaceError(null)
     try {
-      const result = await window.agentsDock.workspace.create(session.id, createPath, pending.kind)
+      const result = multiRootExplorer
+        ? await window.agentsDock.workspace.createAbsolute(session.id, path, pending.kind, absolutePathUsesWorkspaceHost(path))
+        : await window.agentsDock.workspace.create(session.id, createPath, pending.kind)
       setWorkspaceRoot(result.root)
       if (multiRootExplorer) {
         await loadDirectory(pending.directory, false)
@@ -4520,9 +4527,7 @@ const Explorer = memo(function Explorer({
         entry={contextEntry}
         expanded={contextEntry.kind === 'directory' ? expanded.has(contextEntry.path) : undefined}
         mutationsAvailable={mutationsAvailable}
-        creationAvailable={creationAvailable && (!multiRoot || workspaceRelativePath(cwd, contextEntry.kind === 'directory'
-          ? contextEntry.path
-          : workspaceParentDirectory(contextEntry.path)) !== null)}
+        creationAvailable={creationAvailable}
         onOpen={contextEntry.kind === 'file'
           ? () => onOpen(contextEntry.path)
           : contextEntry.kind === 'directory'

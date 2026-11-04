@@ -4742,7 +4742,16 @@ export class AppService {
   async completeWorkingDirectory(path: string, limit = 24): Promise<WorkingDirectoryCompletion> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const completion = await scope.client.completeWorkingDirectory(path, limit)
+    const remoteHost = this.remoteSSHHost(scope.profileId)
+    const capability = this.health?.capabilities?.working_directory_completion
+    if (remoteHost && capability && Number(capability.version ?? 0) < 2) {
+      throw new Error('Update the local AgentsServer to browse folders in SSH-backed groups.')
+    }
+    const completion = await scope.client.completeWorkingDirectory(
+      path,
+      limit,
+      remoteHost
+    )
     this.assertCurrentScope(scope)
     return completion
   }
@@ -4802,6 +4811,20 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const result = await scope.client.createWorkspaceEntry(sessionId, path, kind)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async createAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    kind: 'file' | 'directory',
+    remoteWorkspace = false
+  ): Promise<WorkspaceCreateResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const remoteHost = remoteWorkspace ? this.remoteSSHHost(scope.profileId) : null
+    const result = await scope.client.createAbsoluteWorkspaceEntry(sessionId, path, kind, remoteHost)
     this.assertCurrentScope(scope)
     return result
   }

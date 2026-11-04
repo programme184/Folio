@@ -2895,7 +2895,7 @@ def workspace_info_sync(session_id: str) -> dict[str, Any]:
         "root": str(root),
         "name": root.name or str(root),
         "read_only": bool(sess.get("archived")),
-        "capability_version": 7 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+        "capability_version": 8 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
         "max_text_file_bytes": workspace_text_bytes_capability(),
         "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
         "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -3005,11 +3005,55 @@ def fail(code, message):
 
 operation = sys.argv[1]
 path = sys.argv[2]
-if not path.startswith("/") or path.startswith("//") or os.path.normpath(path) != path or "\x00" in path:
+if operation != "complete" and (not path.startswith("/") or path.startswith("//") or os.path.normpath(path) != path or "\x00" in path):
     fail("invalid_absolute_file_path", "An absolute canonical remote path is required.")
 
 try:
-    if operation == "entries":
+    if operation == "complete":
+        raw = path.strip()
+        if "\x00" in raw:
+            fail("invalid_working_directory_path", "Working directory paths cannot contain NUL bytes.")
+        limit = max(1, min(int(sys.argv[3]), 100))
+        source = raw or os.path.expanduser("~")
+        expanded = os.path.expanduser(source)
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(os.path.expanduser("~"), expanded)
+        normalized = os.path.normpath(expanded)
+        exact = os.path.isdir(normalized)
+        scan_path = normalized if exact else os.path.dirname(normalized)
+        prefix = "" if exact else os.path.basename(normalized)
+        suggestions = []
+        truncated = False
+        message = None
+        try:
+            candidates = []
+            with os.scandir(scan_path) as entries:
+                for scanned, entry in enumerate(entries):
+                    if scanned >= 2000:
+                        truncated = True
+                        break
+                    if not prefix.startswith(".") and entry.name.startswith("."):
+                        continue
+                    if prefix and not entry.name.casefold().startswith(prefix.casefold()):
+                        continue
+                    try:
+                        if entry.is_dir(follow_symlinks=True):
+                            candidates.append((entry.name, entry.is_symlink()))
+                    except OSError:
+                        continue
+            candidates.sort(key=lambda item: (item[0].casefold(), item[0]))
+            truncated = truncated or len(candidates) > limit
+            for name, is_symlink in candidates[:limit]:
+                completed = os.path.join(scan_path, name)
+                if not completed.endswith(os.sep):
+                    completed += os.sep
+                suggestions.append({"name": name, "path": completed, "symlink": is_symlink})
+        except (FileNotFoundError, NotADirectoryError):
+            message = "Parent directory not found."
+        except PermissionError:
+            message = "Parent directory is not readable."
+        result = {"input": raw, "resolved_path": normalized, "exists": exact, "base_path": scan_path, "suggestions": suggestions, "truncated": truncated, "message": message}
+    elif operation == "entries":
         offset, limit = int(sys.argv[3]), int(sys.argv[4])
         records = []
         with os.scandir(path) as entries:
@@ -3049,8 +3093,42 @@ try:
         except UnicodeDecodeError:
             fail("absolute_file_not_utf8", "Remote file is not UTF-8 text.")
         result = {"root": "/", "path": path, "name": os.path.basename(path), "content": content, "revision": hashlib.sha256(data).hexdigest(), "size": len(data), "mtime_ns": item.st_mtime_ns, "writable": False, "scope": "absolute"}
+    elif operation == "create":
+        kind = sys.argv[3]
+        if kind not in {"file", "directory"}:
+            fail("invalid_workspace_entry_kind", "Workspace entry kind must be file or directory.")
+        parent, name = os.path.split(path)
+        if not parent or not name or name in {".", ".."}:
+            fail("invalid_workspace_path", "A child path is required.")
+        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        directory_fd = os.open("/", flags)
+        created_fd = -1
+        try:
+            for component in parent.split("/")[1:]:
+                next_fd = os.open(component, flags, dir_fd=directory_fd)
+                os.close(directory_fd)
+                directory_fd = next_fd
+            if kind == "file":
+                created_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0), 0o666, dir_fd=directory_fd)
+                os.fsync(created_fd)
+                item = os.fstat(created_fd)
+            else:
+                os.mkdir(name, 0o777, dir_fd=directory_fd)
+                item = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            os.fsync(directory_fd)
+        finally:
+            if created_fd >= 0:
+                os.close(created_fd)
+            os.close(directory_fd)
+        revision = hashlib.sha256(f"{item.st_dev}:{item.st_ino}:{item.st_size}:{item.st_mtime_ns}".encode()).hexdigest()
+        entry = {"name": name, "path": path, "kind": kind, "size": item.st_size if kind == "file" else None, "mtime_ns": item.st_mtime_ns, "hidden": name.startswith("."), "writable": bool(item.st_mode & 0o222), "revision": revision}
+        result = {"root": parent, "entry": entry}
+        if kind == "file":
+            result["file"] = {"root": parent, "path": path, "name": name, "content": "", "revision": hashlib.sha256(b"").hexdigest(), "size": 0, "mtime_ns": item.st_mtime_ns, "writable": bool(item.st_mode & 0o222), "scope": "absolute"}
     else:
         fail("remote_workspace_operation_invalid", "Invalid remote workspace operation.")
+except FileExistsError:
+    fail("workspace_entry_exists", "Remote workspace entry already exists.")
 except FileNotFoundError:
     fail("workspace_not_found", "Remote workspace path was not found.")
 except NotADirectoryError:
@@ -3064,22 +3142,26 @@ print(json.dumps({"result": result}, ensure_ascii=False))
 '''
 
 
-def remote_workspace_request(
-    session_id: str,
+def remote_workspace_transport(
     remote_host: str,
     operation: str,
     path: str,
-    *arguments: int,
+    *arguments: object,
+    require_absolute_path: bool = True,
 ) -> dict[str, Any]:
-    sess = STORE.sessions.get(session_id)
-    if not sess:
-        raise workspace_http_error(404, "session_not_found", "Chat not found.")
     host = clean_terminal_remote_host(remote_host)
     if not host:
         raise workspace_http_error(400, "remote_host_required", "A remote SSH host is required.")
-    # Reuse the absolute-path lexical contract before transmitting it. The
-    # remote helper performs the same check before touching its filesystem.
-    _anchor, _relative, normalized = normalize_absolute_file_path(path)
+    if require_absolute_path:
+        # Reuse the absolute-path lexical contract before transmitting it. The
+        # remote helper performs the same check before touching its filesystem.
+        _anchor, _relative, normalized = normalize_absolute_file_path(path)
+    else:
+        normalized = str(path or "").strip()
+        if "\x00" in normalized:
+            raise workspace_http_error(400, "invalid_working_directory_path", "Working directory paths cannot contain NUL bytes.")
+        if len(normalized) > MAX_WORKSPACE_PATH_CHARS:
+            raise workspace_http_error(400, "invalid_working_directory_path", "Working directory path is too long.")
     ssh = shutil.which("ssh", path=terminal_session_path())
     if not ssh:
         raise workspace_http_error(503, "ssh_unavailable", "OpenSSH is required for remote workspace files.")
@@ -3115,12 +3197,42 @@ def remote_workspace_request(
     result = payload.get("result") if isinstance(payload, dict) else None
     if not isinstance(result, dict):
         raise workspace_http_error(502, "remote_workspace_response_invalid", "Remote workspace returned an invalid response.")
+    return result
+
+
+def remote_workspace_request(
+    session_id: str,
+    remote_host: str,
+    operation: str,
+    path: str,
+    *arguments: object,
+) -> dict[str, Any]:
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    if operation == "create" and bool(sess.get("archived")):
+        raise workspace_http_error(409, "workspace_read_only", "Archived chats cannot edit files.")
+    result = remote_workspace_transport(remote_host, operation, path, *arguments)
     if bool(sess.get("archived")):
         result["writable"] = False
         for entry in result.get("entries") or []:
             if isinstance(entry, dict):
                 entry["writable"] = False
     return result
+
+
+def remote_working_directory_completion(
+    remote_host: str,
+    requested: str | None,
+    limit: int,
+) -> dict[str, Any]:
+    return remote_workspace_transport(
+        remote_host,
+        "complete",
+        str(requested or ""),
+        limit,
+        require_absolute_path=False,
+    )
 
 
 def read_workspace_file_sync(session_id: str, relative_path: str) -> dict[str, Any]:
@@ -3726,9 +3838,19 @@ def create_workspace_entry_sync(
     session_id: str,
     relative_path: str,
     kind: Literal["file", "directory"],
+    absolute: bool = False,
 ) -> dict[str, Any]:
-    _, root = session_workspace_root(session_id, for_write=True)
-    normalized = normalize_workspace_path(relative_path)
+    absolute_path: str | None = None
+    if absolute:
+        sess = STORE.sessions.get(session_id)
+        if not sess:
+            raise workspace_http_error(404, "session_not_found", "Chat not found.")
+        if bool(sess.get("archived")):
+            raise workspace_http_error(409, "workspace_read_only", "Archived chats cannot edit files.")
+        root, normalized, absolute_path = normalize_absolute_file_path(relative_path)
+    else:
+        _, root = session_workspace_root(session_id, for_write=True)
+        normalized = normalize_workspace_path(relative_path)
     if kind not in {"file", "directory"}:
         raise workspace_http_error(
             400,
@@ -3831,6 +3953,10 @@ def create_workspace_entry_sync(
                     "mtime_ns": int(visible_stat.st_mtime_ns),
                     "writable": bool(visible_stat.st_mode & 0o222),
                 }
+            if absolute_path is not None:
+                result["entry"] = {**result["entry"], "path": absolute_path}
+                if "file" in result:
+                    result["file"] = {**result["file"], "path": absolute_path, "scope": "absolute"}
             return result
         except Exception as exc:
             if created:
@@ -84016,7 +84142,7 @@ async def health() -> dict[str, Any]:
                     else "Secure workspace file access is unavailable on this host."
                 ),
                 "action": None if WORKSPACE_SECURE_OPEN_AVAILABLE else "Use a supported macOS or Linux host.",
-                "version": 7 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+                "version": 8 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
                 "max_text_file_bytes": workspace_text_bytes_capability(),
                 "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
                 "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -84026,7 +84152,7 @@ async def health() -> dict[str, Any]:
                 "required": False,
                 "message": "Working-directory suggestions are available from this server.",
                 "action": None,
-                "version": 1,
+                "version": 2,
                 "max_results": MAX_WORKING_DIRECTORY_COMPLETIONS,
             },
             "pinned_items": {
@@ -88653,9 +88779,19 @@ async def search_all_session_timelines(
 
 @app.get("/api/working-directories/complete")
 async def complete_working_directory(
+    request: Request,
     path: str = Query(default="", max_length=MAX_WORKSPACE_PATH_CHARS),
     limit: int = Query(default=24, ge=1, le=MAX_WORKING_DIRECTORY_COMPLETIONS),
+    remote_host: str | None = Query(default=None, max_length=255),
 ) -> dict[str, Any]:
+    if remote_host:
+        require_native_workspace_directory_control(request)
+        return await asyncio.to_thread(
+            remote_working_directory_completion,
+            remote_host,
+            path,
+            limit,
+        )
     return await asyncio.to_thread(complete_working_directory_sync, path, limit)
 
 
@@ -99498,6 +99634,32 @@ async def post_session_workspace_entry(session_id: str, req: WorkspaceCreateRequ
         session_id,
         req.path,
         req.kind,
+    )
+
+
+@app.post("/api/sessions/{session_id}/workspace/absolute-entry")
+async def post_session_absolute_workspace_entry(
+    request: Request,
+    session_id: str,
+    req: WorkspaceCreateRequest,
+    remote_host: str | None = Query(default=None, max_length=255),
+) -> dict[str, Any]:
+    require_native_workspace_directory_control(request)
+    if remote_host:
+        return await asyncio.to_thread(
+            remote_workspace_request,
+            session_id,
+            remote_host,
+            "create",
+            req.path,
+            req.kind,
+        )
+    return await asyncio.to_thread(
+        create_workspace_entry_sync,
+        session_id,
+        req.path,
+        req.kind,
+        True,
     )
 
 

@@ -597,6 +597,7 @@ export interface AgentsDockAPI {
     previewBytes(sessionId: string, path: string): Promise<Uint8Array>
     download(sessionId: string, path: string): Promise<string | null>
     create(sessionId: string, path: string, kind: 'file' | 'directory'): Promise<WorkspaceCreateResult>
+    createAbsolute(sessionId: string, path: string, kind: 'file' | 'directory', remoteWorkspace?: boolean): Promise<WorkspaceCreateResult>
     write(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile>
     overwrite(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     rename(sessionId: string, path: string, newName: string, expectedRevision: string): Promise<WorkspaceRenameResult>
