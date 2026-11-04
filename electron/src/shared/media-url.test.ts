@@ -57,11 +57,31 @@ describe('profile-scoped media URLs', () => {
     expect(base).not.toBe(buildWorkspaceMediaURL('profile-a', 3, 'chat-a', 'assets/other.png'))
   })
 
+  it('round-trips canonical absolute workspace media paths', () => {
+    const posix = buildWorkspaceMediaURL('profile-a', 3, 'chat-a', '/home/user/project/video.mp4')
+    expect(parseMediaURL(posix)).toEqual({
+      profileId: 'profile-a',
+      profileGeneration: 3,
+      sessionId: 'chat-a',
+      path: '/home/user/project/video.mp4'
+    })
+    const windows = buildWorkspaceMediaURL('profile-a', 3, 'chat-a', 'C:\\Users\\user\\project\\video.mp4')
+    expect(parseMediaURL(windows)).toEqual({
+      profileId: 'profile-a',
+      profileGeneration: 3,
+      sessionId: 'chat-a',
+      path: 'C:\\Users\\user\\project\\video.mp4'
+    })
+  })
+
   it('rejects malformed and non-canonical workspace media paths', () => {
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src/file.png')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/01/chat-a/src%2Ffile.png')).toBeNull()
-    expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/%2Fetc%2Fpasswd')).toBeNull()
+    expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/%2Fhome%2Fuser%2Fvideo.mp4')).toEqual({
+      profileId: 'profile-a', profileGeneration: 1, sessionId: 'chat-a', path: '/home/user/video.mp4'
+    })
+    expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/%2Fhome%2Fuser%2F..%2Fsecret.mp4')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src%2F..%2Fsecret.png')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src%5Cfile.png')).toBeNull()
     expect(parseMediaURL('agentsdock-media://workspace/profile-a/1/chat-a/src%2Ffile.png?download=1')).toBeNull()

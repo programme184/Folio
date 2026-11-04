@@ -257,6 +257,7 @@ describe('WorkspaceEditor', () => {
         files: {
           mediaURL: vi.fn().mockImplementation((_profileId: string, _generation: number, sessionId: string, fileId: string) => `agentsdock-media://file/profile-a/1/${sessionId}/${fileId}`),
           open: vi.fn().mockResolvedValue(undefined),
+          openLinked: vi.fn().mockResolvedValue(undefined),
           readText: vi.fn().mockImplementation((_sessionId: string, file: AgentFile) => Promise.resolve({
             id: file.id,
             filename: file.filename,
@@ -446,6 +447,58 @@ describe('WorkspaceEditor', () => {
     }
   })
 
+  it('opens a video in a configured project root inside Folio', async () => {
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    const projectSession = { ...session, folder: 'Research' }
+    const previousState = useAppStore.getState()
+    const path = '/work/project/runs/video_hoi/synthetic_demo/overlay.mp4'
+    useAppStore.setState({
+      sessions: [projectSession],
+      selectedSessionId: projectSession.id,
+      projectWorkspaces: { Research: { directories: ['/work/project'] } }
+    })
+    vi.mocked(window.agentsDock.workspace.absoluteEntries).mockResolvedValue({
+      root: '/work/project',
+      path: '/work/project',
+      entries: [{
+        name: 'overlay.mp4',
+        path,
+        kind: 'file',
+        size: 266_135,
+        writable: false,
+        revision: 'entry-video'
+      }],
+      total: 1,
+      offset: 0,
+      limit: 500,
+      has_more: false
+    })
+    const panel = render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="single-project-video" session={projectSession} profileScope={scope}
+        available capabilityVersion={10} chatContent={<p>Chat</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
+    </WorkspaceFilesProvider>)
+    try {
+      fireEvent.click(await within(panel.container).findByRole('button', { name: `Open ${path}` }))
+
+      const video = await within(panel.container).findByLabelText(path)
+      expect(video).toHaveAttribute(
+        'src',
+        `agentsdock-media://workspace/profile-a/1/${projectSession.id}/${encodeURIComponent(path)}`
+      )
+      expect(window.agentsDock.workspace.mediaURL).toHaveBeenCalledWith(
+        scope.profileId,
+        scope.profileGeneration,
+        projectSession.id,
+        path
+      )
+      expect(window.agentsDock.files.openLinked).not.toHaveBeenCalled()
+      expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+    } finally {
+      act(() => useAppStore.setState(previousState))
+    }
+  })
+
   it('shows and browses multiple project roots without changing the chat working directory', async () => {
     const user = userEvent.setup()
     const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
@@ -535,6 +588,61 @@ describe('WorkspaceEditor', () => {
       expect(window.agentsDock.workspace.readAbsolute).toHaveBeenCalledWith(projectSession.id, localCanvas)
       expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalledWith(projectSession.id, localCanvas, true)
       expect(useAppStore.getState().sessions[0]?.cwd).toBe('/work/project')
+    } finally {
+      act(() => useAppStore.setState(previousState))
+    }
+  })
+
+  it('keeps cwd-relative creation available on capability 7 multi-root servers', async () => {
+    const user = userEvent.setup()
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    const projectSession = { ...session, folder: 'Research' }
+    const previousState = useAppStore.getState()
+    useAppStore.setState({
+      sessions: [projectSession],
+      projectWorkspaces: { Research: { directories: ['/work/project', '/work/notes'] } }
+    })
+    vi.mocked(window.agentsDock.workspace.absoluteEntries).mockImplementation((_sessionId, path) => Promise.resolve({
+      root: path,
+      path,
+      entries: path === '/work/project'
+        ? [{ name: 'src', path: '/work/project/src', kind: 'directory', writable: true, revision: 'entry-src' }]
+        : path === '/work/notes'
+          ? [{ name: 'notes.md', path: '/work/notes/notes.md', kind: 'file', writable: true, revision: 'entry-notes' }]
+          : [],
+      total: path === '/work/project' || path === '/work/notes' ? 1 : 0,
+      offset: 0,
+      limit: 500,
+      has_more: false
+    }))
+    const panel = render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="multi-root-v7" session={projectSession} profileScope={scope}
+        available capabilityVersion={7} chatContent={<p>Chat</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
+    </WorkspaceFilesProvider>)
+    try {
+      const src = await within(panel.container).findByTitle('/work/project/src')
+      fireEvent.contextMenu(src)
+      await user.click(await screen.findByRole('menuitem', { name: 'New Folder' }))
+      await user.type(within(panel.container).getByRole('textbox', { name: 'New folder name' }), 'drafts{Enter}')
+      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+        projectSession.id,
+        'src/drafts',
+        'directory'
+      ))
+
+      fireEvent.contextMenu(src)
+      await user.click(await screen.findByRole('menuitem', { name: 'New File' }))
+      await user.type(within(panel.container).getByRole('textbox', { name: 'New file name' }), 'notes.txt{Enter}')
+      await waitFor(() => expect(window.agentsDock.workspace.create).toHaveBeenCalledWith(
+        projectSession.id,
+        'src/notes.txt',
+        'file'
+      ))
+
+      fireEvent.contextMenu(await within(panel.container).findByRole('button', { name: 'Open /work/notes/notes.md' }))
+      expect(await screen.findByRole('menuitem', { name: 'New Folder' })).toHaveAttribute('data-disabled')
+      expect(window.agentsDock.workspace.createAbsolute).not.toHaveBeenCalled()
     } finally {
       act(() => useAppStore.setState(previousState))
     }
@@ -3374,8 +3482,9 @@ describe('WorkspaceEditor', () => {
   })
 
   it('keeps Changes in workspace tab navigation when Git is available', async () => {
+    const status = vi.fn().mockResolvedValue({ root: '/work/project', branch: 'main', head: 'head', revision: 'rev', operation: null, files: [], staged_count: 0, conflict_count: 0 })
     window.agentsDock.workspaceGit = {
-      status: vi.fn().mockResolvedValue({ root: '/work/project', branch: 'main', head: 'head', revision: 'rev', operation: null, files: [], staged_count: 0, conflict_count: 0 }),
+      status,
       diff: vi.fn(), conflict: vi.fn(), action: vi.fn()
     }
     renderEditor()
@@ -3383,7 +3492,7 @@ describe('WorkspaceEditor', () => {
     await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })
     fireEvent.keyDown(window, { key: '2', metaKey: true })
     expect(screen.getByRole('button', { name: 'Changes' })).toHaveAttribute('aria-pressed', 'true')
-    await waitFor(() => expect(window.agentsDock.workspaceGit.status).toHaveBeenCalled())
+    await waitFor(() => expect(status).toHaveBeenCalled())
     fireEvent.keyDown(window, { key: '3', metaKey: true })
     expect(screen.getByRole('tab', { name: 'App.tsx' })).toHaveAttribute('aria-selected', 'true')
     fireEvent.keyDown(window, { key: 'Tab', ctrlKey: true, shiftKey: true })

@@ -1,6 +1,12 @@
 {
   "timeline.compact.completed": "上下文已压缩",
   "timeline.compact.output": "命令输出",
+  "composer.askOnly.active": "Ask 模式已开启",
+  "composer.askOnly.disable": "关闭 Ask 模式",
+  "composer.askOnly.enable": "仅提问",
+  "composer.askOnly.label": "Ask",
+  "composer.askOnly.placeholder": "提出问题",
+  "editor.updateAgentsserverToPreviewExplicitWorkspaceMedia": "请更新 AgentsServer，以便在 Folio 内预览配置的 Workspace 文件夹中的视频和其他媒体。",
   "composer.modelCommand.chooseAvailable": "模型不存在、名称不唯一或不可用。请使用 /model 选择可用模型，或输入准确的模型 ID。",
   "subagents.title": "子 Agent",
   "subagents.singular": "子 Agent",

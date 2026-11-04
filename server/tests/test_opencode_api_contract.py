@@ -8,6 +8,7 @@ whose timeline the client would render. The fake CLI answers both `models` and
 """
 
 import asyncio
+from contextlib import nullcontext
 import json
 import os
 import stat
@@ -141,6 +142,8 @@ class OpenCodeApiContractTests(unittest.IsolatedAsyncioTestCase):
                 lambda: (str(self.script), str(self.script), (), ""),
             ),
             patch.object(agent_server, "AGENT_TOKEN", "test-token"),
+            patch.object(agent_server, "local_history_import_guard", lambda: nullcontext()),
+            patch.object(agent_server, "other_local_instance_provider_keys", lambda: set()),
         ]
         for item in self.patches:
             item.start()

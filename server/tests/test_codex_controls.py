@@ -35,6 +35,26 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
         agent_server.CODEX_THREAD_SESSION_INDEX = self.previous_thread_index
         agent_server.STORE.sessions = self.previous_sessions
 
+    async def test_health_advertises_native_codex_ask_mode(self) -> None:
+        with patch.object(
+            agent_server,
+            "CODEX_TRANSPORT",
+            agent_server.CODEX_TRANSPORT_APP_SERVER,
+        ):
+            health = await agent_server.health()
+
+        self.assertEqual(
+            health["capabilities"]["ask_only_v1"],
+            {
+                "available": True,
+                "required": False,
+                "version": 1,
+                "supported_backends": [agent_server.BACKEND_CODEX],
+                "message": "Codex chats can enforce a persistent read-only Ask mode.",
+                "action": None,
+            },
+        )
+
     def test_command_approval_is_fail_closed(self) -> None:
         pending = {
             "method": "item/commandExecution/requestApproval",
@@ -819,12 +839,14 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             explicit = await store.create(
                 agent_server.CreateSessionRequest(
                     backend=agent_server.BACKEND_CODEX,
+                    ask_only=True,
                     codex_approval_policy="never",
                     codex_sandbox_mode="read-only",
                     codex_permission_profile=":read-only",
                     codex_approvals_reviewer="user",
                 )
             )
+            explicit_ask_only = explicit["ask_only"]
             reset = await store.update(
                 explicit["id"],
                 {
@@ -832,6 +854,7 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                     "codex_sandbox_mode": None,
                     "codex_permission_profile": None,
                     "codex_approvals_reviewer": None,
+                    "ask_only": False,
                 },
             )
 
@@ -864,6 +887,9 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
             reset["codex_approvals_reviewer"],
             agent_server.CODEX_DEFAULT_APPROVALS_REVIEWER,
         )
+        self.assertFalse(created["ask_only"])
+        self.assertTrue(explicit_ask_only)
+        self.assertFalse(reset["ask_only"])
 
     async def test_session_load_defaults_missing_permissions_without_overwriting_choices(
         self,
@@ -934,6 +960,40 @@ class CodexControlValidationTests(unittest.IsolatedAsyncioTestCase):
                 "permission_profile": agent_server.CODEX_DEFAULT_PERMISSION_PROFILE,
                 "approvals_reviewer": agent_server.CODEX_DEFAULT_APPROVALS_REVIEWER,
             },
+        )
+
+    async def test_runtime_policy_reports_ask_only_without_destroying_saved_permissions(
+        self,
+    ) -> None:
+        session = agent_server.STORE.sessions["chat"]
+        session.update({
+            "ask_only": True,
+            "codex_sandbox_mode": "danger-full-access",
+            "codex_permission_profile": ":full-access",
+        })
+        with patch.object(agent_server, "CODEX_APP_SERVER_MANAGER", None):
+            runtime = await agent_server.codex_runtime_snapshot("chat")
+
+        self.assertEqual(runtime["policy"]["sandbox_mode"], "read-only")
+        self.assertIsNone(runtime["policy"]["permission_profile"])
+        self.assertEqual(session["codex_sandbox_mode"], "danger-full-access")
+        self.assertEqual(session["codex_permission_profile"], ":full-access")
+
+    async def test_ask_only_cannot_relabel_an_active_turn(self) -> None:
+        current = agent_server.STORE.sessions["chat"]
+        with (
+            patch.object(agent_server, "BUSY_SESSIONS", {"chat"}),
+            patch.object(agent_server, "ACTIVE", {"chat": {"run_id": "run-live"}}),
+            patch.object(agent_server, "SESSION_TURN_TASKS", {}),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await agent_server.ensure_ask_only_update_allowed(
+                    "chat", current, {"ask_only": True}
+                )
+
+        self.assertEqual(raised.exception.status_code, 409)
+        await agent_server.ensure_ask_only_update_allowed(
+            "chat", current, {"ask_only": False}
         )
 
     async def test_native_status_and_automatic_compaction_events_are_readable(

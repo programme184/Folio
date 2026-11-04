@@ -1408,6 +1408,18 @@ MAX_WORKSPACE_PREVIEW_BYTES = max(
     1,
     int(agentsdock_setting("WORKSPACE_PREVIEW_MAX_BYTES", str(100 * 1024 * 1024))),
 )
+WORKSPACE_VIDEO_PREVIEW_TRANSCODE_TIMEOUT_SECONDS = max(
+    10,
+    int(agentsdock_setting("WORKSPACE_VIDEO_PREVIEW_TRANSCODE_TIMEOUT_SECONDS", "120")),
+)
+WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_FILES = max(
+    1,
+    int(agentsdock_setting("WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_FILES", "32")),
+)
+WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_BYTES = max(
+    MAX_WORKSPACE_PREVIEW_BYTES,
+    int(agentsdock_setting("WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_BYTES", str(512 * 1024 * 1024))),
+)
 DEFAULT_MAX_WORKSPACE_TEXT_BYTES = 32 * 1024 * 1024
 
 
@@ -1485,6 +1497,9 @@ def configure_atomic_workspace_rename() -> tuple[Any | None, int]:
 
 WORKSPACE_ATOMIC_RENAME, WORKSPACE_ATOMIC_RENAME_FLAG = configure_atomic_workspace_rename()
 WORKSPACE_MUTATIONS_AVAILABLE = WORKSPACE_SECURE_OPEN_AVAILABLE and WORKSPACE_ATOMIC_RENAME is not None
+WORKSPACE_VIDEO_PREVIEW_CACHE = STATE_DIR / "workspace-video-preview-cache"
+WORKSPACE_VIDEO_PREVIEW_LOCKS = tuple(threading.Lock() for _ in range(64))
+WORKSPACE_BROWSER_VIDEO_CODECS = frozenset({"av1", "h264", "theora", "vp8", "vp9"})
 PROVIDER_SECRET_ENV_NAMES = (
     "AGENTSDOCK_AGENT_TOKEN",
     "ZENITHDOCK_AGENT_TOKEN",
@@ -2903,7 +2918,7 @@ def workspace_info_sync(session_id: str) -> dict[str, Any]:
         "root": str(root),
         "name": root.name or str(root),
         "read_only": bool(sess.get("archived")),
-        "capability_version": 8 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+        "capability_version": 10 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
         "max_text_file_bytes": workspace_text_bytes_capability(),
         "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
         "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -3466,6 +3481,243 @@ def open_workspace_preview_sync(session_id: str, relative_path: str) -> dict[str
         if file_fd >= 0:
             os.close(file_fd)
         os.close(parent_fd)
+
+
+def open_absolute_workspace_preview_sync(
+    session_id: str,
+    absolute_path: str,
+) -> dict[str, Any]:
+    """Securely open one explicit absolute preview for the native desktop."""
+
+    if not WORKSPACE_SECURE_OPEN_AVAILABLE:
+        raise workspace_http_error(
+            501,
+            "workspace_secure_open_unavailable",
+            "Secure absolute preview access is unavailable on this host.",
+        )
+    if session_id not in STORE.sessions:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    root, relative, normalized = normalize_absolute_file_path(absolute_path)
+    parent_fd, name = open_workspace_parent_fd(root, relative)
+    file_fd = -1
+    try:
+        try:
+            file_fd = os.open(name, workspace_open_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise translate_workspace_os_error(exc, normalized) from exc
+        item_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(item_stat.st_mode):
+            raise workspace_http_error(
+                400,
+                "absolute_not_regular_file",
+                f"Not a regular file: {normalized}",
+            )
+        if item_stat.st_size > MAX_WORKSPACE_PREVIEW_BYTES:
+            raise workspace_http_error(
+                413,
+                "workspace_preview_too_large",
+                (
+                    f"{normalized} is larger than the "
+                    f"{MAX_WORKSPACE_PREVIEW_BYTES // (1024 * 1024)} MiB preview limit."
+                ),
+            )
+        result = {
+            "file_fd": file_fd,
+            "root": str(root),
+            "path": normalized,
+            "name": name,
+            "media_type": workspace_preview_media_type(normalized),
+            "revision": workspace_entry_revision(item_stat),
+            "size": int(item_stat.st_size),
+            "mtime_ns": int(item_stat.st_mtime_ns),
+            "scope": "absolute",
+        }
+        file_fd = -1
+        return result
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(parent_fd)
+
+
+def workspace_preview_fd_path(file_fd: int) -> str:
+    for root in ("/proc/self/fd", "/dev/fd"):
+        candidate = f"{root}/{file_fd}"
+        if os.path.exists(candidate):
+            return candidate
+    raise workspace_http_error(
+        501,
+        "workspace_video_transcode_unavailable",
+        "Compatible video previews require descriptor-backed media access on this host.",
+    )
+
+
+def workspace_video_codec(file_fd: int) -> str | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe or os.name != "posix":
+        return None
+    source = workspace_preview_fd_path(file_fd)
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                source,
+            ],
+            capture_output=True,
+            check=False,
+            pass_fds=(file_fd,),
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    finally:
+        with suppress(OSError):
+            os.lseek(file_fd, 0, os.SEEK_SET)
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip().splitlines()[0].lower() if completed.stdout.strip() else None
+
+
+def cleanup_workspace_video_preview_cache() -> None:
+    try:
+        records: list[tuple[int, int, Path]] = []
+        with os.scandir(WORKSPACE_VIDEO_PREVIEW_CACHE) as entries:
+            for entry in entries:
+                try:
+                    item = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(item.st_mode):
+                    records.append((int(item.st_mtime_ns), int(item.st_size), Path(entry.path)))
+        records.sort(reverse=True)
+        retained_bytes = 0
+        for index, (_mtime, size, path) in enumerate(records):
+            retained_bytes += size
+            if index >= WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_FILES or retained_bytes > WORKSPACE_VIDEO_PREVIEW_CACHE_MAX_BYTES:
+                with suppress(OSError):
+                    path.unlink()
+    except OSError:
+        return
+
+
+def compatible_workspace_video_preview_sync(preview: dict[str, Any]) -> dict[str, Any]:
+    """Return a Chromium-compatible preview, transcoding unsupported codecs once."""
+
+    media_type = str(preview.get("media_type") or "")
+    if not media_type.startswith("video/"):
+        return preview
+    source_fd = int(preview["file_fd"])
+    if workspace_video_codec(source_fd) in WORKSPACE_BROWSER_VIDEO_CODECS:
+        return preview
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or os.name != "posix":
+        os.close(source_fd)
+        raise workspace_http_error(
+            415,
+            "workspace_video_transcode_unavailable",
+            "This video codec is not supported by the built-in player, and FFmpeg is unavailable for a compatible preview.",
+        )
+    cache_key = hashlib.sha256(
+        f"{preview.get('revision', '')}\0h264-aac-yuv420p-v1".encode("utf-8")
+    ).hexdigest()
+    cache_path = WORKSPACE_VIDEO_PREVIEW_CACHE / f"{cache_key}.mp4"
+    lock = WORKSPACE_VIDEO_PREVIEW_LOCKS[int(cache_key[:8], 16) % len(WORKSPACE_VIDEO_PREVIEW_LOCKS)]
+    cache_fd = -1
+    try:
+        with lock:
+            WORKSPACE_VIDEO_PREVIEW_CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+            if not cache_path.is_file():
+                temporary_fd, temporary_name = tempfile.mkstemp(
+                    prefix=f".{cache_key}.",
+                    suffix=".mp4",
+                    dir=WORKSPACE_VIDEO_PREVIEW_CACHE,
+                )
+                os.close(temporary_fd)
+                source = workspace_preview_fd_path(source_fd)
+                try:
+                    completed = subprocess.run(
+                        [
+                            ffmpeg,
+                            "-nostdin", "-v", "error", "-y",
+                            "-i", source,
+                            "-map", "0:v:0",
+                            "-map", "0:a:0?",
+                            "-c:v", "libx264",
+                            "-preset", "veryfast",
+                            "-crf", "23",
+                            "-pix_fmt", "yuv420p",
+                            "-c:a", "aac",
+                            "-movflags", "+faststart",
+                            "-f", "mp4",
+                            temporary_name,
+                        ],
+                        capture_output=True,
+                        check=False,
+                        pass_fds=(source_fd,),
+                        timeout=WORKSPACE_VIDEO_PREVIEW_TRANSCODE_TIMEOUT_SECONDS,
+                    )
+                    if completed.returncode != 0:
+                        raise workspace_http_error(
+                            415,
+                            "workspace_video_transcode_failed",
+                            "This video codec could not be converted for the built-in player.",
+                        )
+                    converted = os.stat(temporary_name, follow_symlinks=False)
+                    if not stat.S_ISREG(converted.st_mode) or converted.st_size <= 0:
+                        raise workspace_http_error(
+                            415,
+                            "workspace_video_transcode_failed",
+                            "The compatible video preview was empty.",
+                        )
+                    if converted.st_size > MAX_WORKSPACE_PREVIEW_BYTES:
+                        raise workspace_http_error(
+                            413,
+                            "workspace_preview_too_large",
+                            "The compatible video is larger than the workspace preview limit.",
+                        )
+                    os.chmod(temporary_name, 0o600)
+                    os.replace(temporary_name, cache_path)
+                except (OSError, subprocess.SubprocessError) as exc:
+                    if isinstance(exc, HTTPException):
+                        raise
+                    raise workspace_http_error(
+                        415,
+                        "workspace_video_transcode_failed",
+                        "This video codec could not be converted for the built-in player.",
+                    ) from exc
+                finally:
+                    with suppress(OSError):
+                        os.unlink(temporary_name)
+                    with suppress(OSError):
+                        os.lseek(source_fd, 0, os.SEEK_SET)
+                cleanup_workspace_video_preview_cache()
+            cache_fd = os.open(cache_path, workspace_open_flags())
+            converted = os.fstat(cache_fd)
+            if not stat.S_ISREG(converted.st_mode) or converted.st_nlink != 1:
+                raise workspace_http_error(500, "workspace_video_cache_invalid", "Compatible video cache entry is invalid.")
+        os.close(source_fd)
+        result = dict(preview)
+        result.update({
+            "file_fd": cache_fd,
+            "media_type": "video/mp4",
+            "revision": hashlib.sha256(f"{cache_key}\0{converted.st_size}".encode("ascii")).hexdigest(),
+            "size": int(converted.st_size),
+            "mtime_ns": int(converted.st_mtime_ns),
+        })
+        cache_fd = -1
+        return result
+    except Exception:
+        with suppress(OSError):
+            os.close(source_fd)
+        raise
+    finally:
+        if cache_fd >= 0:
+            os.close(cache_fd)
 
 
 def open_workspace_download_sync(session_id: str, relative_path: str) -> dict[str, Any]:
@@ -6636,6 +6888,7 @@ class CreateSessionRequest(BaseModel):
     folder: str | None = None
     cwd: str | None = None
     backend: str | None = None
+    ask_only: bool | None = Field(default=None, strict=True)
     codex_provider: Literal["default", "custom"] | None = None
     provider_connection: Literal["default", "custom"] | None = None
     model: str | None = None
@@ -6713,6 +6966,7 @@ class UpdateSessionRequest(BaseModel):
     folder: str | None = None
     cwd: str | None = None
     backend: str | None = None
+    ask_only: bool | None = Field(default=None, strict=True)
     codex_provider: Literal["default", "custom"] | None = None
     provider_connection: Literal["default", "custom"] | None = None
     model: str | None = None
@@ -6742,6 +6996,7 @@ class UpdateSessionRequest(BaseModel):
 SESSION_LIFECYCLE_UPDATE_FIELDS = frozenset({
     "cwd",
     "backend",
+    "ask_only",
     "codex_provider",
     "provider_connection",
     "model",
@@ -7639,6 +7894,32 @@ def preview_session_runtime_update(
 def effective_codex_approval_policy(sess: dict[str, Any]) -> str:
     policy = str(sess.get("codex_approval_policy") or CODEX_DEFAULT_APPROVAL_POLICY)
     return policy if policy in CODEX_APPROVAL_POLICIES else CODEX_DEFAULT_APPROVAL_POLICY
+
+
+def session_ask_only(sess: dict[str, Any]) -> bool:
+    return sess.get("ask_only") is True
+
+
+def effective_codex_sandbox_mode(sess: dict[str, Any]) -> str:
+    """Return the enforced sandbox without overwriting the user's saved policy."""
+
+    if session_ask_only(sess):
+        return "read-only"
+    value = str(sess.get("codex_sandbox_mode") or CODEX_DEFAULT_SANDBOX_MODE)
+    return value if value in CODEX_SANDBOX_MODES else CODEX_DEFAULT_SANDBOX_MODE
+
+
+def effective_codex_permission_profile(sess: dict[str, Any]) -> str | None:
+    """Permission profiles cannot bypass Ask mode's explicit read-only sandbox."""
+
+    if session_ask_only(sess):
+        return None
+    value = str(
+        sess.get("codex_permission_profile")
+        or CODEX_DEFAULT_PERMISSION_PROFILE
+        or ""
+    ).strip()
+    return value or None
 
 
 def active_codex_approval_policy(session_id: str, thread_id: str) -> str:
@@ -11011,6 +11292,8 @@ class SessionStore:
         backend = (req.backend or DEFAULT_BACKEND).lower()
         if backend not in VALID_BACKENDS:
             raise HTTPException(status_code=400, detail=f"backend must be one of {sorted(VALID_BACKENDS)}")
+        if req.ask_only is True and backend != BACKEND_CODEX:
+            raise HTTPException(status_code=409, detail="Ask mode is available for Codex chats only")
         validate_session_subagent_limit({"backend": backend}, req.subagent_limit)
         runtime_source = {"backend": backend}
         if initializing_fork and parent_id and req.codex_provider == "custom":
@@ -11131,6 +11414,7 @@ class SessionStore:
             "folder": req.folder or "General",
             "cwd": session_cwd,
             "backend": backend,
+            "ask_only": bool(req.ask_only),
             "codex_provider": runtime["codex_provider"],
             "codex_provider_binding": runtime.get("codex_provider_binding"),
             "codex_provider_revision": runtime.get("codex_provider_revision"),
@@ -11359,6 +11643,8 @@ class SessionStore:
                         sess["_title_source"] = "manual"
                         sess.pop("_title_auto_value", None)
                         sess.pop("_title_seed", None)
+            if "ask_only" in patch:
+                sess["ask_only"] = bool(patch["ask_only"])
             if patch.get("auto_title_enabled") is not None:
                 sess["auto_title_enabled"] = bool(patch["auto_title_enabled"])
             for key, default, allowed in (
@@ -53047,7 +53333,7 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
     public = {
         k: sess.get(k)
         for k in (
-            "id", "title", "folder", "cwd", "backend", "model", "effort", "codex_provider",
+            "id", "title", "folder", "cwd", "backend", "ask_only", "model", "effort", "codex_provider",
             *detail_fields,
             "codex_thread_status",
             "codex_pending_interaction_count", "codex_needs_user_action",
@@ -53059,6 +53345,10 @@ def public_session(sess: dict[str, Any], *, summary: bool = False) -> dict[str, 
             "last_read_agent_event_seq", "last_read_agent_event_at", "manual_unread",
         )
     }
+    # Ask mode is opt-in. Keep high-volume session summaries sparse while
+    # retaining the explicit true value needed to restore the active mode.
+    if summary and public.get("ask_only") is not True:
+        public.pop("ask_only", None)
     unread_recovery_pending = str(sess.get("id") or "") in NON_JOB_AGENT_RECOVERY_PENDING
     # Keep metadata-free summaries sparse, but retire any cached projection
     # explicitly while recovery is pending or its checkpoint is unavailable.
@@ -74730,13 +75020,9 @@ async def run_codex_app_server(
                     },
                 }
                 permission_profile = (
-                    str(
-                        sess.get("codex_permission_profile")
-                        or CODEX_DEFAULT_PERMISSION_PROFILE
-                        or ""
-                    ).strip()
+                    effective_codex_permission_profile(sess)
                     if interactive_app_server
-                    else ""
+                    else None
                 )
                 overrides["approvalPolicy"] = approval_policy
                 if permission_profile:
@@ -74746,10 +75032,7 @@ async def run_codex_app_server(
                     overrides["permissions"] = permission_profile
                 else:
                     sandbox_mode = (
-                        str(
-                            sess.get("codex_sandbox_mode")
-                            or CODEX_DEFAULT_SANDBOX_MODE
-                        )
+                        effective_codex_sandbox_mode(sess)
                         if interactive_app_server
                         else CODEX_DEFAULT_SANDBOX_MODE
                     )
@@ -85087,6 +85370,14 @@ async def health() -> dict[str, Any]:
         ),
         "capabilities": {
             "subagent_limit_v1": {"version": 1, "backends": ["codex", "claude"]},
+            "ask_only_v1": {
+                "available": CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC,
+                "required": False,
+                "version": 1,
+                "supported_backends": [BACKEND_CODEX],
+                "message": "Codex chats can enforce a persistent read-only Ask mode.",
+                "action": None,
+            },
             "provider_usage": {"available": bool(AGENT_TOKEN), "version": 1, "backends": ["codex", "claude"]},
             "side_questions": side_questions.capability(),
             "codex_auth_v1": codex_auth.capability(available=bool(AGENT_TOKEN) and CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC),
@@ -85397,7 +85688,7 @@ async def health() -> dict[str, Any]:
                     else "Secure workspace file access is unavailable on this host."
                 ),
                 "action": None if WORKSPACE_SECURE_OPEN_AVAILABLE else "Use a supported macOS or Linux host.",
-                "version": 8 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+                "version": 10 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
                 "max_text_file_bytes": workspace_text_bytes_capability(),
                 "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
                 "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -86768,15 +87059,14 @@ async def create_native_side_chat(session_id: str, *, persisted_state=None, pers
                         "runtimeWorkspaceRoots": [cwd],
                     }
                     turn_overrides = dict(fork_overrides)
-                    permission_profile = str(current.get("codex_permission_profile")
-                                             or CODEX_DEFAULT_PERMISSION_PROFILE or "").strip()
+                    permission_profile = effective_codex_permission_profile(
+                        current
+                    )
                     if permission_profile:
                         fork_overrides["permissions"] = permission_profile
                         turn_overrides["permissions"] = permission_profile
                     else:
-                        sandbox = current.get("codex_sandbox_mode")
-                        if sandbox not in CODEX_SANDBOX_MODES:
-                            sandbox = CODEX_DEFAULT_SANDBOX_MODE
+                        sandbox = effective_codex_sandbox_mode(current)
                         fork_overrides["sandbox"] = sandbox
                         turn_overrides["sandboxPolicy"] = {"type": CODEX_SANDBOX_POLICY_TYPES[sandbox]}
                     config = flatten_codex_config_overrides(codex_effective_thread_config(current))
@@ -87131,8 +87421,8 @@ async def interactive_chat_native_snapshot(session_id: str) -> dict[str, Any]:
         "permission_profiles": [], "background_terminals_supported": False,
         "policy": {
             "approval_policy": session.get("codex_approval_policy") or CODEX_DEFAULT_APPROVAL_POLICY,
-            "sandbox_mode": session.get("codex_sandbox_mode") or CODEX_DEFAULT_SANDBOX_MODE,
-            "permission_profile": session.get("codex_permission_profile") or CODEX_DEFAULT_PERMISSION_PROFILE,
+            "sandbox_mode": effective_codex_sandbox_mode(session),
+            "permission_profile": effective_codex_permission_profile(session),
             "approvals_reviewer": session.get("codex_approvals_reviewer") or CODEX_DEFAULT_APPROVALS_REVIEWER,
         },
     }
@@ -90907,6 +91197,32 @@ async def ensure_opencode_permission_mode_update_allowed(
             )
 
 
+async def ensure_ask_only_update_allowed(
+    session_id: str,
+    current: dict[str, Any],
+    patch: dict[str, Any],
+) -> None:
+    """Never label a running Codex turn read-only after it already started."""
+
+    if "ask_only" not in patch:
+        return
+    if str(current.get("backend") or DEFAULT_BACKEND).lower() != BACKEND_CODEX:
+        raise HTTPException(status_code=409, detail="Ask mode is available for Codex chats only")
+    requested = patch.get("ask_only") is True
+    if requested == session_ask_only(current):
+        return
+    async with ACTIVE_LOCK:
+        provider_starting = any(
+            not task.done()
+            for task in tuple(SESSION_TURN_TASKS.get(session_id) or ())
+        )
+        if session_id in BUSY_SESSIONS or ACTIVE.get(session_id) is not None or provider_starting:
+            raise HTTPException(
+                status_code=409,
+                detail="wait for or stop the active turn before changing Ask mode",
+            )
+
+
 async def ensure_backend_update_allowed(
     session_id: str,
     current: dict[str, Any],
@@ -90928,6 +91244,15 @@ async def ensure_backend_update_allowed(
     requested_backend = str(
         patch.get("backend") or current_backend
     ).strip().lower()
+    if (
+        session_ask_only(current)
+        and requested_backend != BACKEND_CODEX
+        and patch.get("ask_only") is not False
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="turn off Ask mode before changing this chat's agent",
+        )
     provider_changed = "codex_provider" in patch and codex_provider.session_choice(patch.get("codex_provider")) != codex_provider.session_choice(current.get("codex_provider"))
     if requested_backend == current_backend and not provider_changed:
         return
@@ -91061,6 +91386,11 @@ async def _update_session(
                 patch,
             )
             await ensure_opencode_permission_mode_update_allowed(
+                session_id,
+                current,
+                patch,
+            )
+            await ensure_ask_only_update_allowed(
                 session_id,
                 current,
                 patch,
@@ -91248,19 +91578,8 @@ async def codex_runtime_snapshot(session_id: str) -> dict[str, Any]:
                 in CODEX_APPROVAL_POLICIES
                 else CODEX_DEFAULT_APPROVAL_POLICY
             ),
-            "sandbox_mode": (
-                session.get("codex_sandbox_mode")
-                if session.get("codex_sandbox_mode") in CODEX_SANDBOX_MODES
-                else CODEX_DEFAULT_SANDBOX_MODE
-            ),
-            "permission_profile": (
-                str(
-                    session.get("codex_permission_profile")
-                    or CODEX_DEFAULT_PERMISSION_PROFILE
-                    or ""
-                ).strip()
-                or CODEX_DEFAULT_PERMISSION_PROFILE
-            ),
+            "sandbox_mode": effective_codex_sandbox_mode(session),
+            "permission_profile": effective_codex_permission_profile(session),
             "approvals_reviewer": (
                 session.get("codex_approvals_reviewer")
                 if session.get("codex_approvals_reviewer")
@@ -94825,6 +95144,7 @@ async def _fork_session_locked(
             opencode_permission_mode=effective_opencode_permission_mode(parent),
             codex_approval_policy=parent.get("codex_approval_policy"),
             codex_sandbox_mode=parent.get("codex_sandbox_mode"),
+            ask_only=bool(parent.get("ask_only")),
             codex_permission_profile=parent.get("codex_permission_profile"),
             codex_approvals_reviewer=parent.get("codex_approvals_reviewer"),
             provider_jobs_access=effective_provider_jobs_access(parent),
@@ -100854,19 +101174,10 @@ async def get_session_absolute_file(
     return await asyncio.to_thread(read_absolute_file_sync, session_id, path)
 
 
-@app.get("/api/sessions/{session_id}/workspace/preview")
-@app.head("/api/sessions/{session_id}/workspace/preview")
-@app.api_route(
-    "/api/sessions/{session_id}/workspace/preview",
-    methods=["GET", "HEAD"],
-    include_in_schema=False,
-)
-async def get_session_workspace_preview(
+def workspace_preview_response(
     request: Request,
-    session_id: str,
-    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    preview: dict[str, Any],
 ) -> Response:
-    preview = await asyncio.to_thread(open_workspace_preview_sync, session_id, path)
     file_fd = int(preview["file_fd"])
     try:
         size = int(preview["size"])
@@ -100906,6 +101217,56 @@ async def get_session_workspace_preview(
     finally:
         if file_fd >= 0:
             os.close(file_fd)
+
+
+@app.get("/api/sessions/{session_id}/workspace/preview")
+@app.head("/api/sessions/{session_id}/workspace/preview")
+@app.api_route(
+    "/api/sessions/{session_id}/workspace/preview",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def get_session_workspace_preview(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    compatible_video: bool = False,
+) -> Response:
+    preview = await asyncio.to_thread(open_workspace_preview_sync, session_id, path)
+    if compatible_video:
+        preview = await asyncio.to_thread(compatible_workspace_video_preview_sync, preview)
+    return workspace_preview_response(request, preview)
+
+
+@app.get("/api/sessions/{session_id}/workspace/absolute-preview")
+@app.head("/api/sessions/{session_id}/workspace/absolute-preview")
+@app.api_route(
+    "/api/sessions/{session_id}/workspace/absolute-preview",
+    methods=["GET", "HEAD"],
+    include_in_schema=False,
+)
+async def get_session_absolute_workspace_preview(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    remote_host: str | None = Query(default=None, max_length=255),
+    compatible_video: bool = False,
+) -> Response:
+    require_native_workspace_directory_control(request)
+    if remote_host:
+        raise workspace_http_error(
+            501,
+            "remote_workspace_preview_unavailable",
+            "In-app previews from an SSH-backed workspace are not available on this server.",
+        )
+    preview = await asyncio.to_thread(
+        open_absolute_workspace_preview_sync,
+        session_id,
+        path,
+    )
+    if compatible_video:
+        preview = await asyncio.to_thread(compatible_workspace_video_preview_sync, preview)
+    return workspace_preview_response(request, preview)
 
 
 @app.get("/api/sessions/{session_id}/workspace/download")

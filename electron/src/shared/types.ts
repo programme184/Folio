@@ -460,6 +460,8 @@ export interface Session {
   folder?: string | null
   cwd?: string | null
   backend: Backend
+  /** Chat-level, server-enforced workspace read-only mode for supported providers. */
+  ask_only?: boolean | null
   /** Missing on older sessions means native Codex's default provider. */
   codex_provider?: CodexProvider
   provider_connection?: CodexProvider
@@ -1772,6 +1774,7 @@ export interface SessionForkCompletedPrefixCapability {
 export interface HealthCapabilities {
   provider_usage?: { available: boolean; version: number; backends?: Backend[] }
   subagent_limit_v1?: { version: number; backends?: Backend[] }
+  ask_only_v1?: ServerCapability & { version: 1; supported_backends: Backend[] }
   codex_provider_v1?: { available?: boolean; version?: number; per_chat?: boolean; per_chat_models?: boolean; model_discovery?: boolean; model_compatibility?: boolean }
   provider_connections_v1?: { available?: boolean; per_chat?: boolean; backends?: Backend[] }
   side_questions?: SideQuestionsCapability
@@ -2471,6 +2474,7 @@ export interface UpdateSessionInput {
   folder?: string
   cwd?: string
   backend?: Backend
+  ask_only?: boolean | null
   codex_provider?: CodexProvider
   provider_connection?: CodexProvider
   model?: string | null

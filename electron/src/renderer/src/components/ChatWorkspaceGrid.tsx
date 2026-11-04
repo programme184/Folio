@@ -284,12 +284,18 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
       const nextFocusedIndex = focusedIndex === closingIndex
         ? Math.min(closingIndex, assignments.length - 1)
         : focusedIndex > closingIndex ? focusedIndex - 1 : focusedIndex
-      return {
+      const next = {
         ...current,
         paneCount: (current.paneCount - 1) as ChatPaneCount,
         focusedPane: CHAT_PANE_IDS[Math.max(0, nextFocusedIndex)],
         panes: nextPanes
       }
+      // Local assignments are captured only to keep them beside a concurrent
+      // server webview. Once the last remote pane closes, release that capture
+      // so ordinary sidebar/workspace selection renders the live local panes.
+      return Object.values(nextPanes).some(assignment => assignment?.profileId !== profileId)
+        ? next
+        : null
     })
     useAppStore.getState().closeChatPane(pane)
   }

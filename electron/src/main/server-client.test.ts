@@ -2506,17 +2506,7 @@ describe('AgentServerClient live stream', () => {
   })
 
   it('proxies workspace previews with encoded paths, HEAD, and Range without forwarding unrelated headers', async () => {
-    const serverResponse = new Response(null, {
-      status: 206,
-      headers: {
-        'Accept-Ranges': 'bytes',
-        'Content-Range': 'bytes 100-199/500',
-        'Content-Type': 'application/pdf'
-      }
-    })
-    const fetchMock = vi.fn().mockResolvedValue(serverResponse)
-    vi.stubGlobal('fetch', fetchMock)
-    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    const requests: IncomingMessage[] = []
     const request = new Request('agentsdock-media://workspace/profile-a/1/chat/src%2Freport.pdf', {
       method: 'HEAD',
       headers: {
@@ -2524,27 +2514,87 @@ describe('AgentServerClient live stream', () => {
         'X-Untrusted-Renderer-Header': 'ignore-me'
       }
     })
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.writeHead(206, {
+        'Accept-Ranges': 'bytes',
+        'Content-Range': 'bytes 100-199/500',
+        'Content-Type': 'application/pdf'
+      })
+      response.end()
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      const response = await client.workspacePreviewRequest('chat one', 'docs/report #1.pdf', request)
+      expect(response.status).toBe(206)
+      expect(response.headers.get('Content-Range')).toBe('bytes 100-199/500')
+    })
 
-    const response = await client.workspacePreviewRequest('chat one', 'docs/report #1.pdf', request)
-
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe(
-      'http://example.test:7850/api/sessions/chat%20one/workspace/preview?path=docs%2Freport+%231.pdf'
-    )
-    expect(init.method).toBe('HEAD')
-    const headers = new Headers(init.headers)
-    expect(headers.get('Range')).toBe('bytes=100-199')
-    expect(headers.get('X-AgentsDock-Token')).toBe('secret')
-    expect(headers.get('X-Untrusted-Renderer-Header')).toBeNull()
-    expect(response).toBe(serverResponse)
+    expect(requests[0]?.url).toBe('/api/sessions/chat%20one/workspace/preview?path=docs%2Freport+%231.pdf')
+    expect(requests[0]?.method).toBe('HEAD')
+    expect(requests[0]?.headers.range).toBe('bytes=100-199')
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['x-untrusted-renderer-header']).toBeUndefined()
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+    expect(requests[0]?.headers.origin).toBeUndefined()
+    expect(requests[0]?.headers.cookie).toBeUndefined()
   })
 
   it('passes workspace preview HTTP errors through as responses', async () => {
-    const serverResponse = new Response('Not found', { status: 404 })
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(serverResponse))
-    const client = new AgentServerClient('http://example.test:7850', 'secret')
+    await withLocalHTTPServer((_incoming, response) => {
+      response.writeHead(404, { 'Content-Type': 'text/plain' })
+      response.end('Not found')
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      const response = await client.workspacePreviewRequest('chat', 'missing.png')
+      expect(response.status).toBe(404)
+      await expect(response.text()).resolves.toBe('Not found')
+    })
+  })
 
-    await expect(client.workspacePreviewRequest('chat', 'missing.png')).resolves.toBe(serverResponse)
+  it('requests browser-compatible workspace video previews', async () => {
+    const requests: IncomingMessage[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.writeHead(206, { 'Content-Type': 'video/mp4' })
+      response.end()
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await client.workspacePreviewRequest('chat', 'runs/overlay.mp4')
+    })
+
+    expect(requests[0]?.url).toBe(
+      '/api/sessions/chat/workspace/preview?path=runs%2Foverlay.mp4&compatible_video=true'
+    )
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+  })
+
+  it('streams explicit absolute workspace previews with only native auth and range headers', async () => {
+    const requests: IncomingMessage[] = []
+    const request = new Request('agentsdock-media://workspace/profile/1/chat/video', {
+      headers: { Range: 'bytes=4-7', 'X-Untrusted-Renderer-Header': 'ignore-me' }
+    })
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 4-7/20' })
+      response.end(Buffer.from([1, 2, 3, 4]))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      const response = await client.absoluteWorkspacePreviewRequest(
+        'chat one',
+        '/work/other root/overlay.mp4',
+        request
+      )
+      expect((await response.arrayBuffer()).byteLength).toBe(4)
+    })
+
+    expect(requests[0]?.url).toBe(
+      '/api/sessions/chat%20one/workspace/absolute-preview?path=%2Fwork%2Fother+root%2Foverlay.mp4&compatible_video=true'
+    )
+    expect(requests[0]?.method).toBe('GET')
+    expect(requests[0]?.headers.range).toBe('bytes=4-7')
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['x-untrusted-renderer-header']).toBeUndefined()
+    expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
 
   it('downloads workspace files through the authenticated encoded binary route', async () => {

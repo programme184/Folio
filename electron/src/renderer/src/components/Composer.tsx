@@ -10,7 +10,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import * as Tooltip from '@radix-ui/react-tooltip'
 import { DndContext, PointerSensor, useDraggable, useDroppable, useSensor, useSensors, type DragEndEvent, type DragOverEvent } from '@dnd-kit/core'
-import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FileCode2, Folder, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Shield, Sparkles, Square, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, ArrowUp, CalendarClock, CheckCircle2, ChevronDown, Columns2, CornerDownRight, File, FileCode2, Folder, FolderOpen, Gauge, GitFork, Goal, GripVertical, Import, Info, ListOrdered, LoaderCircle, Mail, MessageCircleQuestion, MessageSquarePlus, MessageSquareShare, MoreHorizontal, Network, Paperclip, Pencil, Plus, RadioTower, RotateCw, Send, Settings, Shield, Sparkles, Square, Trash2, X } from 'lucide-react'
 import { effectiveFileContentType } from '@shared/file-content-type'
 import { localSessionImportSupported } from '@shared/local-session-import'
 import type { AgentCrossChatRoute, AgentTeamMailRoute, AgentTeamMailRoutesSnapshot, AgentFile, ChatReference, ChatReferenceAction, ClaudePermissionMode, Event as AgentEvent, Health, NativeFileRef, ProviderCommand, ProviderCommandSelection, ProviderCommandsSnapshot, QueuedTurn, RuntimeCatalog, Session, TeamReference } from '@shared/types'
@@ -188,6 +188,7 @@ function composerHealthContractRevisions(health: Health | null): ComposerHealthC
       capabilities?.team_all_servers_alias_v1 ?? null,
       capabilities?.agent_team_mail_v1 ?? null,
       capabilities?.codex_controls ?? null,
+      capabilities?.ask_only_v1 ?? null,
       capabilities?.codex_provider_v1 ?? null,
       capabilities?.claude_controls ?? null,
       capabilities?.cursor_backend ?? null,
@@ -541,6 +542,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const catalog = useAppStore(state => state.runtimeCatalog)
   const healthRevision = useAppStore(state => composerHealthContractRevision(state.health))
   const health = useMemo(() => useAppStore.getState().health, [healthRevision])
+  const askOnlyAvailable = session?.backend === 'codex'
+    && health?.capabilities?.ask_only_v1?.available === true
+    && health.capabilities.ask_only_v1.supported_backends?.includes('codex')
   const connected = useAppStore(state => state.connected)
   const connectionGeneration = useAppStore(state => state.connectionGeneration)
   const serverInstanceId = health?.server_instance_id ?? null
@@ -2139,7 +2143,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
           disabled={discardingEmpty}
           value={messageProjection.text}
           rows={1}
-          placeholder={t("ui.Composer.Composer.message_2f77668")}
+          placeholder={session.ask_only ? t('composer.askOnly.placeholder') : t("ui.Composer.Composer.message_2f77668")}
           aria-label={sessionId === undefined ? t("ui.Composer.Composer.message_2f77668") : t("ui.Composer.Composer.message_0429845", { "title": String(session.title) })}
           spellCheck
           className={fileDropActive ? 'composer-file-drop-active' : undefined}
@@ -2495,6 +2499,10 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
             <DropdownMenu.Portal><DropdownMenu.Content className="menu-content" side="top" align="start">
               <DropdownMenu.Item className="menu-item" onSelect={() => void chooseFiles()}><Paperclip size={14} />{" "}{t("ui.Composer.Composer.attach_files_e697cc1")}</DropdownMenu.Item>
               {goalControlsAvailable && <DropdownMenu.Item className="menu-item" onSelect={openGoalControls}><Goal size={14} />{goalTitle}</DropdownMenu.Item>}
+              {askOnlyAvailable && !session.ask_only && <DropdownMenu.Item className="menu-item" disabled={running || admitting}
+                onSelect={() => void useAppStore.getState().updateSession(session.id, { ask_only: true })}>
+                <MessageCircleQuestion size={14} />{t('composer.askOnly.enable')}
+              </DropdownMenu.Item>}
               <DropdownMenu.Separator className="menu-separator" />
               <DropdownMenu.Label className="menu-label">{t("ui.Composer.Composer.frequent_phrases_e257acc")}</DropdownMenu.Label>
               {[t("ui.Composer.Composer.status_report_b784026"), t("ui.Composer.Composer.keep_going_8fc6411"), t("ui.Composer.Composer.verify_the_result_carefully_b07a805")].map(phrase => <DropdownMenu.Item key={phrase} className="menu-item" onSelect={() => void send(false, phrase, false)}>{phrase}</DropdownMenu.Item>)}
@@ -2515,6 +2523,13 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
               })
             }}
           />}
+          {askOnlyAvailable && session.ask_only && <span className="ask-only-chip" role="group" aria-label={t('composer.askOnly.active')}>
+            <MessageCircleQuestion size={13} aria-hidden="true" />
+            <span>{t('composer.askOnly.label')}</span>
+            <button type="button" aria-label={t('composer.askOnly.disable')} title={t('composer.askOnly.disable')}
+              disabled={running || admitting || writeDisabled}
+              onClick={() => void useAppStore.getState().updateSession(session.id, { ask_only: false })}><X size={12} /></button>
+          </span>}
           {!window.agentsDock.sharedChat && <BackendMenu session={session} running={running} admitting={admitting} />}
           <RuntimeMenu
             session={session}

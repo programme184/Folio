@@ -13,7 +13,7 @@ from types import MappingProxyType
 
 
 SETTINGS_FIELDS = frozenset({
-    "title", "backend", "model", "effort", "system_prompt",
+    "title", "backend", "ask_only", "model", "effort", "system_prompt",
     "claude_permission_mode", "codex_approval_policy", "codex_sandbox_mode",
     "codex_permission_profile", "codex_approvals_reviewer", "cursor_permission_mode",
     "provider_jobs_access",

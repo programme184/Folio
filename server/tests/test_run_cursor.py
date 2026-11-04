@@ -291,7 +291,7 @@ class RunCursorTests(unittest.IsolatedAsyncioTestCase):
         body = r'''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 prompt = sys.stdin.read()
-assert "--force" not in sys.argv and "--approve-mcps" not in sys.argv
+assert "--force" in sys.argv and "--approve-mcps" not in sys.argv
 assert "--disable-project-configs" in sys.argv
 plugin = pathlib.Path(sys.argv[sys.argv.index("--plugin-dir") + 1])
 config = json.loads((plugin / "mcp.json").read_text())["mcpServers"]["provider"]

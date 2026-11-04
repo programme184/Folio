@@ -26,6 +26,7 @@ from tests import test_codex_subagent_config_isolated as config_fixture
 SOURCE = (Path(__file__).resolve().parents[1] / "agent_server.py")
 FUNCTIONS = {"preview_session_runtime_update", "session_backend_locked", "public_session", "title_runtime_key",
     "effective_opencode_permission_mode", "ensure_opencode_permission_mode_update_allowed",
+    "session_ask_only", "ensure_ask_only_update_allowed",
     "session_subagent_limit_control", "validate_session_subagent_limit",
     "record_codex_subagent_limit_application",
     "create_session", "create_session_with_history", "update_session", "_update_session", "ensure_backend_update_allowed", "codex_runtime_settings", "_fork_session_locked"}

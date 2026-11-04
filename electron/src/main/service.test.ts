@@ -3972,6 +3972,7 @@ interface FakeClientOptions {
     request?: Request,
     callerSignal?: AbortSignal
   ) => Promise<Response>
+  absoluteWorkspacePreviewRequest?: AgentServerClient['absoluteWorkspacePreviewRequest']
   workspaceDownloadRequest?: (sessionId: string, path: string) => Promise<Response>
   stream?: AgentServerClient['stream']
   emergencyStream?: (
@@ -4160,6 +4161,7 @@ function fakeClient(options: FakeClientOptions = {}) {
     runtimeCatalog: vi.fn(options.runtimeCatalog ?? (async () => runtimeCatalog)),
     fileRequest: vi.fn(options.fileRequest ?? (async () => new Response('file'))),
     workspacePreviewRequest: vi.fn(options.workspacePreviewRequest ?? (async () => new Response('workspace preview'))),
+    absoluteWorkspacePreviewRequest: vi.fn(options.absoluteWorkspacePreviewRequest ?? (async () => new Response('absolute workspace preview'))),
     workspaceDownloadRequest: vi.fn(options.workspaceDownloadRequest ?? (async () => new Response('workspace download'))),
     upload: vi.fn(options.upload ?? (async (_sessionId, path) => ({
       id: `uploaded-${path}`,
@@ -7009,6 +7011,44 @@ describe('artifact text files', () => {
   })
 })
 
+describe('window lifecycle', () => {
+  it('does not read BrowserWindow.webContents after Electron destroys the window', () => {
+    const { service } = createProfileService({
+      'http://a.test:7850': [fakeClient()]
+    })
+    const listeners = new Map<string, () => void>()
+    const contents = {
+      id: 73,
+      isDestroyed: vi.fn(() => false),
+      send: vi.fn(),
+      on: vi.fn()
+    }
+    let destroyed = false
+    const window = {
+      isDestroyed: vi.fn(() => destroyed),
+      on: vi.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener)
+        return window
+      }),
+      get webContents() {
+        if (destroyed) throw new TypeError('Object has been destroyed')
+        return contents
+      }
+    }
+
+    service.addWindow(window as never)
+    destroyed = true
+
+    expect(() => listeners.get('closed')?.()).not.toThrow()
+    const internals = service as unknown as {
+      windows: Set<unknown>
+      rendererTargets: Set<unknown>
+    }
+    expect(internals.windows.has(window)).toBe(false)
+    expect(internals.rendererTargets.has(contents)).toBe(false)
+  })
+})
+
 describe('timeline-driven jobs refresh', () => {
   it('refreshes jobs after live schedule events and completed turns, but not raw provider events', async () => {
     let onEvent: (event: Event) => void = () => { throw new Error('Timeline stream did not start.') }
@@ -7755,6 +7795,39 @@ describe('workspace file scope safety', () => {
     }
   })
 
+  it('streams absolute workspace videos through the in-app media transport', async () => {
+    const bytes = new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112])
+    const absolutePreview = vi.fn(async () => new Response(bytes, {
+      status: 206,
+      headers: { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-7/20' }
+    }))
+    const client = fakeClient({ absoluteWorkspacePreviewRequest: absolutePreview })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] })
+    const generation = (await service.bootstrap()).profileGeneration
+    const request = new Request('agentsdock-media://workspace/a/1/chat/video', {
+      headers: { Range: 'bytes=0-7' }
+    })
+
+    const response = await service.workspaceMediaResponse(
+      'a',
+      generation,
+      'chat',
+      '/work/other/overlay.mp4',
+      request
+    )
+
+    expect(response.status).toBe(206)
+    expect(response.headers.get('Content-Type')).toBe('video/mp4')
+    expect(absolutePreview).toHaveBeenCalledWith(
+      'chat',
+      '/work/other/overlay.mp4',
+      request,
+      undefined,
+      null
+    )
+    expect(client.workspacePreviewRequest).not.toHaveBeenCalled()
+  })
+
   it('does not return a TIFF preview after switching the owning server during decoding', async () => {
     let beginBody: (() => void) | undefined
     const tiff = Uint8Array.from(readFileSync(join(__dirname, 'test-fixtures/tiff/rgb.tiff')))
@@ -7819,7 +7892,6 @@ describe('workspace file scope safety', () => {
     ['..', 'assets/live.png'],
     ['x'.repeat(2_049), 'assets/live.png'],
     ['chat', ''],
-    ['chat', '/private/file.png'],
     ['chat', '../file.png'],
     ['chat', 'assets/../file.png'],
     ['chat', 'assets\\file.png'],

@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,11 +61,17 @@ class RecoveryOwnerTests(unittest.TestCase):
         self.native = Native()
         self.services = Services()
         self.directory = item.root / recovery.DIRECTORY / self.transaction
+        self.interpreter = item.base / "trusted-python"
+        self.interpreter.write_text(
+            "#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n'
+        )
+        self.interpreter.chmod(0o700)
 
     def arm(self):
         with InstallationLock(self.item.root):
-            return recovery.arm(self.item.root, self.item.candidate_source, home=self.item.base,
-                platform="Linux", bind="127.0.0.1", port=17850, expected_server_identity="", native=self.native)
+            with mock.patch.object(recovery.sys, "executable", str(self.interpreter)):
+                return recovery.arm(self.item.root, self.item.candidate_source, home=self.item.base,
+                    platform="Linux", bind="127.0.0.1", port=17850, expected_server_identity="", native=self.native)
 
     def finish_rollback(self):
         item = self.item
@@ -79,7 +86,7 @@ class RecoveryOwnerTests(unittest.TestCase):
         self.assertEqual(value["transaction_id"], self.transaction)
         self.assertEqual(value["api_contract"], 28)
         self.assertTrue(value["fresh"])
-        self.assertEqual(Path(value["interpreter"]), Path(sys.executable).resolve())
+        self.assertEqual(Path(value["interpreter"]), self.interpreter.resolve())
         self.assertEqual(self.directory.stat().st_mode & 0o777, 0o700)
         self.assertEqual((self.directory / "owner.json").stat().st_mode & 0o777, 0o600)
         body = recovery._service_path(value).read_text()

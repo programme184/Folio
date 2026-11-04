@@ -65,10 +65,21 @@ export function isValidWorkspaceMediaPath(value: unknown): value is string {
     || value.length === 0
     || value.length > MAX_WORKSPACE_MEDIA_PATH_LENGTH
     || INVALID_MEDIA_IDENTIFIER.test(value)
-    || value.startsWith('/')
-    || value.includes('\\')
-    || /^[A-Za-z]:\//.test(value)
   ) return false
+  if (value.startsWith('/')) {
+    const segments = value.slice(1).split('/')
+    return segments.every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
+  }
+  if (/^[A-Za-z]:[\\/]/.test(value)) {
+    const segments = value.slice(3).split(/[\\/]/)
+    return segments.every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
+  }
+  if (value.startsWith('\\\\')) {
+    const segments = value.slice(2).split('\\')
+    return segments.length >= 3
+      && segments.every(segment => segment.length > 0 && segment !== '.' && segment !== '..' && !segment.includes('/'))
+  }
+  if (value.includes('\\')) return false
   const segments = value.split('/')
   return segments.every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
 }

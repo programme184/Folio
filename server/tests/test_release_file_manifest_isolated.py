@@ -24,6 +24,7 @@ NEW_MODULES = {
     "codex_provider.py",
     "provider_connections.py",
     "cursor_api_key.py",
+    "cursor_desktop_login.py",
     "side_questions.py", "codex_side_question.py", "claude_side_question.py",
     "title_generation.py",
     "server_instances.py",

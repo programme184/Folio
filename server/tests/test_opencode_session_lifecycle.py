@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,8 +44,13 @@ class OpenCodeSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         agent_server.BUSY_SESSIONS = set()
         agent_server.ACTIVE = {}
 
-        self.auth_patch = patch.object(agent_server, "AGENT_TOKEN", "test-token")
-        self.auth_patch.start()
+        self.patches = [
+            patch.object(agent_server, "AGENT_TOKEN", "test-token"),
+            patch.object(agent_server, "local_history_import_guard", lambda: nullcontext()),
+            patch.object(agent_server, "other_local_instance_provider_keys", lambda: set()),
+        ]
+        for item in self.patches:
+            item.start()
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=agent_server.app),
             base_url="http://test",
@@ -53,7 +59,8 @@ class OpenCodeSessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
-        self.auth_patch.stop()
+        for item in reversed(self.patches):
+            item.stop()
         agent_server.STATE_DIR = self.previous["state_dir"]
         agent_server.SESSIONS_FILE = self.previous["sessions_file"]
         agent_server.FILES_ROOT = self.previous["files_root"]

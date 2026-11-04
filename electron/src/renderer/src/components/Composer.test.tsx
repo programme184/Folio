@@ -3371,6 +3371,39 @@ describe('Composer', () => {
     expect(useAppStore.getState().uploadsBySession['chat-1']).toEqual([attachment])
   })
 
+  it('keeps Ask mode on the chat until its chip is closed', async () => {
+    const update = vi.fn(async (_sessionId: string, patch: { ask_only?: boolean }) => ({
+      id: 'chat-1', title: 'Chat', backend: 'codex' as const, ask_only: patch.ask_only === true
+    }))
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        preferences: { get: vi.fn().mockResolvedValue(''), set: vi.fn().mockResolvedValue(undefined) },
+        sessions: { update }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [{ id: 'chat-1', title: 'Chat', backend: 'codex', ask_only: false }],
+      health: { ok: true, capabilities: { ask_only_v1: {
+        available: true, required: false, message: '', action: null,
+        version: 1, supported_backends: ['codex']
+      } } }
+    })
+    const user = userEvent.setup()
+    render(<Composer />)
+
+    await user.click(screen.getByTitle('Add'))
+    await user.click(await screen.findByRole('menuitem', { name: 'Ask only' }))
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith('chat-1', { ask_only: true }))
+    expect(screen.getByRole('group', { name: 'Ask mode is active' })).toBeVisible()
+    expect(screen.getByPlaceholderText('Ask questions')).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Turn off Ask mode' }))
+    await waitFor(() => expect(update).toHaveBeenLastCalledWith('chat-1', { ask_only: false }))
+    expect(screen.queryByRole('group', { name: 'Ask mode is active' })).not.toBeInTheDocument()
+    expect(screen.getByPlaceholderText('Message')).toBeVisible()
+  })
+
   it.each(['unknown', 'unauthenticated'] as const)('sends Claude messages without a pre-send auth warning or probe when status is %s', async status => {
     const session = { id: 'chat-1', title: 'Chat', backend: 'claude' as const }
     const send = vi.fn().mockResolvedValue({ session, queued: false })

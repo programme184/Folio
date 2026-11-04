@@ -138,6 +138,10 @@ class SessionSummaryTests(unittest.TestCase):
         self.assertLess(summary_bytes, 150_000)
         self.assertLess(summary_bytes, full_bytes * 0.05)
 
+    def test_summary_keeps_only_active_ask_mode(self):
+        self.assertTrue(public_session({"id": "ask", "backend": "codex", "ask_only": True}, summary=True)["ask_only"])
+        self.assertNotIn("ask_only", public_session({"id": "write", "backend": "codex", "ask_only": False}, summary=True))
+
 
 if __name__ == "__main__":
     unittest.main()

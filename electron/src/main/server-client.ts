@@ -140,6 +140,7 @@ import { parseTeamActivityHintPacket, TEAM_ACTIVITY_HINTS_PROTOCOL, emptyBulleti
   type BulletinChangeCursor, type TeamActivityHintPacket } from '../shared/team-bulletin-hints'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const WORKSPACE_PREVIEW_MAX_RESPONSE_BYTES = 100 * 1024 * 1024
 // Snapshot scans have a server-side 30s deadline. Leave response/transport
 // headroom without extending unrelated requests or retrying a creation.
 const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
@@ -1895,19 +1896,71 @@ export class AgentServerClient {
     const configuration = this.configuration
     const method = request?.method?.toUpperCase() ?? 'GET'
     if (method !== 'GET' && method !== 'HEAD') throw new TypeError('Workspace previews only support GET and HEAD')
-    const headers = new Headers()
-    const range = request?.headers.get('Range')
-    if (range) headers.set('Range', range)
-    this.applyAuth(headers, configuration)
     const query = new URLSearchParams({ path })
-    return fetch(configurationURL(
+    if (inferredFileContentType(path).startsWith('video/')) query.set('compatible_video', 'true')
+    return this.nativeWorkspacePreviewResponse(configurationURL(
       configuration,
       `/api/sessions/${encodeURIComponent(sessionId)}/workspace/preview?${query}`
-    ), {
+    ), method, request?.headers.get('Range'), request?.signal, callerSignal)
+  }
+
+  absoluteWorkspacePreviewRequest(
+    sessionId: string,
+    path: string,
+    request?: Request,
+    callerSignal?: AbortSignal,
+    remoteHost?: string | null
+  ): Promise<Response> {
+    const configuration = this.configuration
+    const method = request?.method?.toUpperCase() ?? 'GET'
+    if (method !== 'GET' && method !== 'HEAD') throw new TypeError('Workspace previews only support GET and HEAD')
+    const query = new URLSearchParams({ path })
+    if (remoteHost) query.set('remote_host', remoteHost)
+    if (inferredFileContentType(path).startsWith('video/')) query.set('compatible_video', 'true')
+    return this.nativeWorkspacePreviewResponse(configurationURL(
+      configuration,
+      `/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-preview?${query}`
+    ), method, request?.headers.get('Range'), request?.signal, callerSignal)
+  }
+
+  private nativeWorkspacePreviewResponse(
+    url: string,
+    method: 'GET' | 'HEAD',
+    range?: string | null,
+    requestSignal?: AbortSignal,
+    callerSignal?: AbortSignal
+  ): Promise<Response> {
+    const configuration = this.configuration
+    const target = new URL(url)
+    const server = new URL(configuration.baseURL)
+    const serverPrefix = server.pathname === '/' ? '' : server.pathname
+    const relativePath = target.pathname.slice(serverPrefix.length)
+    if (
+      target.origin !== server.origin
+      || target.username || target.password || target.hash
+      || !/^\/api\/sessions\/[^/]{1,384}\/workspace\/(?:preview|absolute-preview)$/.test(relativePath)
+      || [...target.searchParams.keys()].some(key => !['path', 'remote_host', 'compatible_video'].includes(key))
+      || target.searchParams.getAll('path').length !== 1
+      || !target.searchParams.get('path')
+      || target.searchParams.getAll('remote_host').length > 1
+      || target.searchParams.getAll('compatible_video').length > 1
+      || (target.searchParams.has('compatible_video') && target.searchParams.get('compatible_video') !== 'true')
+      || (relativePath.endsWith('/workspace/preview') && target.searchParams.has('remote_host'))
+    ) throw new Error('Workspace preview route is invalid.')
+    const headers = new Headers({ Accept: '*/*' })
+    if (range) headers.set('Range', range)
+    if (configuration.token) headers.set('X-AgentsDock-Token', configuration.token)
+    return securePeerNodeResponse(target, {
       method,
       headers,
-      redirect: 'error',
-      signal: combineAbortSignals(configuration.abortController.signal, request?.signal, callerSignal)
+      body: null,
+      responseMode: 'binary',
+      maxResponseBytes: WORKSPACE_PREVIEW_MAX_RESPONSE_BYTES,
+      signal: combineAbortSignals(
+        configuration.abortController.signal,
+        requestSignal,
+        callerSignal
+      )
     })
   }
 

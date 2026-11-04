@@ -1688,6 +1688,10 @@ button.tool-event-toggle:hover { background: #242424; }
 .codex-permission-compact { display: none; }
 .codex-permission-chip.unavailable { color: #858581; }
 .codex-permission-chip.unavailable:disabled { opacity: .72; }
+.ask-only-chip { flex: none; height: var(--control-height-sm); display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 7px; color: #89d185; background: #17351d; border: 1px solid #2f6638; border-radius: var(--radius-control); font-size: var(--text-size-meta); white-space: nowrap; }
+.ask-only-chip > button { width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; padding: 0; color: inherit; background: transparent; border: 0; border-radius: 50%; }
+.ask-only-chip > button:not(:disabled):hover { background: #ffffff18; }
+.ask-only-chip > button:disabled { opacity: .45; }
 :is(.runtime-chip, .backend-chip, .codex-permission-chip):not(:disabled):is(:hover, [data-state="open"]) { background: var(--interaction-hover); color: var(--text); }
 .composer-dock { position: relative; min-width: 0; z-index: 12; }
 .composer-context-row { position: relative; width: calc(100% - 34px); max-width: 1120px; min-height: 26px; z-index: 6; display: flex; align-items: center; gap: 6px; margin: 0 auto 4px; -webkit-app-region: no-drag; }
@@ -3002,6 +3006,7 @@ button.tool-event-toggle:hover { background: #242424; }
 :root[data-theme="light"] .backend-chip,
 :root[data-theme="light"] .runtime-chip,
 :root[data-theme="light"] .codex-permission-chip { color: var(--muted); background: var(--surface-2); }
+:root[data-theme="light"] .ask-only-chip { color: #287a35; background: #e9f7e9; border-color: #a8d9ad; }
 :root[data-theme="light"] :is(.runtime-chip, .backend-chip, .codex-permission-chip):not(:disabled):is(:hover, [data-state="open"]) { color: var(--text); background: var(--interaction-hover); }
 :root[data-theme="light"] .codex-permission-popover { background: #fff; border-color: var(--border); box-shadow: 0 18px 48px #00000030; }
 :root[data-theme="light"] .cwd-popover { background: #fff; border-color: var(--border); box-shadow: 0 18px 48px #00000030; }

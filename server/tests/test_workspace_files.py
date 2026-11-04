@@ -237,7 +237,7 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(remote.exception.status_code, 503)
         self.assertEqual(browser.exception.status_code, 403)
 
-    def test_workspace_capability_v8_entries_have_opaque_revisions_and_preview_limits(self) -> None:
+    def test_workspace_capability_v10_entries_have_opaque_revisions_and_preview_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "app.py"
@@ -249,7 +249,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 path.write_text("second, longer\n")
                 changed = agent_server.list_workspace_entries_sync("session-1", "", 0, 20)["entries"][0]
 
-        self.assertEqual(info["capability_version"], 8)
+        self.assertEqual(info["capability_version"], 10)
         self.assertEqual(info["max_preview_file_bytes"], agent_server.MAX_WORKSPACE_PREVIEW_BYTES)
         self.assertIn("application/pdf", info["preview_media_types"])
         self.assertIn("image/png", info["preview_media_types"])
@@ -603,6 +603,32 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(result["entry"]["path"], "draft.md")
         self.assertEqual(result["entry"]["kind"], "file")
         self.assertEqual(result["file"]["content"], "")
+
+    def test_post_absolute_workspace_entry_requires_native_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "chat"
+            other = Path(temporary) / "other"
+            root.mkdir()
+            other.mkdir()
+            destination = other / "draft.md"
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(root)}):
+                result = asyncio.run(agent_server.post_session_absolute_workspace_entry(
+                    self.request(method="POST", client_host="127.0.0.1"),
+                    "session-1",
+                    agent_server.WorkspaceCreateRequest(path=str(destination), kind="file"),
+                    None,
+                ))
+                with self.assertRaises(HTTPException) as forbidden:
+                    asyncio.run(agent_server.post_session_absolute_workspace_entry(
+                        self.request(method="POST", client_host="127.0.0.1", sec_fetch_mode="cors"),
+                        "session-1",
+                        agent_server.WorkspaceCreateRequest(path=str(other / "blocked.md"), kind="file"),
+                        None,
+                    ))
+
+        self.assertEqual(result["entry"]["path"], str(destination))
+        self.assertEqual(result["file"]["scope"], "absolute")
+        self.assertEqual(forbidden.exception.status_code, 403)
 
     @unittest.skipUnless(
         sys.platform == "darwin" or sys.platform.startswith("linux"),
@@ -1147,6 +1173,77 @@ class WorkspaceFilesTests(unittest.TestCase):
                         self.assertEqual(response.status_code, 206)
                         self.assertEqual(response.headers["content-type"], media_type)
                         self.assertEqual(self.response_body(response), data[4:8])
+
+    def test_absolute_preview_keeps_explicit_videos_in_the_native_client(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            video = Path(temporary) / "other-root" / "overlay.mp4"
+            video.parent.mkdir()
+            data = b"\x00\x00\x00\x18ftypmp42absolute-video"
+            video.write_bytes(data)
+            with patch.object(
+                agent_server.STORE,
+                "sessions",
+                {"session-1": self.session(root)},
+            ), patch.object(
+                agent_server,
+                "require_native_workspace_directory_control",
+            ) as authorize:
+                response = asyncio.run(
+                    agent_server.get_session_absolute_workspace_preview(
+                        self.request(Range="bytes=4-11"),
+                        "session-1",
+                        str(video),
+                        None,
+                    )
+                )
+
+        authorize.assert_called_once()
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertEqual(response.headers["content-range"], f"bytes 4-11/{len(data)}")
+        self.assertEqual(self.response_body(response), data[4:12])
+
+    def test_absolute_preview_transcodes_unsupported_video_for_builtin_player(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "workspace"
+            root.mkdir()
+            video = Path(temporary) / "other-root" / "overlay.mp4"
+            video.parent.mkdir()
+            video.write_bytes(b"unsupported-mp4v-source")
+            converted = b"\x00\x00\x00\x18ftypisom-compatible-h264"
+
+            def fake_ffmpeg(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                Path(command[-1]).write_bytes(converted)
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            with (
+                patch.object(agent_server.STORE, "sessions", {"session-1": self.session(root)}),
+                patch.object(agent_server, "require_native_workspace_directory_control"),
+                patch.object(agent_server, "WORKSPACE_VIDEO_PREVIEW_CACHE", Path(temporary) / "cache"),
+                patch.object(agent_server, "workspace_video_codec", return_value="mpeg4"),
+                patch.object(agent_server.shutil, "which", return_value="/usr/bin/ffmpeg"),
+                patch.object(agent_server.subprocess, "run", side_effect=fake_ffmpeg) as run,
+            ):
+                response = asyncio.run(
+                    agent_server.get_session_absolute_workspace_preview(
+                        self.request(Range="bytes=4-11"),
+                        "session-1",
+                        str(video),
+                        None,
+                        True,
+                    )
+                )
+                body = self.response_body(response)
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertEqual(response.headers["content-range"], f"bytes 4-11/{len(converted)}")
+        self.assertEqual(body, converted[4:12])
+        command = run.call_args.args[0]
+        self.assertIn("libx264", command)
+        self.assertIn("+faststart", command)
 
     def test_preview_rejects_unsupported_oversized_nonregular_and_escaping_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

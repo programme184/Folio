@@ -13,7 +13,7 @@ import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { isImportedProviderControlMetadata, mergeProviderInterruptionEvent } from '../shared/provider-origin'
 import type { ChatShareMode, CreateChatShareInput } from '../shared/chat-shares'
 import type { WorkspaceGitAction, WorkspaceGitView } from '../shared/workspace-git'
@@ -683,36 +683,40 @@ export class AppService {
   }
 
   addWindow(window: BrowserWindow): void {
+    // Electron throws "Object has been destroyed" when webContents is read
+    // from a BrowserWindow after its closed event begins. Capture the live
+    // object once and use that stable identity for listeners and teardown.
+    const contents = window.webContents
     this.windows.add(window)
-    this.rendererTargets.add(window.webContents)
+    this.rendererTargets.add(contents)
     const stopStorageObserver = observeStorageErrors(() => {
-      if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('app:storage', { full: true })
+      if (!window.isDestroyed() && !contents.isDestroyed()) contents.send('app:storage', { full: true })
     })
-    const rendererId = window.webContents.id
+    const rendererId = contents.id
     if (Number.isSafeInteger(rendererId) && rendererId > 0) {
       this.rendererGrantEpochs.set(rendererId, (this.rendererGrantEpochs.get(rendererId) ?? 0) + 1)
     }
-    if (typeof window.webContents?.on === 'function') {
-      window.webContents.on('before-input-event', (_event, input) => {
+    if (typeof contents.on === 'function') {
+      contents.on('before-input-event', (_event, input) => {
         if (input.type === 'rawKeyDown' || input.type === 'keyDown' || input.type === 'char') {
           this.noteForegroundInteraction()
         }
       })
-      window.webContents.on('before-mouse-event', (_event, input) => {
+      contents.on('before-mouse-event', (_event, input) => {
         if (input.type === 'mouseDown' || input.type === 'mouseWheel') {
           this.noteForegroundInteraction()
         }
       })
-      window.webContents.on('did-start-loading', () => {
+      contents.on('did-start-loading', () => {
         this.rendererReadyWindows.delete(window)
         this.invalidateRendererFileGrants(rendererId, false)
       })
-      window.webContents.on('destroyed', () => this.invalidateRendererFileGrants(rendererId, true))
+      contents.on('destroyed', () => this.invalidateRendererFileGrants(rendererId, true))
     }
     window.on('closed', () => {
       stopStorageObserver()
       this.windows.delete(window)
-      this.rendererTargets.delete(window.webContents)
+      this.rendererTargets.delete(contents)
       this.rendererReadyWindows.delete(window)
       this.invalidateRendererFileGrants(rendererId, true)
     })
@@ -5389,7 +5393,8 @@ export class AppService {
     try {
       // The renderer chooses only the resource identity. Main owns the method,
       // headers, authenticated client, response, and lifecycle fences.
-      response = await scope.client.workspacePreviewRequest(
+      response = await this.workspacePreviewRequest(
+        scope,
         sessionId,
         path,
         new Request(previewURL, { method: 'HEAD' }),
@@ -5439,7 +5444,7 @@ export class AppService {
     this.assertCurrentScope(scope)
     const response = await imagePreviewResponse(request, async mediaRequest => {
       this.assertCurrentScope(scope)
-      const original = await scope.client.workspacePreviewRequest(sessionId, path, mediaRequest)
+      const original = await this.workspacePreviewRequest(scope, sessionId, path, mediaRequest)
       this.assertCurrentScope(scope)
       return original
     }, path)
@@ -5451,8 +5456,30 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     this.assertCurrentScope(scope)
-    const response = await scope.client.workspacePreviewRequest(sessionId, path)
+    const response = await this.workspacePreviewRequest(scope, sessionId, path)
     return this.finishPreviewBytes(scope, response)
+  }
+
+  private workspacePreviewRequest(
+    scope: ConnectionScope,
+    sessionId: string,
+    path: string,
+    request?: Request,
+    callerSignal?: AbortSignal
+  ): Promise<Response> {
+    return isAbsolute(path)
+      ? scope.client.absoluteWorkspacePreviewRequest(
+        sessionId,
+        path,
+        request,
+        callerSignal,
+        this.remoteSSHHost(scope.profileId)
+      )
+      : callerSignal
+        ? scope.client.workspacePreviewRequest(sessionId, path, request, callerSignal)
+        : request
+          ? scope.client.workspacePreviewRequest(sessionId, path, request)
+          : scope.client.workspacePreviewRequest(sessionId, path)
   }
 
   async filePreviewBytes(sessionId: string, fileId: string): Promise<Uint8Array> {
@@ -8281,7 +8308,7 @@ const PREVIEW_BYTE_LIMIT = 100 * 1024 * 1024
 async function readLimitedPreview(response: Response, limit = PREVIEW_BYTE_LIMIT): Promise<Uint8Array> {
   if (!response.ok) {
     await response.body?.cancel().catch(() => undefined)
-    throw new Error('preview_unavailable')
+    throw new Error(`preview_unavailable:${response.status}`)
   }
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > limit) {

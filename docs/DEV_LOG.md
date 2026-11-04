@@ -1,5 +1,147 @@
 # Public development log
 
+## 2026-11-04 — Keep workspace videos inside Folio
+
+- Videos opened from an absolute configured workspace root now create a Folio
+  editor tab and use the built-in HTML video player. They no longer fall back
+  to the linked-artifact download path or launch the operating-system player.
+  Absolute images and PDFs use the same in-app path.
+- The latest upstream mainline was merged first. The implementation preserves
+  upstream's custom media URL, session ownership, native authentication and
+  Range/HEAD response model, while adding the missing codec-compatibility and
+  native preview transport layers.
+- The merged Cursor desktop-login helper is now included in packaging,
+  installation and deployment manifests, so a clean server release retains
+  the module required by the merged runtime.
+- AgentsServer workspace-files capability 10 adds a native-client-only absolute
+  preview endpoint with media allowlisting, the existing preview size limit,
+  opaque revisions, HTTP byte ranges for seeking, and cached H.264 conversion
+  for source codecs that Chromium cannot decode. Older capable servers produce
+  an update message instead of opening another application.
+- The desktop preview lane now uses the native Node transport, rather than a
+  browser-style request that the server correctly rejects with 403. It forwards
+  only the profile credential and optional Range header and refuses redirects.
+- The focused Electron workspace and transport regressions pass, as do all
+  6,074 Electron tests (5 skipped), all 8 compile-output/license checks,
+  all 6,660 AgentsServer tests (65 skipped), TypeScript checking, and the
+  production build. After explicit authorization,
+  the connected split worker/gateway server received a rollback-backed
+  compatibility update and both services restarted; health reports capability
+  10. Real authenticated GET, HEAD and Range requests returned the converted
+  H.264 MP4 with matching lengths and ranges. An isolated production Electron
+  client then opened two actual workspace videos through the real client/server
+  boundary: metadata loaded, dimensions were nonzero, playback time advanced,
+  and no external player process was launched. Nothing was published and no
+  release artifact was created or uploaded.
+
+## 2026-11-04 — Prevent a blank window after close-flush timeout
+
+- Closing or restarting the desktop after a renderer persistence timeout no
+  longer lets the main process read `BrowserWindow.webContents` after Electron
+  has destroyed the window. The service captures the live `WebContents`
+  identity before teardown and removes that captured target during `closed`.
+- This prevents the observed `Object has been destroyed` uncaught exception,
+  supervisor restart and transient theme-background-only window.
+
+```text
+Source commit / app build / server version: uncommitted Electron source;
+electron-vite production build; unchanged AgentsServer. Availability: source only.
+Test surface: Electron main-process lifecycle fixtures.
+Exercised: a BrowserWindow test double throws on every post-destruction webContents
+read; closed teardown completes without throwing and removes both window targets.
+Focused checks: AppService and window-close 469 tests; tsc --noEmit; production
+Electron build and compile-output verification.
+Remaining limitations: an isolated second Electron instance was blocked by the
+running app's single-instance lock, and the computer-control surface exposed no
+native window. The fixed main process therefore still requires an app restart for
+real-window acceptance. No installation, publication, deployment or server restart
+was performed.
+```
+
+## 2026-11-04 — Open videos from configured project roots as binary media
+
+- Clicking a video under a configured project root no longer sends the absolute
+  path to the UTF-8 text endpoint. These paths now reuse the authenticated
+  linked-file binary lane and open in the native media player; videos in the
+  chat's ordinary working directory retain the in-app ranged player.
+- This closes the remote/SSH-backed project-root gap that produced “is binary
+  and cannot be opened in the text editor” for `.mp4` files.
+
+```text
+Source commit / app build / server version: uncommitted Electron source;
+electron-vite production build; unchanged AgentsServer. Availability: source only.
+Test surface: focused WorkspaceEditor fixture plus current development app evidence.
+Exercised: configured-root MP4 dispatches to files.openLinked and never calls
+readAbsolute; the current app had already downloaded the reported remote MP4 through
+that real linked-file binary boundary and launched VLC.
+Focused checks: WorkspaceEditor 159 tests; tsc --noEmit; production Electron build
+and compile-output verification.
+Remaining limitations: the computer-control surface exposed no native window, so the
+post-fix Files-panel click itself could not be repeated through UI automation. No app
+installation, publication, deployment, or server restart was performed.
+```
+
+## 2026-11-04 — Restore file and folder creation on capability 7 project roots
+
+- Multi-root Files once again enables **New file** and **New folder** inside
+  the chat working-directory root when connected to an AgentsServer advertising
+  workspace-files capability 7. These operations use the existing cwd-relative
+  endpoint, while capability 8 keeps its absolute-path support for every
+  configured project root.
+- Context menus still disable creation in additional roots on capability 7, so
+  the compatibility path does not expand filesystem authority.
+- All 158 WorkspaceEditor tests pass, including a regression that creates a
+  folder and then a file below a right-clicked cwd child while rejecting the
+  same action in another root. TypeScript checking and the production Electron
+  build pass. After explicit authorization, the local source AgentsServer and
+  desktop client were restarted; health reported workspace-files capability 8
+  and the desktop completed its startup sync. The connected compatibility
+  server also received the capability-8 absolute-create route before restart.
+  An isolated production client created a folder followed by two files through
+  both the cwd-relative and configured-root authenticated boundaries, listed
+  both files in each case, and removed the disposable folders. No release
+  package was installed or published.
+
+## 2026-11-04 — Add persistent read-only Ask mode to Codex chats
+
+- The composer Add menu can enable **Ask only** for a Codex chat. A green
+  `Ask ×` chip and question-oriented placeholder remain visible across chat
+  switches until the user closes the chip.
+- Ask mode is persisted by AgentsServer and overrides both saved permission
+  profiles and filesystem settings with Codex's native `readOnly` sandbox.
+  Turning it off restores the untouched underlying permissions. The server
+  rejects changes while a turn is starting or running, so an already admitted
+  write-capable turn can never be relabeled read-only.
+- The capability is limited to native Codex app-server chats. Providers whose
+  planning modes are not operating-system sandboxes are not presented as fully
+  read-only Ask mode.
+- Validation covered 264 server lifecycle, native Codex runner and control
+  tests; 508 focused renderer/store tests; TypeScript checking; the production
+  Electron build; and all 8 compile-output/license checks. The low-concurrency
+  renderer suite passed 5,696 tests (5 skipped) after separately rerunning one
+  unrelated flaky Workspace canvas assertion. The local source server was later
+  restarted and advertised `ask_only_v1`; the restarted desktop completed its
+  startup sync. In an isolated production client, a disposable Codex chat was
+  switched into Ask mode from the real Add menu, retained the green chip and
+  question placeholder across a client restart, switched off from the chip,
+  and switched on again. The authenticated server state matched each visible
+  transition, and a real disposable runtime check confirmed that Ask mode uses
+  read-only while disabling it restores the saved workspace-write setting. The
+  change was not published.
+
+## 2026-11-04 — Restore chat switching after closing a remote pane
+
+- Closing the last concurrent-server pane now releases its captured local pane.
+  The left chat list and workspace tabs therefore switch the visible chat
+  together instead of leaving the previous conversation rendered underneath a
+  newly selected title.
+- A focused renderer regression covers the transition from a mixed-server split
+  back to a normal local workspace. All 6,074 Electron tests (5 skipped), the 8
+  compile-output/license checks, TypeScript checking and the production build
+  pass. An isolated production client clicked between two real sidebar chats
+  and back, with the selected row, window title, composer and persistent Ask
+  state following the chosen chat. No release was published.
+
 ## 2026-11-04 — Run remote-profile chats on their remote AgentsServer
 
 - Selecting a saved remote server now makes that server the execution boundary

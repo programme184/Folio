@@ -180,7 +180,9 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     fireEvent.click(concurrentPane.getByRole('button', { name: 'Close b pane' }))
     const closeUpdate = onCrossServerWorkspaceChange.mock.calls.at(-1)?.[0]
     expect(closeUpdate).toBeTypeOf('function')
-    expect(closeUpdate(concurrent)).toEqual(expect.objectContaining({ paneCount: 1, focusedPane: 'primary' }))
+    // The local pane capture must disappear with the last remote pane. Keeping
+    // it here overrides subsequent sidebar selections with the old chat.
+    expect(closeUpdate(concurrent)).toBeNull()
     expect(useAppStore.getState().chatPaneCount).toBe(1)
   })
 

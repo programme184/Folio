@@ -904,6 +904,8 @@ class ServerCallbackTests(unittest.IsolatedAsyncioTestCase):
             CODEX_SANDBOX_MODES={"read-only", "workspace-write", "danger-full-access"}, CODEX_DEFAULT_SANDBOX_MODE="danger-full-access",
             CODEX_SANDBOX_POLICY_TYPES={"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"},
             CODEX_DEFAULT_PERMISSION_PROFILE=None, CODEX_PROVIDER_MCP_NAME="_agentsdock_internal_provider_9f3a2c71",
+            effective_codex_sandbox_mode=lambda session: session.get("codex_sandbox_mode") or "danger-full-access",
+            effective_codex_permission_profile=lambda session: session.get("codex_permission_profile"),
             handle_codex_server_request=AsyncMock(),
             find_codex_history=lambda thread_id: root / "parent-rollout.jsonl",
             build_claude_sdk_options=Mock(return_value=(self.options, "configuration", "synthetic-claude")),

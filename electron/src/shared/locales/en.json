@@ -1,6 +1,12 @@
 {
   "timeline.compact.completed": "Context compacted",
   "timeline.compact.output": "Command output",
+  "composer.askOnly.active": "Ask mode is active",
+  "composer.askOnly.disable": "Turn off Ask mode",
+  "composer.askOnly.enable": "Ask only",
+  "composer.askOnly.label": "Ask",
+  "composer.askOnly.placeholder": "Ask questions",
+  "editor.updateAgentsserverToPreviewExplicitWorkspaceMedia": "Update AgentsServer to preview videos and other media from configured workspace folders inside Folio.",
   "composer.modelCommand.chooseAvailable": "Model not found, ambiguous, or unavailable. Use /model to choose an available model, or enter its exact ID.",
   "subagents.title": "Subagents",
   "subagents.singular": "subagent",

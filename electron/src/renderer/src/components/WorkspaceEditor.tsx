@@ -364,6 +364,7 @@ export function WorkspaceEditor({
   const workspaceFoldersKey = workspaceFolders.join('\0')
   const multiRootCreationAvailable = !multiRootExplorer || (
     capabilityVersion >= 8
+    || workspaceFolders.some(path => workspaceRelativePath(cwd, path) === '')
   )
   const absolutePathUsesWorkspaceHost = (path: string): boolean => {
     const roots = workspaceFolders.length ? workspaceFolders : cwd ? [cwd] : []
@@ -1908,7 +1909,11 @@ export function WorkspaceEditor({
               ? workspaceParentDirectory(file.path)
               : multiRootExplorer ? cwd : ''
           })()
-    if (multiRootExplorer && workspaceRelativePath(cwd, directory) === null) {
+    if (
+      multiRootExplorer
+      && capabilityVersion < 8
+      && workspaceRelativePath(cwd, directory) === null
+    ) {
       setWorkspaceError(t('editor.thatFullPathIsOutsideThisChatSWorkingDirectory'))
       return
     }
@@ -1959,9 +1964,10 @@ export function WorkspaceEditor({
     const path = multiRootExplorer
       ? absoluteWorkspacePath(pending.directory, name)
       : [pending.directory, name].filter(Boolean).join('/')
-    const createPath = multiRootExplorer
+    const absoluteMultiRootCreate = multiRootExplorer && capabilityVersion >= 8
+    const createPath = absoluteMultiRootCreate
       ? absolutePathUsesWorkspaceHost(path) ? path : null
-      : path
+      : multiRootExplorer ? workspaceRelativePath(cwd, path) : path
     if (createPath === null || !createPath) {
       setPendingCreate(current => current ? {
         ...current,
@@ -1975,7 +1981,7 @@ export function WorkspaceEditor({
     setPendingCreate(current => current ? { ...current, creating: true, error: null } : current)
     setWorkspaceError(null)
     try {
-      const result = multiRootExplorer
+      const result = absoluteMultiRootCreate
         ? await window.agentsDock.workspace.createAbsolute(session.id, path, pending.kind, absolutePathUsesWorkspaceHost(path))
         : await window.agentsDock.workspace.create(session.id, createPath, pending.kind)
       setWorkspaceRoot(result.root)
@@ -2684,6 +2690,32 @@ export function WorkspaceEditor({
     if (openFilesRef.current.length + pendingOpenCount(paletteLease) >= MAX_OPEN_TABS) {
       reportOpenError(t('editor.tabLimit', { count: MAX_OPEN_TABS }))
       return false
+    }
+    const viewerKind = workspaceFileViewerKind(path)
+    if (isMediaViewer(viewerKind)) {
+      if (capabilityVersion < 10) {
+        reportOpenError(t('editor.updateAgentsserverToPreviewExplicitWorkspaceMedia'))
+        return false
+      }
+      const previewFile = openWorkspacePreviewFile(
+        workspaceRoot || cwd,
+        path,
+        viewerKind,
+        workspaceEntryForPath(directoriesRef.current, path)
+      )
+      const nextFiles = [...openFilesRef.current, previewFile]
+      openFilesRef.current = nextFiles
+      setOpenFiles(nextFiles)
+      activateFilePath(path, targetGroup)
+      if (paletteLease) commitPaletteSelection(paletteLease)
+      else {
+        paletteOpenRef.current = false
+        setPaletteOpen(false)
+        setPaletteQuery('')
+      }
+      setPendingClosePath(null)
+      setWorkspaceError(null)
+      return true
     }
     const openRequest = paletteLease?.generation ?? ++openRequestSequence.current
     const operation = beginWorkspaceFileOperation(path, 'read')
@@ -4161,6 +4193,7 @@ export function WorkspaceEditor({
           expanded={expandedDirectories}
           mutationsAvailable={!multiRootExplorer && mutationsAvailable && !workspaceMutationPath}
           creationAvailable={creationAvailable && multiRootCreationAvailable && !workspaceMutationPath}
+          absoluteCreationAvailable={capabilityVersion >= 8}
           pendingCreate={pendingUntitledSave?.inline ? {
             directory: pendingUntitledSave.directory,
             kind: 'file',
@@ -4446,6 +4479,7 @@ const Explorer = memo(function Explorer({
   expanded,
   mutationsAvailable,
   creationAvailable,
+  absoluteCreationAvailable,
   pendingCreate,
   onOpen,
   onOpenToSide,
@@ -4471,6 +4505,7 @@ const Explorer = memo(function Explorer({
   expanded: Set<string>
   mutationsAvailable: boolean
   creationAvailable: boolean
+  absoluteCreationAvailable: boolean
   pendingCreate: PendingWorkspaceCreate | null
   onOpen: (path: string) => void
   onOpenToSide?: (path: string) => void
@@ -4578,7 +4613,13 @@ const Explorer = memo(function Explorer({
         entry={contextEntry}
         expanded={contextEntry.kind === 'directory' ? expanded.has(contextEntry.path) : undefined}
         mutationsAvailable={mutationsAvailable}
-        creationAvailable={creationAvailable}
+        creationAvailable={creationAvailable && (
+          absoluteCreationAvailable
+          || !multiRoot
+          || workspaceRelativePath(cwd, contextEntry.kind === 'directory'
+            ? contextEntry.path
+            : workspaceParentDirectory(contextEntry.path)) !== null
+        )}
         onOpen={contextEntry.kind === 'file'
           ? () => onOpen(contextEntry.path)
           : contextEntry.kind === 'directory'

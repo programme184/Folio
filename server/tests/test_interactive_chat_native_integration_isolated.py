@@ -80,6 +80,8 @@ class InteractiveChatNativeGlueTests(unittest.IsolatedAsyncioTestCase):
             "sanitized_provider_route_label": lambda value: str(value or ""),
             "CODEX_DEFAULT_SANDBOX_MODE": "workspace-write", "CODEX_DEFAULT_PERMISSION_PROFILE": None,
             "CODEX_DEFAULT_APPROVALS_REVIEWER": "user", "CLAUDE_PERMISSION_MODE_OPTIONS": ("default",),
+            "effective_codex_sandbox_mode": lambda _: "workspace-write",
+            "effective_codex_permission_profile": lambda _: None,
             "CLAUDE_STOP_FENCE_SESSIONS": set(), "effective_claude_permission_mode": lambda _: "default",
             "session_provider_id": lambda _: "synthetic-native-thread", "claude_provider_id_for_session": lambda _: None,
             "CODEX_PENDING_INTERACTIONS_LOCK": asyncio.Lock(), "CLAUDE_PENDING_INTERACTIONS_LOCK": asyncio.Lock(),

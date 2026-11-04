@@ -5497,6 +5497,7 @@ function normalizeSessionPatch(patch: Partial<Session> & { gemini_connect_api?: 
   folder: patch.folder ?? undefined,
   cwd: patch.cwd ?? undefined,
   backend: patch.backend,
+  ask_only: patch.ask_only,
   codex_provider: patch.codex_provider,
   provider_connection: patch.provider_connection,
   model: patch.model,

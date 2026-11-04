@@ -14,7 +14,7 @@ PRIVATE_FIELDS = frozenset({
     "claude_session_id", "codex_thread_id", "cursor_session_id", "gemini_session_id", "gemini_session_cwd",
 })
 SESSION_FIELDS = frozenset({
-    "id", "title", "backend", "model", "effort", "system_prompt", "backend_locked",
+    "id", "title", "backend", "ask_only", "model", "effort", "system_prompt", "backend_locked",
     "claude_permission_mode", "codex_approval_policy", "codex_sandbox_mode",
     "codex_permission_profile", "codex_approvals_reviewer", "cursor_permission_mode",
     "provider_jobs_access", "codex_goal", "codex_goal_time_budget_seconds",

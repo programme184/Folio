@@ -1780,6 +1780,33 @@ class CodexAppServerRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("sandboxPolicy", overrides)
         self.assertEqual(overrides["approvalPolicy"], "on-request")
 
+    async def test_ask_only_overrides_saved_write_profile_without_destroying_it(self) -> None:
+        turn = FakeTurn([
+            agent_message("ask-final", "Read-only answer.", "final_answer"),
+            completed_notification(),
+        ])
+        manager = FakeManager(turn)
+        session = {
+            **self.session,
+            "ask_only": True,
+            "codex_permission_profile": ":full-access",
+            "codex_sandbox_mode": "danger-full-access",
+        }
+        stack, _events, _finished, _exec_fallback = self.runner_patches(manager)
+        with stack:
+            await agent_server.run_codex_app_server(
+                "chat-native", "run-original", "Explain this diff", session,
+                Path(self.cwd) / ".runner-test-manifest.json",
+                allow_exec_fallback=False,
+                interactive_app_server=True,
+            )
+
+        overrides = manager.turn_calls[0][2]
+        self.assertNotIn("permissions", overrides)
+        self.assertEqual(overrides["sandboxPolicy"], {"type": "readOnly"})
+        self.assertEqual(session["codex_permission_profile"], ":full-access")
+        self.assertEqual(session["codex_sandbox_mode"], "danger-full-access")
+
     async def test_explicit_turn_start_rejection_uses_exec_fallback(self) -> None:
         rejection = CodexAppServerRequestError(
             "turn/start",
