@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-11-05 — Install the Codex CLI with the server and with auth.json
+
+- A fresh server setup installs `@openai/codex` for the server user when `codex`
+  is not already on PATH. The command is placed in `~/.local/bin`, and Node
+  from `~/.local/node/bin` is visible to server-launched CLIs.
+- Pasting a ChatGPT `auth.json` does the same install before the login file is
+  saved. If the install fails, the login file is left unchanged.
+
 ## 2026-11-05 — Let Codex paste sign-in reach the connected server
 
 - Pulled the latest AgentsDock main, including agent-created chats.

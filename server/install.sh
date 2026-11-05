@@ -7187,6 +7187,14 @@ CLAUDE_READY="false"
 CODEX_READY="false"
 check_runtime_cli claude "npm install -g @anthropic-ai/claude-code, then run: claude" && CLAUDE_READY="true"
 check_runtime_cli codex "npm install -g @openai/codex, then run: codex login" && CODEX_READY="true"
+if [[ "$CODEX_READY" != "true" && -x "$CURRENT_LINK/.venv/bin/python" ]]; then
+  if "$CURRENT_LINK/.venv/bin/python" -c 'from codex_auth import ensure_codex_cli; ensure_codex_cli()' >/dev/null; then
+    echo "      $CHECK_MARK codex installed for this server user"
+    CODEX_READY="true"
+  else
+    echo "      $CROSS_MARK codex could not be installed automatically"
+  fi
+fi
 if [[ "$CLAUDE_READY" == "false" && "$CODEX_READY" == "false" ]]; then
   echo "      Sign in to at least one before starting a chat."
 fi

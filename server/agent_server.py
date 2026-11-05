@@ -54296,6 +54296,7 @@ def runner_env() -> dict[str, str]:
     home = env.get("HOME", str(Path.home()))
     extra = [
         f"{home}/.local/bin",
+        f"{home}/.local/node/bin",
         f"{home}/.npm-global/bin",
         f"{home}/.cargo/bin",
         f"{home}/.bun/bin",
@@ -86908,6 +86909,7 @@ app.include_router(codex_auth.create_router(
     available=lambda: CODEX_TRANSPORT != CODEX_TRANSPORT_EXEC,
     import_auth=lambda document: codex_auth.install_chatgpt_auth(
         codex_app_server_env(), existing_cwd(DEFAULT_CWD), document),
+    install_cli=lambda: codex_auth.ensure_codex_cli(codex_app_server_env()),
     refresh_login=lambda: refresh_codex_app_server_login(request_handoff=True),
     reload_login=reload_codex_login,
 ))

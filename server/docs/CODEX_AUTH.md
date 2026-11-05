@@ -2,7 +2,9 @@
 
 The desktop Codex settings can read the selected server's native Codex account.
 **Paste auth.json** replaces that user's file-backed ChatGPT login and asks
-Codex to load it. Other credential stores stay unchanged. These routes require the
+Codex to load it. If the server user cannot run `codex` yet, that paste also
+installs the official `@openai/codex` command into `~/.local/bin`. Other
+credential stores stay unchanged. These routes require the
 exact native operator token header and reject browser origin, cookies, fetch
 metadata and preflight requests. When the server has no operator token, the
 desktop on the same machine (`127.0.0.1` or `::1`) can read the account and

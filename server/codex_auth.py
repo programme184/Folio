@@ -12,7 +12,9 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
+import subprocess
 import tomllib
 
 from fastapi import APIRouter, HTTPException, Request
@@ -32,6 +34,8 @@ _OAUTH_CLIENT_ID = re.compile(r"^app_[A-Za-z0-9]{10,64}$")
 _LOGIN_OWNER_ID = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 _ENV_LOGIN_KEYS = ("CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_IDENTITY_TOKEN_FILE")
 _IMPORT_INVALID = "Paste a ChatGPT Codex auth.json."
+CODEX_NPM_PACKAGE = "@openai/codex"
+CODEX_CLI_INSTALL_TIMEOUT_SECONDS = 180.0
 AUTH_TIMEOUT_SECONDS = 30.0
 # The desktop stops waiting before a cold Codex process can finish starting.
 # A status read must answer from the saved login inside this bound.
@@ -428,7 +432,77 @@ async def read_account(manager) -> dict:
     return account_summary(result)
 
 
-def create_router(*, authorize, operation, available, import_auth=None, refresh_login=None, reload_login=None) -> APIRouter:
+class CodexCLIInstallError(RuntimeError):
+    """The official Codex CLI could not be installed for this server user."""
+
+
+def codex_command_path(env: dict[str, str] | None = None) -> str | None:
+    """Find `codex` on the paths the server user can actually launch."""
+    source = os.environ if env is None else env
+    home = source.get("HOME") or str(Path.home())
+    directories = [
+        f"{home}/.local/bin",
+        f"{home}/.local/node/bin",
+        f"{home}/.npm-global/bin",
+        f"{home}/.cargo/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        source.get("PATH", "/usr/bin:/bin"),
+    ]
+    return shutil.which("codex", path=os.pathsep.join(directories))
+
+
+def _npm_executable(env: dict[str, str]) -> str | None:
+    home = env.get("HOME") or str(Path.home())
+    path = os.pathsep.join([
+        f"{home}/.local/node/bin",
+        f"{home}/.local/bin",
+        f"{home}/.npm-global/bin",
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        env.get("PATH", "/usr/bin:/bin"),
+    ])
+    return shutil.which("npm", path=path)
+
+
+def ensure_codex_cli(env: dict[str, str] | None = None) -> str:
+    """Install @openai/codex when this server user cannot run `codex` yet.
+
+    The binary is placed in ~/.local/bin, which server launches already search.
+    Proxy variables already present in the environment are kept. Nothing from
+    an auth.json file is passed to npm.
+    """
+    source = dict(os.environ if env is None else env)
+    found = codex_command_path(source)
+    if found:
+        return found
+    npm = _npm_executable(source)
+    if npm is None:
+        raise CodexCLIInstallError("npm was not found")
+    home = source.get("HOME") or str(Path.home())
+    prefix = str(Path(home) / ".local")
+    child = dict(source)
+    npm_dir = str(Path(npm).resolve().parent)
+    child["PATH"] = npm_dir + os.pathsep + child.get("PATH", "/usr/bin:/bin")
+    try:
+        result = subprocess.run(
+            [npm, "install", "-g", "--prefix", prefix, CODEX_NPM_PACKAGE],
+            env=child,
+            timeout=CODEX_CLI_INSTALL_TIMEOUT_SECONDS,
+            capture_output=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CodexCLIInstallError(type(exc).__name__) from None
+    if result.returncode != 0:
+        raise CodexCLIInstallError(f"npm exited {result.returncode}")
+    found = codex_command_path(source)
+    if not found:
+        raise CodexCLIInstallError("codex was not installed onto PATH")
+    return found
+
+
+def create_router(*, authorize, operation, available, import_auth=None, refresh_login=None, reload_login=None, install_cli=None) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/admin/codex/auth")
@@ -495,6 +569,13 @@ def create_router(*, authorize, operation, available, import_auth=None, refresh_
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise HTTPException(400, _IMPORT_INVALID) from None
         document = validate_chatgpt_auth_import(parsed)
+        if install_cli is not None:
+            try:
+                await asyncio.to_thread(install_cli)
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(503, "Could not install the Codex CLI. Check Node.js and the server network, then paste auth.json again.") from None
         try:
             async with operation(mutate=True, start_manager=False):
                 await asyncio.to_thread(import_auth, document)

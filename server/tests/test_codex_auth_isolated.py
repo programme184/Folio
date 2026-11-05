@@ -485,6 +485,50 @@ class CodexAuthTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(task, return_exceptions=True)
         self.assertFalse(self.ns["CODEX_GOALS_RECONFIGURING"])
 
+    def test_import_installs_the_codex_cli_before_saving_the_login(self):
+        calls = []
+
+        def install():
+            calls.append("install")
+
+        def write(document):
+            calls.append("write")
+            codex_auth.install_chatgpt_auth(
+                {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}, self.home.name, document)
+
+        app = FastAPI()
+        app.middleware("http")(self.ns["require_agent_token"])
+        app.include_router(codex_auth.create_router(
+            authorize=self.ns["require_native_admin_control"],
+            operation=self.ns["codex_auth_operation"], available=lambda: True,
+            import_auth=write, refresh_login=self.refresh_login, install_cli=install))
+        client = TestClient(app)
+        self.addCleanup(client.close)
+        response = client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(calls, ["install", "write"])
+        self.assertNotIn(REFRESH, response.text)
+
+    def test_import_does_not_save_the_login_when_codex_install_fails(self):
+        def install():
+            raise codex_auth.CodexCLIInstallError("npm exited 1")
+
+        app = FastAPI()
+        app.middleware("http")(self.ns["require_agent_token"])
+        app.include_router(codex_auth.create_router(
+            authorize=self.ns["require_native_admin_control"],
+            operation=self.ns["codex_auth_operation"], available=lambda: True,
+            import_auth=lambda document: codex_auth.install_chatgpt_auth(
+                {"HOME": self.home.name, "CODEX_HOME": str(self.codex_home)}, self.home.name, document),
+            refresh_login=self.refresh_login, install_cli=install))
+        client = TestClient(app)
+        self.addCleanup(client.close)
+        response = client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertFalse((self.codex_home / "auth.json").exists())
+        self.assertNotIn(REFRESH, response.text)
+        self.assertNotIn("npm exited", response.text)
+
     def test_chatgpt_file_import_writes_private_auth_and_requests_handoff(self):
         response = self.client.post("/api/admin/codex/auth/import", headers=NATIVE, json=synthetic_auth())
         self.assertEqual(response.status_code, 200, response.text)
