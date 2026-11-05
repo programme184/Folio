@@ -1,5 +1,18 @@
 # Public development log
 
+## 2026-11-05 — Let Codex paste sign-in reach the connected server
+
+- Pulled the latest AgentsDock main, including agent-created chats.
+- Paste auth.json failed with “Update AgentsDock and AgentsServer to import a
+  Codex login” because the connected AgentsServer 1.0.11 package had no
+  `POST /api/admin/codex/auth/import` route, and the account check failed when
+  Codex was not already running. The running server now accepts that paste and
+  can report a saved ChatGPT file login without starting Codex first.
+- The same server change is on `fix/codex-chatgpt-auth-import`, based on
+  current AgentsDock main. Folio’s desktop paste flow was already present.
+  A later signed server update can replace this installed copy until that
+  branch is released.
+
 ## 2026-11-04 — Keep workspace videos inside Folio
 
 - Videos opened from an absolute configured workspace root now create a Folio
