@@ -2333,6 +2333,11 @@ systemd_unit_snapshot() {
   else
     enabled_status=$?
   fi
+  # systemd 249 writes "No such file or directory" only to stderr and exits 1,
+  # so a fresh Ubuntu 22.04 install otherwise looks like an unknown state.
+  if [[ -z "$enabled_state" && "$enabled_status" -eq 1 && "$load_state" == "not-found" ]]; then
+    enabled_state="not-found"
+  fi
   [[ "$enabled_state" != *$'\n'* ]] || return 1
   case "$enabled_status:$enabled_state" in
     0:enabled|0:enabled-runtime) enabled_state="true" ;;
@@ -3588,15 +3593,24 @@ sync_release_dependencies() (
   # PEP 517 build subprocesses inherit uv's environment. Start from a narrow
   # allowlist so credentials and unrelated project selectors from the calling
   # desktop/tmux/service environment never enter third-party build hooks.
+  # Proxy variables stay because the desktop may only reach PyPI through them.
+  local -a proxy_env=()
+  local proxy_name=""
+  for proxy_name in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY; do
+    if [[ -n "${!proxy_name:-}" ]]; then
+      proxy_env+=("${proxy_name}=${!proxy_name}")
+    fi
+  done
   env -i \
     HOME="$HOME" \
     LANG=C \
     LC_ALL=C \
     PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin" \
     UV_PROJECT_ENVIRONMENT="$STAGE_DIR/.venv" \
+    "${proxy_env[@]}" \
     "$UV_BIN" sync \
       --project "$STAGE_DIR" \
-      --python '>=3.10' \
+      --python '>=3.11' \
       --no-dev \
       --quiet \
       --frozen
@@ -4066,6 +4080,14 @@ if [[ ! -d "$STAGE_DIR/.venv" || -L "$STAGE_DIR/.venv" || ! -x "$STAGE_DIR/.venv
   echo "Dependency resolution did not create the isolated release runtime at $STAGE_DIR/.venv." >&2
   echo "  The active release was not changed. Review the uv output above, then run install.sh again." >&2
   exit 1
+fi
+# uv's standalone CPython is often mode 0775. Recovery rejects that interpreter.
+if [[ -e "$STAGE_DIR/.venv/bin/python" || -L "$STAGE_DIR/.venv/bin/python" ]]; then
+  resolved_interpreter="$(readlink -f "$STAGE_DIR/.venv/bin/python" 2>/dev/null || true)"
+  if [[ -n "$resolved_interpreter" && -f "$resolved_interpreter" && ! -L "$resolved_interpreter" && -O "$resolved_interpreter" ]]; then
+    chmod go-w "$resolved_interpreter"
+  fi
+  unset resolved_interpreter
 fi
 validate_staged_release_runtime
 fi

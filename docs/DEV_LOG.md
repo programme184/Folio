@@ -141,7 +141,40 @@ installation, publication, deployment, or server restart was performed.
   pass. An isolated production client clicked between two real sidebar chats
   and back, with the selected row, window title, composer and persistent Ask
   state following the chosen chat. No release was published.
+## 2026-11-04 — Keep guided AgentsServer setup working on a fresh Ubuntu host
 
+- The installer now asks `uv` for Python 3.11 or newer, forwards an existing
+  proxy only into dependency download, accepts systemd 249’s empty
+  `is-enabled` result for a missing unit, and clears group/world write bits
+  on an interpreter the installing user owns.
+- Desktop guided setup prepares the same three conditions before it runs a
+  published installer, including the current 1.0.11 release. The compatibility
+  tools stay in the setup temporary directory.
+- Change and expected user behavior: a fresh Ubuntu guided setup installs
+  Python 3.12, accepts systemd 249’s empty missing-unit reply, and keeps an
+  existing proxy for dependency download.
+- Source commit follows this note. App build is the local Electron production
+  bundle. Server version on this machine remains the already installed 1.0.11;
+  this change does not reinstall it.
+- Test surface: component fixtures plus the production bundle. The full
+  Electron suite passed (5,697 tests, 5 skipped) and the production build
+  completed. All 245 installer tests passed, as did the 53 CLI package tests.
+  Those installer and CLI runs need a private umask; a group-writable umask
+  makes their temporary directories fail the installer’s own permission check.
+- The guided-setup regression uses a stand-in `uv` and the system service
+  manager. It was not run again through the live setup window, because this
+  machine already has AgentsServer installed.
+- Availability: source and local production bundle. Nothing was published or
+  deployed.
+
+## 2026-11-04 — Rewrite Folio README for install and usage
+
+- Replaced the upstream AgentsDock-oriented README with Folio-focused
+  installation and usage guidance: AgentsServer via `npm install -g agentsdock`,
+  desktop build from this source tree, connection rules, agent CLI sign-in, and
+  paper-reading workflows (shelf, Explain / Ask / Translate, notes).
+- Linked the Folio mark under `docs/assets/folio-icon.png`. No binary release,
+  server change, or deployment was published.
 ## 2026-11-04 — Run remote-profile chats on their remote AgentsServer
 
 - Selecting a saved remote server now makes that server the execution boundary

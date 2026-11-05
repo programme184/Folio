@@ -36,6 +36,7 @@ import {
   expandSSHConfigHome,
   createUserSSHConfig,
   serverSetupCapabilities,
+  SERVER_SETUP_HOST_PREP_SCRIPT,
   SERVER_SETUP_PATH_BOOTSTRAP,
   SERVER_SETUP_PREFLIGHT_SCRIPT,
   ServerSetupManager,
@@ -255,10 +256,11 @@ port 22
     const runProcess = vi.spyOn(manager, 'runProcess')
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
       .mockReturnValueOnce(installer.promise)
 
     const setup = manager.runLocal(7850, vi.fn(), true, STABLE_RELEASE)
-    await vi.waitFor(() => expect(runProcess).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(runProcess).toHaveBeenCalledTimes(4))
 
     expect(runProcess.mock.calls[0]).toEqual([
       '/bin/sh',
@@ -273,13 +275,19 @@ port 22
       ['-s', '--', '/tmp/agents-server-setup-test/AgentsServer'],
       LOCAL_RELEASE_BOOTSTRAP
     ])
-    expect(runProcess.mock.calls[2]?.[1]).toEqual([
+    expect(runProcess.mock.calls[2]?.slice(0, 3)).toEqual([
+      '/bin/sh',
+      ['-s', '--', '/tmp/agents-server-setup-test/compat-bin', '/tmp/agents-server-setup-test/AgentsServer/install.sh'],
+      SERVER_SETUP_HOST_PREP_SCRIPT
+    ])
+    expect(runProcess.mock.calls[3]?.[1]).toEqual([
       '/tmp/agents-server-setup-test/AgentsServer/install.sh',
       '--non-interactive', '--port', '7850', '--team-hub-host'
     ])
-    expect(runProcess.mock.calls[2]?.[5]).toEqual({
+    expect(runProcess.mock.calls[3]?.[5]).toMatchObject({
       phase: 'runtime',
-      message: 'Preparing the AgentsServer runtime…'
+      message: 'Preparing the AgentsServer runtime…',
+      environment: { PATH: expect.stringMatching(/^\/tmp\/agents-server-setup-test\/compat-bin:/) }
     })
     expect(fsHarness.rm).not.toHaveBeenCalled()
 
@@ -444,6 +452,68 @@ port 22
       expect(existsSync(marker)).toBe(false)
     } finally {
       rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('prepares uv, Python 3.12, and missing-unit output across supported systemd versions', () => {
+    const home = mkdtempSync(join(tmpdir(), 'folio-host-prep-'))
+    const bin = join(home, 'bin')
+    const compat = join(home, 'compat-bin')
+    const installer = join(home, 'install.sh')
+    mkdirSync(bin)
+    writeFileSync(installer, "uv sync --python '>=3.10'\n")
+    writeFileSync(join(bin, 'uv'), `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo uv-test
+  exit 0
+fi
+if [ "$1" = "--show-proxy" ]; then
+  printf '%s\\n' "$HTTPS_PROXY"
+  exit 0
+fi
+if [ "$1" = "python" ] && [ "$2" = "find" ]; then
+  if [ -x "$HOME/py/python3.12" ]; then
+    printf '%s\\n' "$HOME/py/python3.12"
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "python" ] && [ "$2" = "install" ]; then
+  mkdir -p "$HOME/py"
+  printf '#!/bin/sh\\n' > "$HOME/py/python3.12"
+  chmod 775 "$HOME/py/python3.12"
+  exit 0
+fi
+echo "unexpected uv args: $*" >&2
+exit 1
+`)
+    chmodSync(join(bin, 'uv'), 0o755)
+    try {
+      expect(() => execFileSync('/bin/sh', ['-n'], { input: SERVER_SETUP_HOST_PREP_SCRIPT })).not.toThrow()
+      const prepared = spawnSync('/bin/sh', ['-s', '--', compat, installer], {
+        input: SERVER_SETUP_HOST_PREP_SCRIPT,
+        encoding: 'utf8',
+        env: {
+          HOME: home,
+          PATH: `${bin}:/usr/bin:/bin`,
+          HTTPS_PROXY: 'http://127.0.0.1:9',
+          http_proxy: 'http://127.0.0.1:9\nrm -rf /'
+        }
+      })
+      expect(prepared.status, prepared.stderr).toBe(0)
+      expect(readFileSync(installer, 'utf8')).toContain("--python '>=3.11'")
+      expect(statSync(join(home, 'py', 'python3.12')).mode & 0o022).toBe(0)
+      const systemctl = spawnSync(join(compat, 'systemctl'), ['--user', 'is-enabled', 'folio-missing-unit.service'], { encoding: 'utf8' })
+      expect([1, 4], systemctl.stderr).toContain(systemctl.status)
+      expect(systemctl.stdout.trim()).toBe('not-found')
+      const wrapped = spawnSync('/usr/bin/env', ['-i', `PATH=${compat}:/usr/bin:/bin`, join(compat, 'uv'), '--show-proxy'], { encoding: 'utf8' })
+      expect(wrapped.status, wrapped.stderr).toBe(0)
+      expect(wrapped.stdout.trim()).toBe('http://127.0.0.1:9')
+      const wrapper = readFileSync(join(compat, 'uv'), 'utf8')
+      expect(wrapper).toContain("export HTTPS_PROXY='http://127.0.0.1:9'")
+      expect(wrapper).not.toContain('rm -rf')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   })
 
