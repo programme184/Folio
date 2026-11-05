@@ -1504,12 +1504,40 @@ describe('folder deletion', () => {
     await expect(useAppStore.getState().renameProject('Humanoid', 'Robot')).resolves.toBe(true)
     expect(useAppStore.getState().folderOrder).toEqual(['Research', 'Robot'])
     expect(useAppStore.getState().projectWorkspaces.Robot.directories).toEqual(['/work/hand', '/work/notes'])
-    expect(useAppStore.getState().setProjectDirectories('Robot', ['/work/hand', '/work/lab/'])).toBe(true)
+    await expect(useAppStore.getState().setProjectDirectories('Robot', ['/work/hand', '/work/lab/'])).resolves.toBe(true)
     expect(useAppStore.getState().projectWorkspaces.Robot.directories).toEqual(['/work/hand', '/work/lab'])
+    expect(update).not.toHaveBeenCalledWith('research', { cwd: '/work/hand' })
 
     await useAppStore.getState().deleteFolder('Research')
     expect(useAppStore.getState().projectWorkspaces.Research).toBeUndefined()
     expect(setPreference).toHaveBeenCalledWith('projectWorkspaces:v1', expect.not.objectContaining({ Research: expect.anything() }))
+  })
+
+  it('moves a project chat onto the saved folder and leaves a chat already inside it', async () => {
+    const update = vi.fn(async (sessionId: string, patch: Partial<Session>) => ({ ...sessionFor(sessionId), ...patch }))
+    const setPreference = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: { sessions: { update }, preferences: { set: setPreference } } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      sessions: [
+        { ...sessionFor('outside'), folder: 'Paper', cwd: '/old/library' },
+        { ...sessionFor('inside'), folder: 'Paper', cwd: '/work/lab/notes' },
+        { ...sessionFor('other'), folder: 'General', cwd: '/old/library' }
+      ],
+      folderOrder: ['Paper'],
+      projectWorkspaces: { Paper: { directories: ['/old/library'] } },
+      error: null
+    })
+
+    await expect(useAppStore.getState().setProjectDirectories('Paper', ['/work/lab', '/work/notes'])).resolves.toBe(true)
+
+    expect(update).toHaveBeenCalledTimes(1)
+    expect(update).toHaveBeenCalledWith('outside', { cwd: '/work/lab' })
+    expect(useAppStore.getState().sessions.find(session => session.id === 'outside')?.cwd).toBe('/work/lab')
+    expect(useAppStore.getState().sessions.find(session => session.id === 'inside')?.cwd).toBe('/work/lab/notes')
+    expect(useAppStore.getState().sessions.find(session => session.id === 'other')?.cwd).toBe('/old/library')
   })
 })
 

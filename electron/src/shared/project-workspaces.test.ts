@@ -3,6 +3,7 @@ import {
   normalizeProjectDirectories,
   normalizeProjectWorkspaces,
   projectDirectories,
+  projectDirectoryContains,
   renameProjectWorkspace,
   withoutProject
 } from './project-workspaces'
@@ -27,6 +28,13 @@ describe('project workspaces', () => {
       Bad: { directories: ['../outside'] },
       Notes: null
     })).toEqual({ Humanoid: { directories: ['/work/humanoid'] } })
+  })
+
+  it('treats a directory as covering itself and its children', () => {
+    expect(projectDirectoryContains('/work/lab', '/work/lab')).toBe(true)
+    expect(projectDirectoryContains('/work/lab/', '/work/lab/notes')).toBe(true)
+    expect(projectDirectoryContains('/work/lab', '/work/laboratory')).toBe(false)
+    expect(projectDirectoryContains('/work/lab', '')).toBe(false)
   })
 
   it('renames and removes a project without changing its directories', () => {

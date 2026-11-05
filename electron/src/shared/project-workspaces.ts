@@ -58,6 +58,15 @@ export function projectDirectories(workspaces: ProjectWorkspaceMap, folder: stri
   return workspaces[name]?.directories ?? []
 }
 
+export function projectDirectoryContains(directory: string, path: string): boolean {
+  const root = normalizeDirectoryPath(directory)
+  const candidate = normalizeDirectoryPath(path)
+  if (!root || !candidate) return false
+  if (root === candidate) return true
+  const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/'
+  return candidate.startsWith(`${root}${separator}`)
+}
+
 export function withoutProject(workspaces: ProjectWorkspaceMap, folder: string): ProjectWorkspaceMap {
   if (!Object.hasOwn(workspaces, folder)) return workspaces
   const next = { ...workspaces }

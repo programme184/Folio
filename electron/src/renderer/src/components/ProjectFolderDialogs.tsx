@@ -75,28 +75,33 @@ export function ProjectFoldersDialog() {
   useLocale()
   const [folder, setFolder] = useState<string | null>(null)
   const [directories, setDirectories] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
   useEffect(() => {
     const open = (event: Event) => {
       const next = (event as CustomEvent<string>).detail
       if (typeof next !== 'string' || !next.trim()) return
       setFolder(next)
       setDirectories(projectDirectories(useAppStore.getState().projectWorkspaces, next))
+      setSaving(false)
     }
     window.addEventListener('agentsdock:edit-project-folders', open)
     return () => window.removeEventListener('agentsdock:edit-project-folders', open)
   }, [])
-  const submit = (event: FormEvent) => {
+  const close = () => { if (!saving) setFolder(null) }
+  const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!folder) return
-    if (!useAppStore.getState().setProjectDirectories(folder, directories)) return
-    setFolder(null)
+    if (!folder || saving) return
+    setSaving(true)
+    const saved = await useAppStore.getState().setProjectDirectories(folder, directories)
+    setSaving(false)
+    if (saved) setFolder(null)
   }
-  return <Shell open={Boolean(folder)} onOpenChange={open => { if (!open) setFolder(null) }} title={t('ui.Dialogs.FolderDialog.change_folders')} description={folder ? t('ui.Dialogs.FolderDialog.change_folders_description', { name: folder }) : ''}>
-    <form onSubmit={submit} className="dialog-form">
+  return <Shell open={Boolean(folder)} onOpenChange={open => { if (!open) close() }} title={t('ui.Dialogs.FolderDialog.change_folders')} description={folder ? t('ui.Dialogs.FolderDialog.change_folders_description', { name: folder }) : ''} closeDisabled={saving}>
+    <form onSubmit={event => void submit(event)} className="dialog-form">
       <ProjectDirectoryEditor directories={directories} onChange={setDirectories} />
       <footer>
-        <button type="button" className="quiet-button" onClick={() => setFolder(null)}>{t('ui.Dialogs.FolderDialog.cancel_19766ed')}</button>
-        <button className="primary-button" disabled={directories.length === 0}>{t('ui.Dialogs.FolderDialog.save')}</button>
+        <button type="button" className="quiet-button" disabled={saving} onClick={close}>{t('ui.Dialogs.FolderDialog.cancel_19766ed')}</button>
+        <button className="primary-button" disabled={saving || directories.length === 0}>{t('ui.Dialogs.FolderDialog.save')}</button>
       </footer>
     </form>
   </Shell>

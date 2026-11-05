@@ -1,5 +1,13 @@
 # Public development log
 
+## 2026-11-05 — Move a project's chats when its folders change
+
+- Saving Change folders kept the new directories on the Folio project, but
+  chats already in that project stayed in their previous working directory, so
+  Files and the composer still opened the old folder.
+- A chat whose working directory is outside the saved folders now moves to the
+  first saved folder. A chat already inside one of those folders stays there.
+
 ## 2026-11-05 — Install the Codex CLI with the server and with auth.json
 
 - A fresh server setup installs `@openai/codex` for the server user when `codex`

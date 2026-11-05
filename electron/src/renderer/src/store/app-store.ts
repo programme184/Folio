@@ -19,6 +19,7 @@ import {
   normalizeProjectWorkspaces,
   PROJECT_WORKSPACES_PREFERENCE_KEY,
   projectDirectories,
+  projectDirectoryContains,
   renameProjectWorkspace,
   withoutProject,
   type ProjectWorkspaceMap
@@ -317,7 +318,7 @@ interface AppState {
   deleteFolder(folder: string): Promise<void>
   createProject(name: string, directories: string[]): boolean
   renameProject(from: string, to: string): Promise<boolean>
-  setProjectDirectories(folder: string, directories: string[]): boolean
+  setProjectDirectories(folder: string, directories: string[]): Promise<boolean>
   forkSession(sessionId: string): Promise<void>
   deleteSession(sessionId: string): Promise<boolean>
   markRead(sessionId: string, force?: boolean): Promise<void>
@@ -2709,7 +2710,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setProjectDirectories(folder, directories) {
+  async setProjectDirectories(folder, directories) {
+    if (get().switchingProfileId) return false
     const source = folder.trim()
     const paths = normalizeProjectDirectories(directories)
     if (!source || source.toLocaleLowerCase() === 'general') return false
@@ -2717,11 +2719,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({ error: t('ui.Dialogs.FolderDialog.choose_at_least_one_local_folder') })
       return false
     }
+    const scope = captureProfileScope(get())
+    const preferenceScope = captureWorkspaceScope(get())
     const projectWorkspaces = { ...(get().projectWorkspaces ?? {}), [source]: { directories: paths } }
-    const scope = captureWorkspaceScope(get())
-    set({ projectWorkspaces, error: null })
-    void setWorkspacePreference(scope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces).catch(() => undefined)
-    return true
+    const primary = paths[0]
+    const sessionsToMove = get().sessions.filter(session => {
+      if ((session.folder?.trim() || 'General') !== source) return false
+      const cwd = session.cwd?.trim() || ''
+      return !paths.some(directory => projectDirectoryContains(directory, cwd))
+    })
+    try {
+      const movedSessions = await Promise.all(sessionsToMove.map(async session => ({
+        ...(await window.agentsDock.sessions.update(session.id, { cwd: primary })),
+        cwd: primary
+      })))
+      if (!profileScopeMatches(scope, get())) return false
+      await setWorkspacePreference(preferenceScope, PROJECT_WORKSPACES_PREFERENCE_KEY, projectWorkspaces)
+      if (!profileScopeMatches(scope, get())) return false
+      const movedById = new Map(movedSessions.map(session => [session.id, session]))
+      set(state => {
+        const snapshots = { ...state.snapshots }
+        for (const [sessionId, session] of movedById) {
+          if (snapshots[sessionId]) snapshots[sessionId] = { ...snapshots[sessionId], session }
+        }
+        return {
+          projectWorkspaces,
+          sessions: state.sessions.map(session => movedById.get(session.id) ?? session),
+          snapshots,
+          error: null
+        }
+      })
+      for (const session of movedSessions) {
+        window.dispatchEvent(new CustomEvent('agentsdock:workspace-root-changed', { detail: { sessionId: session.id } }))
+      }
+      return true
+    } catch (error) {
+      if (!profileScopeMatches(scope, get())) return false
+      set({ error: errorMessage(error) })
+      return false
+    }
   },
 
   async forkSession(sessionId) {
