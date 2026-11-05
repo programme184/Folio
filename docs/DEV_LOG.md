@@ -28,6 +28,112 @@
   current AgentsDock main. Folio’s desktop paste flow was already present.
   A later signed server update can replace this installed copy until that
   branch is released.
+## 2026-11-05 — Prefer LAN with automatic Tailscale failover
+
+- A saved server profile can now retain multiple verified connection addresses
+  for the same AgentsServer identity. Private LAN addresses are preferred while
+  Tailscale addresses remain available as the fallback.
+- Opening or switching to a profile probes its candidates before activation.
+  The active profile then monitors the route every ten seconds: loss of the
+  current path selects a reachable alternate, and restoration of a preferred
+  LAN path moves the same profile back to LAN. Candidate probes time out after
+  two seconds so a stale address does not stall connection for long.
+- Route changes keep the existing profile, server identity, credential and
+  identity-owned workspace/cache. They do not create a second server entry,
+  reinstall AgentsServer or replay a failed mutation on another endpoint.
+- Guided SSH discovery now reads the server's authenticated connection-address
+  response and saves its reported LAN and Tailscale endpoints together.
+
+```text
+Source commit / app build / server version: `ca2e0429`;
+electron-vite production build; unchanged AgentsServer 1.0.11.
+Test surface: endpoint ordering, settings persistence, SSH discovery, duplicate
+profile reuse, and service-level LAN/Tailscale failover and recovery.
+Actions exercised and observed outcomes: the real remote server's protected
+connection-address boundary authenticated with the native token header and
+returned two addresses for one identity. The existing source-app profile now
+retains both. From the current development network the LAN route was unreachable
+while the Tailscale route reached the server, so the running app correctly kept
+Tailscale selected.
+Real boundaries exercised; any mocked/stubbed boundaries: real SSH, protected
+remote HTTP discovery, saved-profile migration and the rebuilt source app were
+exercised. Bidirectional route selection is also covered through AppService with
+controlled endpoint clients. Live LAN recovery could not be exercised because
+this machine is not currently able to reach that LAN. The computer-control bridge
+exposed no native app surface, so actual window interaction remains pending.
+Focused regression / typecheck / production build: all 6,112 Electron tests pass
+(5 skipped), all 8 compile-output/license checks pass, TypeScript checking passes,
+and the production build/output verification passes.
+Availability: running source app only; not installed, published or deployed.
+```
+
+## 2026-11-05 — Connect to an existing remote AgentsServer before installing
+
+- Guided SSH setup now checks the authenticated remote machine for a healthy,
+  compatible AgentsServer first. When one is already running, AgentsDock reads
+  its existing connection information through SSH and connects immediately; it
+  does not check releases, download or upload an archive, prepare `uv`/Python,
+  or run the installer.
+- The previous signed installation path remains a fallback when no compatible
+  instance is available. It keeps its isolated Python runtime so a first install
+  does not depend on distribution-specific system Python packages.
+- Ordinary local and SSH setup also leaves **Start a Team Network on this
+  server** off by default. Team Network creation remains an explicit opt-in and
+  cannot accidentally turn a normal connection into a guarded reactivation.
+- If discovery reaches a server identity already saved under another address,
+  AgentsDock now updates and reuses that profile instead of rejecting the
+  connection as a duplicate. Its local name and identity-owned workspace stay
+  intact while the verified endpoint and credential are replaced together.
+
+```text
+Change and expected user behavior: enter an SSH username/address and private key;
+if a compatible AgentsServer is already healthy, connect after the SSH check
+without reinstalling it or triggering an unrelated Team Network reactivation.
+Source commit / app build / server version: `ca2e0429`; production Electron
+compile; no AgentsServer change required.
+Test surface: onboarding component fixtures, existing-server discovery shell,
+and the remote-installer fallback fixture.
+Actions exercised and observed outcomes: the discovery shell securely read a
+private installation config, authenticated to the protected connection-address
+endpoint, validated the API contract, and returned the existing version and
+connection; the setup manager skipped both release discovery and installation.
+The reported SSH host accepted the user's existing key and discovery found
+AgentsServer 1.0.11 with API contract 28. The existing Synria profile was repaired
+without changing its identity or local name; the rebuilt source client restarted
+cleanly and used its saved libsecret credential. An absent instance still selected
+the signed installer, whose ordinary command omitted --team-hub-host. Explicit
+Team Network opt-in remains covered.
+Real boundaries exercised; any mocked/stubbed boundaries: real SSH transport,
+remote config discovery, Electron safeStorage credential retrieval and
+authenticated remote HTTP were exercised against the reported host. The
+renderer/main behavior remains covered by component and setup manager fixtures.
+The computer-control bridge exposed no native app surface, so actual window
+interaction is still pending.
+Focused regression / typecheck / production build: 134 setup/onboarding tests
+pass; TypeScript checking and the production build/output verification pass.
+Remaining limitations or blocked acceptance: actual native-window interaction
+could not be exercised in this environment.
+Availability: source only; not installed, published or deployed.
+```
+
+## 2026-11-05 — Install a remote AgentsServer without GitHub access on that server
+
+- Guided SSH setup now downloads the signed AgentsServer archive, and the
+  matching `uv` runtime, on the computer running AgentsDock. It copies both
+  over the SSH session. The remote host no longer has to reach GitHub; the
+  previous installer stopped at `curl: (28) SSL connection timeout` after SSH
+  had already connected.
+- The setup form accepts `user@IP` plus a chosen private key. That key is used
+  for public-key authentication and is removed when setup finishes. A password
+  remains available when no key is chosen.
+- Change and expected user behavior: enter the SSH user and address, choose
+  the private key, and start setup. AgentsDock connects with that key and
+  installs the verified archive it downloaded locally.
+- No release was built or published.
+- Test surface: Electron unit and component fixtures, including a shell run of
+  the remote installer against a staged archive. Typecheck passed and the
+  Electron production bundle completed. The live setup window was not driven
+  against the reported `192.168.1.27` host, so that machine was not modified.
 
 ## 2026-11-04 — Keep workspace videos inside Folio
 
@@ -11665,3 +11771,245 @@ and the original remained unchanged. This is a source fix, not a published beta.
   encountered Codex's retained native writer after unsubscribe; that probe is
   failed, and genuine cross-process credential handoff remains unaccepted.
   No public release, installed-app replacement, or live-service deployment.
+
+## 2026-11-05 — Linux window dragging and remote connection recovery
+
+- Linux frameless windows now keep a dedicated top-edge drag strip outside the
+  window controls. It uses Electron's current `app-region` property while
+  retaining the prefixed compatibility property, so chat and inspector content
+  can no longer remove the only movable window surface.
+- Restored an interrupted SSH-forwarded AgentsServer connection by recycling
+  the remote worker/gateway pair and its local forwarding session. Repeated
+  transport probes and an authenticated desktop refresh of health, sessions,
+  and jobs succeeded afterward; no server deployment was performed.
+- Validation: all 6,079 Electron tests passed with 5 skipped, along with
+  TypeScript checking and the production build. The rebuilt client was
+  restarted. Pointer-drag automation was not repeated on the shared live
+  desktop after unrelated concurrent interaction was observed.
+
+## 2026-11-05 — Open generated server-file links from chat
+
+- Generated-file links in assistant Markdown now use the selected chat's
+  authenticated workspace boundary instead of the older registered-attachment
+  lookup. Images, videos, data files and other safe workspace-relative paths
+  therefore resolve against the generating chat while published attachments
+  retain their existing session-owned attachment path.
+
+```text
+Change and expected user behavior: click a generated workspace-file link in a
+chat and open it through the built-in workspace viewer instead of receiving a
+missing-attachment error.
+Source commit / app build / server version: `ca2e0429`;
+production Electron compile; AgentsServer source from the same checkout.
+Test surface: renderer interaction fixtures and a disposable full AgentsServer.
+Actions exercised and observed outcomes: clicked Markdown links for the reported
+MP4, PNG, JSON and NPZ names and observed chat-scoped workspace-open requests;
+the isolated server returned the seeded assistant timeline and authenticated PNG
+preview with the expected content type and byte length.
+Real boundaries exercised; any mocked/stubbed boundaries: real authenticated
+server timeline and workspace-preview HTTP; renderer-to-main workspace preview
+is covered by its focused production-component fixture. The compiled native app
+was launched with isolated state, but the available computer-control bridge did
+not expose native app interaction, so an actual native click remains pending.
+Focused regression / typecheck / production build: 217 Markdown/link/workspace
+tests pass; TypeScript and production build/output verification pass.
+Remaining limitations or blocked acceptance: actual native click-through could
+not be exercised in this environment; no provider turn was needed or launched.
+Availability: source only; not installed, published or deployed.
+```
+
+## 2026-11-05 — Preserve local and cross-server chat panes across server switches
+
+- Switching AgentsServer now waits for the current server's workspace tabs,
+  pane assignments, pane count, focus and selected chat to finish persisting
+  before the main process changes the active server namespace. Normal layout
+  interaction remains non-blocking.
+- Cross-server panes now persist their owning profile, verified server identity,
+  selected session and title with the workspace. Embedded panes report later
+  chat selections back to the host, so restarting the app or switching away and
+  back restores the exact remote conversation without reloading the pane while
+  it is in use.
+
+```text
+Change and expected user behavior: after arranging several chat windows from one
+or more servers, switch to another server and back or restart the app; the
+original server restores the same tabs, panes, focused window and exact remote
+chat instead of an older, empty or server-picker pane.
+Source commit / app build / server version: `ca2e0429`;
+production Linux Electron package 0.2.0; no AgentsServer change required.
+Test surface: renderer store regressions, the complete Electron suite,
+production compilation, and the locally installed desktop.
+Actions exercised and observed outcomes: delayed the old server's preference
+writes, immediately requested a switch, verified the switch waited at the old
+namespace, then switched back and restored the original three-pane tab and focus.
+Cross-server regressions persisted a remote selection, restarted the store and
+completed an A-to-B-to-A switch while retaining the remote session and title.
+Real boundaries exercised; any mocked/stubbed boundaries: two isolated real
+AgentsServer processes each supplied a distinct session to the installed
+production desktop. The app restored both panes after two full restarts, and an
+automated native Chromium interaction clicked A to B to A through the packaged
+server selector. On return, the visible workspace still contained two panes;
+both servers received the expected session-history and event-stream requests,
+including the exact remote session ID. Focused renderer fixtures cover the
+embedded preload-to-host selection message and malformed identity rejection.
+Focused regression / typecheck / production build: 159 related renderer tests,
+558 main-process IPC/service tests and all 6,097 Electron tests pass (5 skipped;
+6,102 total), together with TypeScript checking, production compilation and the
+full Linux package build.
+Remaining limitations or blocked acceptance: none for the reported desktop
+workflow. The packaged app was installed with rollback copies and the active
+local desktop was restarted. Availability: installed locally; not published or
+deployed.
+```
+
+## 2026-11-05 — Play incompatible session videos in the built-in viewer
+
+- Session-owned video attachments now request a browser-compatible preview.
+  AgentsServer keeps H.264, VP8/VP9, AV1 and Theora streams unchanged; when an
+  MP4 uses an unsupported codec such as MPEG-4 Part 2, it creates and caches an
+  H.264/AAC MP4 for ranged in-app playback. Download and external-open actions
+  continue to return the original file bytes.
+
+```text
+Change and expected user behavior: opening a Synria video attachment loads its
+duration and plays in the media dialog instead of remaining at 0:00.
+Source commit / app build / server version: coordinated Electron and AgentsServer
+source at `ca2e0429`; production Electron compile; Synria retained 1.0.11 with
+the scoped endpoint patch.
+Test surface: focused desktop transport/service fixtures, server endpoint tests,
+the active source desktop client, and the reported Synria artifact.
+Actions exercised and observed outcomes: the reported 4-second, 960x720 artifact
+was confirmed as MPEG-4 Part 2 Simple Profile; Synria has FFmpeg/FFprobe, and the
+exact compatibility command produced a 4-second H.264/yuv420p MP4. The temporary
+probe output was removed. Server tests exercised session ownership, transcoding,
+cache output and byte ranges; desktop tests exercised the compatible-preview
+query, Range forwarding, original download route and profile-generation fence.
+Real boundaries exercised; any mocked/stubbed boundaries: Synria's authenticated
+session-file endpoint returned the converted media through the running server;
+the active Electron app requested it through `agentsdock-media`, loaded the real
+attachment with ready state 4 and no media error, and advanced playback. The
+server's full response was H.264/yuv420p with the original 4-second duration,
+and a byte-range request returned 206. Focused tests retain their fake FFmpeg
+fixture, while live acceptance used Synria's installed FFmpeg.
+Focused regression / typecheck / production build: 709 Electron main-process
+tests, 90 server file/workspace tests and 9 server package-manifest tests pass;
+TypeScript and production build/output verification pass.
+Remaining limitations or blocked acceptance: no public/package update was
+produced; Synria received a recoverable scoped 1.0.11 hotfix because the local
+development branch is older than its installed release and the signed updater
+correctly refused an unsigned downgrade.
+Availability: active local source desktop and deployed Synria hotfix; not
+published.
+```
+
+## 2026-11-05 — Artifact downloads resume across server reconnects
+
+- User-requested attachment downloads now use validated 128 KiB byte ranges and
+  retain their private partial file across a bounded set of transport-only
+  failures. A reconnect resumes from the last written byte instead of restarting
+  a slow transfer. Each range now also bounds the wait for response headers and
+  the wait between body chunks, so a forwarding socket that accepts a request
+  but then stops delivering bytes enters the same resumable recovery path.
+  Permanent HTTP responses still fail immediately. After the native Save
+  destination is confirmed, the transfer keeps an isolated read-only client
+  for its original server, so browsing another chat or server neither cancels
+  it nor redirects any request to the newly selected server. A confirmed Save
+  skips the competing general-health preflight because its ranged transfer has
+  the more precise retry policy. Saves to the same server run one at a time so
+  a second click cannot starve both transfers on a slow forwarding path.
+- Idempotent desktop reads now retry only when no HTTP response was received.
+  Normal reads have a bounded 90-second recovery window and workspace browsing
+  has 120 seconds, while writes and other mutations are never replayed. The
+  local forwarding monitor now gives a replacement tunnel a 45-second startup
+  grace, requires three consecutive ten-second end-to-end failures, and samples
+  response-byte progress before probing. It no longer relies on connection count,
+  so abandoned forwarded sockets cannot suppress recovery. This prevents a slow
+  transfer from being mistaken for a dead tunnel and prevents restart loops.
+
+```text
+Change and expected user behavior: a Save already in progress resumes after an
+SSH tunnel or server transport interruption, and the workspace tree recovers
+from the same interruption instead of surfacing `ECONNRESET` after one probe.
+Source commit / app build / server version: `ca2e0429`; no
+server change required.
+Test surface: focused main-process range/reconnect fixtures, the complete
+Electron suite, server file/workspace tests, the production build, the active
+source desktop and both reported RTX6000 artifacts.
+Actions exercised and observed outcomes: transport refusal, socket-reset and
+mid-body termination failures resumed into exact destination bytes; stalled
+response-start and stalled-body fixtures timed out and recovered; a simulated
+full tunnel replacement recovered after six failed requests; malformed ranges
+were rejected without publishing a partial destination; permanent 404 failed
+once; switching servers allowed the original-server Save to finish and sent no
+file request to the replacement server. A confirmed Save proceeded without a
+general-health preflight, and same-server Saves queued behind one transfer.
+Idempotent
+GET and native-control GET fixtures recovered from a dropped socket, while POST
+was attempted once. The forwarding monitor preserved useful active traffic,
+cleared state after a success, and replaced an unhealthy tunnel only after the
+configured consecutive-failure threshold.
+Real boundaries exercised; any mocked/stubbed boundaries: the active Electron
+app loaded the reported workspace root, retried a failed tree read and expanded
+`flow` through the real renderer/main IPC and authenticated RTX6000 endpoint.
+Both reported MP4s were then downloaded from zero with the production
+main-process service and authenticated remote endpoint. The larger transfer was
+interrupted by a real tunnel restart after its first 128 KiB range and resumed
+to completion. The final 2281943-byte and 3429782-byte files matched their
+remote SHA-256 values exactly. Chromium played both files to their 7.38-second
+and 10.68-second ends, and VLC decoded both completely. The forwarding monitor
+remained active throughout and, after the active-transfer guard was installed,
+did not reset either transfer. Three forced failed health probes caused exactly
+one tunnel restart; an immediate fourth probe was suppressed by startup grace,
+and the authenticated route recovered on the fifth two-second poll.
+The reported double-Save sequence was then repeated against the real endpoint:
+both calls began together, only one download client/request ran at a time, the
+second partial appeared only after the first 3429782-byte file completed, and
+both final hashes again matched the source. A stalled run that accumulated
+abandoned forwarded sockets was detected by byte progress and replaced after
+three failures instead of being protected by socket count.
+Focused regression / typecheck / production build: 11 focused artifact-download
+tests plus the previously recorded 729 focused main-process
+tests, all 6094 Electron tests (5 skipped), 8 compile/license checks and 90 server
+file/workspace tests pass; TypeScript checking and production build/output
+verification pass.
+Remaining limitations or blocked acceptance: the computer-control surface did
+not expose native windows, so the isolated production harness supplied the Save
+dialog's returned destination while exercising the real service, transport,
+filesystem, tunnel, Chromium decoder and VLC boundaries. No public/package or
+server update was produced.
+Availability: active local source desktop only; not published or deployed.
+```
+
+## 2026-11-05 — Restore chat beside PDFs and open project media on older servers
+
+- The file toolbar's **Show chat** action now restores the chat/file split for
+  PDFs in normal chat panes. PDF-only reader mode remains unchanged on the
+  dedicated paper surface.
+- Configured project images, PDFs and videos that are inside the chat working
+  directory now reuse the authenticated relative preview route on workspace
+  capability versions 3–9. Media outside that directory still requires the
+  absolute-preview capability and keeps the existing update message.
+
+```text
+Change and expected user behavior: open a PDF from the Files panel without a
+false server-update error when it belongs to the chat workspace, then use Show
+chat to make the conversation visible beside the PDF.
+Source commit / app build / server version: `ca2e0429`;
+production Electron compile; running local AgentsServer advertises workspace
+files capability 8.
+Test surface: renderer interaction fixture, production compile, and read-only
+health inspection of the running local server.
+Actions exercised and observed outcomes: a configured absolute project PDF on
+capability 8 opened through its chat-relative preview path; a full-screen PDF
+in a tabbed chat pane restored the visible conversation split.
+Real boundaries exercised; any mocked/stubbed boundaries: the running server's
+real health response confirmed the reported capability-8 compatibility case;
+preview requests in the focused interaction regression use the renderer bridge
+fixture. Native app interaction could not be repeated because the available
+computer-control bridge exposed no app surface.
+Focused regression / typecheck / production build: all 169 WorkspaceEditor
+tests pass; TypeScript checking and production build/output verification pass.
+Remaining limitations or blocked acceptance: native click-through remains
+pending; the active app and server were not restarted or disturbed.
+Availability: source only; not installed, published or deployed.
+```
