@@ -125,6 +125,60 @@ describe('embedded pane services', () => {
   })
 })
 
+describe('profile endpoint failover', () => {
+  const lan = 'http://192.168.1.8:7850'
+  const tailscale = 'http://100.83.237.96:7850'
+
+  function failoverService(selected: string, reachable: ReadonlySet<string>) {
+    const { settings } = profileSettings()
+    settings.updateProfile('b', {
+      serverUrl: selected,
+      serverUrls: [tailscale, lan],
+      serverIdentity: 'server-synria',
+      serverSetupComplete: true
+    })
+    settings.setActiveProfile('b')
+    const cache = new LocalCache(':memory:')
+    const urls: string[] = []
+    const service = new AppService({
+      settings,
+      cache,
+      clientFactory: serverUrl => {
+        urls.push(serverUrl)
+        return fakeClient({
+          health: async () => {
+            if (!reachable.has(serverUrl)) throw new TypeError('route unavailable')
+            return { ok: true, server_identity: 'server-synria' }
+          }
+        }) as unknown as AgentServerClient
+      }
+    })
+    cleanup.push(() => { service.stop(); cache.close() })
+    return { service, settings, urls }
+  }
+
+  it('moves an active profile from Tailscale back to its preferred LAN route', async () => {
+    const test = failoverService(tailscale, new Set([lan, tailscale]))
+    test.service.start()
+
+    await vi.waitFor(() => expect(test.settings.serverUrl('b')).toBe(lan))
+    expect(test.settings.serverUrls('b')).toEqual([lan, tailscale])
+    expect(test.urls).toContain(lan)
+  })
+
+  it('falls back from a failed LAN route to Tailscale without changing server identity', async () => {
+    const test = failoverService(lan, new Set([tailscale]))
+    test.service.start()
+
+    await vi.waitFor(() => expect(test.settings.serverUrl('b')).toBe(tailscale))
+    expect(test.settings.getProfile('b')).toMatchObject({
+      serverIdentity: 'server-synria',
+      serverUrls: [lan, tailscale]
+    })
+    expect(test.urls).toContain(tailscale)
+  })
+})
+
 describe('local chat execution across server groups', () => {
   it('uses the selected remote AgentsServer for chats, files and terminals by default', async () => {
     const { settings } = profileSettings('http://127.0.0.1:7850')
@@ -537,6 +591,224 @@ describe('concurrent artifact downloads', () => {
     })
   }
 
+  it('survives a brief transport reconnect without requiring another Save click', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-reconnect-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    const fileRequest = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockRejectedValueOnce(Object.assign(new Error('socket closed'), { code: 'ECONNRESET' }))
+      .mockResolvedValueOnce(new Response('recovered artifact'))
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0, 0]
+    )
+
+    await expect(service.saveFile('chat', file)).resolves.toBe(destination)
+
+    expect(fileRequest).toHaveBeenCalledTimes(3)
+    expect(readFileSync(destination, 'utf8')).toBe('recovered artifact')
+  })
+
+  it('waits through a full tunnel keepalive replacement window', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-tunnel-restart-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    const fileRequest = vi.fn()
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      fileRequest.mockRejectedValueOnce(new TypeError('fetch failed'))
+    }
+    fileRequest.mockResolvedValueOnce(new Response('recovered after tunnel restart'))
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0, 0, 0, 0, 0, 0]
+    )
+
+    await expect(service.saveFile('chat', file)).resolves.toBe(destination)
+
+    expect(fileRequest).toHaveBeenCalledTimes(7)
+    expect(readFileSync(destination, 'utf8')).toBe('recovered after tunnel restart')
+  })
+
+  it('times out a hung response start and retries after the tunnel recovers', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-response-timeout-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    let requestCount = 0
+    const fileRequest = vi.fn((
+      _sessionId: string,
+      _fileId: string,
+      _request?: Request,
+      signal?: AbortSignal
+    ): Promise<Response> => {
+      requestCount += 1
+      if (requestCount > 1) return Promise.resolve(new Response('recovered response'))
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    })
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0], undefined, 5
+    )
+
+    await expect(service.saveFile('chat', file)).resolves.toBe(destination)
+
+    expect(fileRequest).toHaveBeenCalledTimes(2)
+    expect(readFileSync(destination, 'utf8')).toBe('recovered response')
+  })
+
+  it('starts a confirmed Save without waiting for a competing health probe', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-no-preflight-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    const health = vi.fn(() => new Promise<Health>(() => undefined))
+    const fileRequest = vi.fn(async () => new Response('download proceeds'))
+    const a = fakeClient({ health, fileRequest })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.saveFile('chat', file)).resolves.toBe(destination)
+
+    expect(health).not.toHaveBeenCalled()
+    expect(fileRequest).toHaveBeenCalledOnce()
+    expect(readFileSync(destination, 'utf8')).toBe('download proceeds')
+  })
+
+  it('times out a stalled response body and restarts its incomplete range', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-body-timeout-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    const stalled = new Response(new ReadableStream<Uint8Array>({ start() {} }), {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4' }
+    })
+    const recovered = new Response('done', {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 0-3/4' }
+    })
+    const fileRequest = vi.fn()
+      .mockResolvedValueOnce(stalled)
+      .mockResolvedValueOnce(recovered)
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0], 4, 5
+    )
+
+    await expect(service.saveFile('chat', { ...file, size: 4 })).resolves.toBe(destination)
+
+    expect(fileRequest).toHaveBeenCalledTimes(2)
+    expect(readFileSync(destination, 'utf8')).toBe('done')
+  })
+
+  it('resumes a partially received range instead of restarting a slow download', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-resume-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    let brokenPulls = 0
+    const broken = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (brokenPulls++ === 0) controller.enqueue(Buffer.from('abc'))
+        else controller.error(new TypeError('terminated'))
+      }
+    }), { status: 206, headers: { 'Content-Range': 'bytes 0-3/10' } })
+    const responses = [
+      broken,
+      new Response('defg', { status: 206, headers: { 'Content-Range': 'bytes 3-6/10' } }),
+      new Response('hij', { status: 206, headers: { 'Content-Range': 'bytes 7-9/10' } })
+    ]
+    const fileRequest = vi.fn(async (
+      _sessionId: string,
+      _fileId: string,
+      _request?: Request
+    ) => responses.shift()!)
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0], 4
+    )
+
+    await expect(service.saveFile('chat', { ...file, size: 10 })).resolves.toBe(destination)
+
+    expect(fileRequest.mock.calls.map(call => (call[2] as Request).headers.get('Range'))).toEqual([
+      'bytes=0-3',
+      'bytes=3-6',
+      'bytes=7-9'
+    ])
+    expect(readFileSync(destination, 'utf8')).toBe('abcdefghij')
+    expect(readdirSync(directory)).toEqual([file.filename])
+  })
+
+  it('rejects a mismatched range without publishing a partial destination', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-range-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    const destination = join(directory, file.filename)
+    electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
+    const fileRequest = vi.fn().mockResolvedValue(new Response('wrong', {
+      status: 206,
+      headers: { 'Content-Range': 'bytes 1-5/10' }
+    }))
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService({ 'http://a.test:7850': [a] })
+
+    await expect(service.saveFile('chat', { ...file, size: 10 })).rejects.toThrow('invalid byte range')
+
+    expect(readdirSync(directory)).toEqual([])
+    expect(fileRequest).toHaveBeenCalledOnce()
+  })
+
+  it('does not retry permanent download responses', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-permanent-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    electronHarness.showSaveDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePath: join(directory, file.filename)
+    })
+    const fileRequest = vi.fn().mockResolvedValue(new Response('missing', { status: 404 }))
+    const a = fakeClient({ fileRequest })
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a] }, undefined, undefined, undefined, undefined,
+      'http://a.test:7850', [0, 0]
+    )
+
+    await expect(service.saveFile('chat', file)).rejects.toThrow('Download failed (404)')
+    expect(fileRequest).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a user-confirmed Save on its original server while navigation changes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-download-scope-'))
+    cleanup.push(() => rmSync(directory, { recursive: true, force: true }))
+    electronHarness.showSaveDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePath: join(directory, file.filename)
+    })
+    const a = fakeClient({ fileRequest: vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(new Response('saved from server a')) })
+    const b = fakeClient()
+    const { service } = createProfileService(
+      { 'http://a.test:7850': [a], 'http://b.test:7850': [b] },
+      undefined, undefined, undefined, undefined, 'http://a.test:7850', [100]
+    )
+
+    const pending = service.saveFile('chat', file)
+    await vi.waitFor(() => expect(a.fileRequest).toHaveBeenCalledOnce())
+    await service.switchServer('b')
+
+    await expect(pending).resolves.toContain(file.filename)
+    expect(a.fileRequest).toHaveBeenCalledTimes(2)
+    expect(b.fileRequest).not.toHaveBeenCalled()
+  })
+
   it.each([
     { firstFails: false, result: 'finishes both without sharing partial files' },
     { firstFails: true, result: 'keeps the other download intact when one stream fails' }
@@ -574,15 +846,17 @@ describe('concurrent artifact downloads', () => {
       await waitForWrittenBytes(directory, firstBytes)
 
       const secondSave = save()
-      second.controller.enqueue(secondPrefix)
-      await waitForWrittenBytes(directory, secondPrefix)
-      expect(a.fileRequest).toHaveBeenCalledTimes(2)
+      await Promise.resolve()
+      expect(a.fileRequest).toHaveBeenCalledOnce()
 
       if (firstFails) first.controller.error(new Error('first download interrupted'))
       else first.controller.close()
       const firstResult = await firstSave
       const destinationAfterFirst = readFileSync(destination)
 
+      await vi.waitFor(() => expect(a.fileRequest).toHaveBeenCalledTimes(2))
+      second.controller.enqueue(secondPrefix)
+      await waitForWrittenBytes(directory, secondPrefix)
       second.controller.enqueue(secondSuffix)
       second.controller.close()
       const secondResult = await secondSave
@@ -3965,7 +4239,7 @@ interface FakeClientOptions {
   renameWorkspaceEntry?: (sessionId: string, path: string, newName: string, expectedRevision: string) => Promise<WorkspaceRenameResult>
   removeWorkspaceEntry?: (sessionId: string, path: string, expectedRevision: string, recursive: boolean) => Promise<WorkspaceRemoveResult>
   runtimeCatalog?: (refresh?: boolean) => Promise<RuntimeCatalog>
-  fileRequest?: (fileId: string, request?: Request) => Promise<Response>
+  fileRequest?: AgentServerClient['fileRequest']
   workspacePreviewRequest?: (
     sessionId: string,
     path: string,
@@ -4229,10 +4503,14 @@ function createProfileService(
   portTunnelManager?: PortTunnelManager,
   removeTeamHubProfile?: (profileId: string) => Promise<void | { rollback(): void }>,
   clipboardTempRoot?: string,
-  activeServerUrl = 'http://a.test:7850'
+  activeServerUrl = 'http://a.test:7850',
+  artifactDownloadRetryDelaysMs?: readonly number[],
+  artifactDownloadChunkBytes?: number,
+  artifactDownloadAttemptTimeoutMs?: number
 ): { service: AppService; cache: LocalCache; settings: SettingsStore } {
   const { settings } = profileSettings(activeServerUrl)
   const cache = new LocalCache(':memory:')
+  const activeClients = new Map<string, ReturnType<typeof fakeClient>>()
   prepareCache?.(cache)
   const service = new AppService({
     settings,
@@ -4240,11 +4518,20 @@ function createProfileService(
     clientFactory: serverUrl => {
       const client = clients[serverUrl]?.shift()
       if (!client) throw new Error(`Missing fake client for ${serverUrl}`)
+      activeClients.set(serverUrl, client)
+      return client as unknown as AgentServerClient
+    },
+    artifactDownloadClientFactory: serverUrl => {
+      const client = activeClients.get(serverUrl)
+      if (!client) throw new Error(`Missing active fake client for ${serverUrl}`)
       return client as unknown as AgentServerClient
     },
     portTunnelManager,
     removeTeamHubProfile,
-    clipboardTempRoot
+    clipboardTempRoot,
+    artifactDownloadRetryDelaysMs,
+    artifactDownloadChunkBytes,
+    artifactDownloadAttemptTimeoutMs
   })
   cleanup.push(() => {
     service.stop()
@@ -7767,6 +8054,22 @@ describe('local session import', () => {
 })
 
 describe('workspace file scope safety', () => {
+  it('requests a browser-compatible session-file stream for the built-in video player', async () => {
+    const fileRequest = vi.fn(async () => new Response(new Uint8Array([0, 0, 0, 24]), {
+      headers: { 'Content-Type': 'video/mp4' }
+    }))
+    const client = fakeClient({ fileRequest })
+    const { service } = createProfileService({ 'http://a.test:7850': [client] })
+    const generation = (await service.bootstrap()).profileGeneration
+    const request = new Request('agentsdock-media://file/a/1/chat/video', {
+      headers: { Range: 'bytes=0-3' }
+    })
+
+    await service.mediaResponse('a', generation, 'chat', 'video', request)
+
+    expect(fileRequest).toHaveBeenCalledWith('chat', 'video', request, undefined, true)
+  })
+
   it('previews TIFF attachments and workspace files as PNG while saving the original TIFF bytes', async () => {
     const tiff = Uint8Array.from(readFileSync(join(__dirname, 'test-fixtures/tiff/rgb.tiff')))
     const original = async () => new Response(tiff, { headers: { 'Content-Type': 'image/tiff' } })
@@ -7789,7 +8092,9 @@ describe('workspace file scope safety', () => {
       electronHarness.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: destination })
       expect(await service.saveFile('chat', { id: 'image', filename: 'image.tiff', content_type: 'image/tiff' })).toBe(destination)
       expect(readFileSync(destination)).toEqual(Buffer.from(tiff))
-      expect(client.fileRequest).toHaveBeenLastCalledWith('chat', 'image')
+      expect(client.fileRequest).toHaveBeenLastCalledWith('chat', 'image', expect.any(Request), expect.anything())
+      const downloadRequest = client.fileRequest.mock.calls.at(-1)?.[2] as Request
+      expect(downloadRequest.headers.get('Range')).toBe('bytes=0-131071')
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }
@@ -10975,7 +11280,7 @@ describe('server profile lifecycle', () => {
     const staleResponse = service.mediaResponse('a', aGeneration, 'chat', 'same-file', request)
     await Promise.resolve()
     await Promise.resolve()
-    expect(a.fileRequest).toHaveBeenCalledWith('chat', 'same-file', request)
+    expect(a.fileRequest).toHaveBeenCalledWith('chat', 'same-file', request, undefined, true)
 
     await service.switchServer('b')
     lateAResponse.resolve(new Response('profile A file'))
@@ -10988,7 +11293,7 @@ describe('server profile lifecycle', () => {
     const bGeneration = (await service.bootstrap()).profileGeneration
     const activeResponse = await service.mediaResponse('b', bGeneration, 'chat', 'same-file', request)
     expect(await activeResponse.text()).toBe('profile B file')
-    expect(b.fileRequest).toHaveBeenCalledWith('chat', 'same-file', request)
+    expect(b.fileRequest).toHaveBeenCalledWith('chat', 'same-file', request, undefined, true)
   })
 
   it('never serves an old profile workspace media URL after the profile generation changes', async () => {

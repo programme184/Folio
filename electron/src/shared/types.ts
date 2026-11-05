@@ -1861,6 +1861,8 @@ export interface PublicServerProfile {
   id: string
   name: string
   serverUrl: string
+  /** Verified endpoints for the same canonical server, ordered by preference. */
+  serverUrls?: string[]
   serverIdentity?: string | null
   hasAccessToken: boolean
   serverSetupComplete: boolean
@@ -1873,6 +1875,7 @@ export interface PublicServerProfile {
 export interface AddServerProfileInput {
   name?: string
   serverUrl: string
+  serverUrls?: string[]
   accessToken?: string | null
   /** Canonical identity returned by a successful connection test. */
   serverIdentity?: string | null
@@ -1882,6 +1885,8 @@ export interface AddServerProfileInput {
 export interface UpdateServerProfilePatch {
   name?: string
   serverUrl?: string
+  /** Replaces the verified failover endpoints. The selected serverUrl must be included. */
+  serverUrls?: string[]
   /** Undefined preserves the stored credential; null or an empty string removes it. */
   accessToken?: string | null
   /** Explicit user confirmation that this endpoint may establish a new canonical identity. */
@@ -1984,6 +1989,8 @@ export interface ServerSetupInput {
   sshHost?: string
   /** One-shot remote login secret. It is never persisted and is cleared after dispatch. */
   sshPassword?: string
+  /** Absolute path of a private key. It is copied to a private temporary file and deleted when setup finishes. */
+  sshIdentityPath?: string
   port?: number
   track?: ServerUpdateTrack
   /** Explicitly designate a fresh install as the Team Network host. Omit during updates to preserve the existing role. */
@@ -2013,6 +2020,7 @@ export interface ServerSetupDiagnostics {
 
 export interface ServerSetupResult {
   serverUrl: string
+  serverUrls?: string[]
   accessToken: string
   service: string
   tailscaleIP: string

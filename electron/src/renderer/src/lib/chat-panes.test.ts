@@ -152,6 +152,23 @@ describe('chat pane layout', () => {
     expect(changed).toMatchObject({ ...metadata, panes: { primary: 'a', secondary: 'e', tertiary: 'c', quaternary: 'd' } })
   })
 
+  it('round-trips cross-server pane ownership and rejects malformed identities', () => {
+    const restored = parseChatWorkspaces({ enabled: true, activeWorkspaceId: 'mixed', workspaces: [{
+      id: 'mixed', panes: { primary: 'a', secondary: null }, paneCount: 3, focusedPane: 'primary',
+      serverPanes: {
+        secondary: { profileId: 'profile-b', serverIdentity: 'server-b', sessionId: 'chat-b', sessionTitle: 'Remote B' },
+        tertiary: { profileId: 'bad\nprofile', serverIdentity: 'server-c', sessionId: 'chat-c' }
+      }
+    }] }, new Set(['a']))!
+    expect(restored.workspaces[0].serverPanes).toEqual({
+      secondary: { profileId: 'profile-b', serverIdentity: 'server-b', sessionId: 'chat-b', sessionTitle: 'Remote B' }
+    })
+    const edited = workspaceWithLayout(restored.workspaces[0], {
+      panes: { primary: 'a', secondary: null, tertiary: null }, focusedPane: 'primary', paneCount: 2
+    })
+    expect(edited.serverPanes).toEqual(restored.workspaces[0].serverPanes)
+  })
+
   it.each([
     { ratios: [-1, 2], expected: [0.2, 0.8] },
     { ratios: [0.7, 0.3], expected: [0.6, 0.8] },

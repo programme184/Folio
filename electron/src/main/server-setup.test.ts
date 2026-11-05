@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ServerSetupProgress, ServerSetupResult } from '../shared/types'
@@ -30,15 +31,22 @@ import {
   parseSSHConfigHosts,
   parseSSHConfigHostname,
   redactServerSetupLogLine,
+  downloadVerifiedFile,
+  parseRemoteStagePath,
+  remoteCommandArgs,
   remoteFallbackURL,
   remoteReleaseBootstrap,
   remoteShellArgs,
+  remoteStageReceiveCommand,
+  stageSSHIdentity,
+  uvReleaseAsset,
   expandSSHConfigHome,
   createUserSSHConfig,
   serverSetupCapabilities,
   SERVER_SETUP_HOST_PREP_SCRIPT,
   SERVER_SETUP_PATH_BOOTSTRAP,
   SERVER_SETUP_PREFLIGHT_SCRIPT,
+  REMOTE_EXISTING_SERVER_DISCOVERY_SCRIPT,
   ServerSetupManager,
   type ServerSetupTimings,
   serverSetupFailureMessage,
@@ -61,8 +69,12 @@ function deferred<T>() {
 }
 
 type ServerSetupManagerHarness = {
+  connectExistingRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, sshPassword?: string, sshIdentityPath?: string): Promise<ServerSetupResult | null>
   runLocal(port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown): Promise<ServerSetupResult>
-  runRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown, sshPassword?: string): Promise<ServerSetupResult>
+  runRemote(sshHost: string, port: number, progress: (value: ServerSetupProgress) => void, teamHubHost?: boolean, release?: unknown, sshPassword?: string, sshIdentityPath?: string): Promise<ServerSetupResult>
+  stageRemoteInstallFiles(): Promise<{ archive: boolean; uv: boolean }>
+  streamFileToRemote(sshHost: string, localPath: string, filename: string): Promise<string>
+  remotePlatform: string
   runProcess(
     command: string,
     args: string[],
@@ -115,6 +127,18 @@ describe('server setup', () => {
     expect(() => validateServerSetupInput({ target: 'local', teamHubHost: 'true' as unknown as boolean })).toThrow(/Team Network/)
     expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'server', sshPassword: 'bad\nsecret' })).toThrow(/line break/)
     expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'server', sshPassword: 42 as unknown as string })).toThrow(/valid SSH password/)
+    const identityDirectory = mkdtempSync(join(tmpdir(), 'agentsdock-identity-input-'))
+    const identity = join(identityDirectory, 'id_ed25519')
+    writeFileSync(identity, 'fixture-key\n', { mode: 0o600 })
+    try {
+      expect(validateServerSetupInput({ target: 'ssh', sshHost: 'ubuntu@192.0.2.10', sshIdentityPath: identity, sshPassword: 'unused' })).toEqual({
+        target: 'ssh', sshHost: 'ubuntu@192.0.2.10', sshIdentityPath: identity, port: 7850, track: 'stable'
+      })
+      expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'ubuntu@192.0.2.10', sshIdentityPath: 'id_ed25519' })).toThrow(/private key/)
+      expect(() => validateServerSetupInput({ target: 'ssh', sshHost: 'ubuntu@192.0.2.10', sshIdentityPath: '/tmp/missing-agentsdock-key' })).toThrow(/could not be read/)
+    } finally {
+      rmSync(identityDirectory, { recursive: true, force: true })
+    }
   })
 
   it('lists concrete SSH aliases while ignoring wildcard and negated Host patterns', () => {
@@ -361,6 +385,7 @@ port 22
     const runProcess = vi.spyOn(manager, 'runProcess')
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(result)
+    vi.spyOn(manager, 'stageRemoteInstallFiles').mockResolvedValue({ archive: false, uv: false })
 
     await expect(manager.runRemote('user@server', 7850, vi.fn(), true, STABLE_RELEASE)).resolves.toEqual(result)
 
@@ -390,6 +415,7 @@ port 22
     const runProcess = vi.spyOn(manager, 'runProcess')
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(result)
+    vi.spyOn(manager, 'stageRemoteInstallFiles').mockResolvedValue({ archive: false, uv: false })
 
     await expect(manager.runRemote('user@server', 7850, vi.fn(), false, STABLE_RELEASE, 'one time secret')).resolves.toEqual(result)
 
@@ -406,6 +432,126 @@ port 22
     const promptDirectory = runProcess.mock.calls[0]?.[5]?.environment?.SSH_ASKPASS
       ?.replace(/\/askpass$/, '')
     expect(promptDirectory && existsSync(promptDirectory)).toBe(false)
+  })
+
+  it('connects with the chosen private key and does not put the key material on the command line', async () => {
+    const manager = new ServerSetupManager() as unknown as ServerSetupManagerHarness
+    const keyDirectory = mkdtempSync(join(tmpdir(), 'agentsdock-chosen-key-'))
+    const keyPath = join(keyDirectory, 'laptop_ed25519')
+    writeFileSync(keyPath, 'BEGIN OPENSSH PRIVATE KEY fixture-material\n', { mode: 0o644 })
+    const result: ServerSetupResult = {
+      serverUrl: 'http://192.0.2.27:7850',
+      accessToken: '0123456789abcdef0123456789abcdef',
+      service: 'systemd-user',
+      tailscaleIP: ''
+    }
+    const stagedKey = stageSSHIdentity(keyPath)
+    expect(statSync(stagedKey.file).mode & 0o077).toBe(0)
+    expect(readFileSync(stagedKey.file, 'utf8')).toContain('fixture-material')
+    rmSync(stagedKey.directory, { recursive: true, force: true })
+    const runProcess = vi.spyOn(manager, 'runProcess')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(result)
+    vi.spyOn(manager, 'stageRemoteInstallFiles').mockResolvedValue({ archive: false, uv: false })
+    try {
+      await expect(manager.runRemote('ubuntu@192.0.2.27', 7850, vi.fn(), false, STABLE_RELEASE, 'unused password', keyPath)).resolves.toEqual(result)
+      const serialized = JSON.stringify(runProcess.mock.calls)
+      expect(serialized).not.toContain('fixture-material')
+      expect(serialized).not.toContain('unused password')
+      for (const call of runProcess.mock.calls) {
+        expect(call[1]).toContain('IdentitiesOnly=yes')
+        expect(call[1]).toContain('BatchMode=yes')
+        expect(call[1]).not.toContain('PubkeyAuthentication=no')
+        const identity = (call[1] as string[])[(call[1] as string[]).indexOf('-i') + 1]
+        expect(identity).toMatch(/id_key$/)
+      }
+    } finally {
+      rmSync(keyDirectory, { recursive: true, force: true })
+    }
+    const identityArgument = runProcess.mock.calls[0]?.[1] as string[]
+    expect(existsSync(identityArgument[identityArgument.indexOf('-i') + 1])).toBe(false)
+  })
+
+  it('uploads a verified archive and uv over SSH when the server cannot reach GitHub', async () => {
+    let payloadDir = ''
+    fsHarness.mkdtemp.mockImplementation(async (prefix: string) => {
+      payloadDir = mkdtempSync(prefix)
+      return payloadDir
+    })
+    const downloadFile = vi.fn(async (url: string, destination: string) => {
+      if (url.includes('/uv-')) {
+        const root = mkdtempSync(join(tmpdir(), 'agentsdock-uv-fixture-'))
+        const nested = join(root, 'uv-x86_64-unknown-linux-gnu')
+        mkdirSync(nested)
+        writeFileSync(join(nested, 'uv'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 1, 0, 0, 0]))
+        execFileSync('tar', ['-czf', destination, '-C', root, 'uv-x86_64-unknown-linux-gnu'])
+        rmSync(root, { recursive: true, force: true })
+        return
+      }
+      writeFileSync(destination, 'archive-bytes')
+    })
+    const manager = new ServerSetupManager(undefined, undefined, downloadFile) as unknown as ServerSetupManagerHarness
+    const result: ServerSetupResult = {
+      serverUrl: 'http://192.0.2.27:7850',
+      accessToken: '0123456789abcdef0123456789abcdef',
+      service: 'systemd-user',
+      tailscaleIP: ''
+    }
+    const progress = vi.fn()
+    const runProcess = vi.spyOn(manager, 'runProcess').mockImplementation(async (_command, _args, stdin, _progress, expectResult) => {
+      if (!expectResult && typeof stdin === 'string' && stdin.includes('AGENTSDOCK_REMOTE_PLATFORM')) {
+        manager.remotePlatform = 'Linux x86_64'
+        return null
+      }
+      return result
+    })
+    const stream = vi.spyOn(manager, 'streamFileToRemote').mockImplementation(async (_host, _local, filename) => (
+      `/home/ubuntu/.cache/agentsdock-setup/${filename}`
+    ))
+    try {
+      await expect(manager.runRemote('ubuntu@192.0.2.27', 7850, progress, false, STABLE_RELEASE)).resolves.toEqual(result)
+      expect(downloadFile).toHaveBeenCalledWith(
+        STABLE_RELEASE.url,
+        expect.stringMatching(/agents-server\.tar\.gz$/),
+        expect.objectContaining({ sha256: STABLE_RELEASE.sha256 })
+      )
+      expect(downloadFile).toHaveBeenCalledWith(
+        'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz',
+        expect.stringMatching(/uv\.tar\.gz$/),
+        expect.objectContaining({ maxBytes: 80 * 1024 * 1024 })
+      )
+      expect(stream.mock.calls.map(call => call[2])).toEqual(['agents-server.tar.gz', 'uv'])
+      const installArgs = runProcess.mock.calls[1]?.[1] as string[]
+      const config = installArgs[0] === '-F' ? installArgs[1] : undefined
+      expect(installArgs).toEqual([
+        ...remoteShellArgs('ubuntu@192.0.2.27', 'sh', config),
+        '7850', 'false', 'true', 'true'
+      ])
+      expect(progress.mock.calls.some(([value]) => /on this computer/.test(value.message))).toBe(true)
+      expect(progress.mock.calls.some(([value]) => /Copying AgentsServer/.test(value.message))).toBe(true)
+    } finally {
+      if (payloadDir) rmSync(payloadDir, { recursive: true, force: true })
+    }
+  })
+
+  it('reports an SSH copy failure instead of asking the server to download the archive', async () => {
+    const created: string[] = []
+    fsHarness.mkdtemp.mockImplementation(async (prefix: string) => {
+      const directory = mkdtempSync(prefix)
+      created.push(directory)
+      return directory
+    })
+    const downloadFile = vi.fn(async (_url: string, destination: string) => {
+      writeFileSync(destination, 'archive-bytes')
+    })
+    const manager = new ServerSetupManager(undefined, undefined, downloadFile) as unknown as ServerSetupManagerHarness
+    vi.spyOn(manager, 'runProcess').mockResolvedValue(null)
+    vi.spyOn(manager, 'streamFileToRemote').mockRejectedValue(new Error('connection reset'))
+    try {
+      await expect(manager.runRemote('ubuntu@192.0.2.27', 7850, vi.fn(), false, STABLE_RELEASE)).rejects.toThrow(/Could not copy AgentsServer to ubuntu@192.0.2.27: connection reset/)
+    } finally {
+      for (const directory of created) rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('creates a private askpass helper that emits only the requested password', () => {
@@ -519,12 +665,200 @@ exit 1
 
   it('keeps the evaluated preflight and remote bootstrap shell syntax valid', () => {
     expect(() => execFileSync('/bin/sh', ['-n'], { input: SERVER_SETUP_PREFLIGHT_SCRIPT })).not.toThrow()
+    expect(() => execFileSync('/bin/sh', ['-n'], { input: REMOTE_EXISTING_SERVER_DISCOVERY_SCRIPT })).not.toThrow()
     expect(() => execFileSync('/bin/sh', ['-n'], { input: LOCAL_RELEASE_BOOTSTRAP })).not.toThrow()
     expect(() => execFileSync('/bin/sh', ['-n'], { input: REMOTE_BOOTSTRAP })).not.toThrow()
     expect(LOCAL_RELEASE_BOOTSTRAP).toContain('if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]')
     expect(REMOTE_BOOTSTRAP).toContain('if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]')
     expect(LOCAL_RELEASE_BOOTSTRAP).not.toContain('git clone')
     expect(REMOTE_BOOTSTRAP).not.toContain('git clone')
+    expect(remoteStageReceiveCommand('agents-server.tar.gz')).toContain('"$HOME/.cache/agentsdock-setup/agents-server.tar.gz"')
+    const keyedShell = remoteShellArgs('ubuntu@192.0.2.27', 'sh', '/tmp/config', false, '/tmp/id_key')
+    expect(remoteCommandArgs('ubuntu@192.0.2.27', remoteStageReceiveCommand('uv'), '/tmp/config', false, '/tmp/id_key')).toEqual([
+      ...keyedShell.slice(0, -3),
+      remoteStageReceiveCommand('uv')
+    ])
+    expect(uvReleaseAsset('Linux x86_64')).toBe('https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz')
+    expect(uvReleaseAsset('Linux arm64')).toBe('https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-unknown-linux-gnu.tar.gz')
+    expect(uvReleaseAsset('Darwin arm64')).toBe('https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz')
+    expect(uvReleaseAsset('Linux ppc64le')).toBeNull()
+    expect(parseRemoteStagePath('ready\n/home/ubuntu/.cache/agentsdock-setup/uv\n', 'uv')).toBe('/home/ubuntu/.cache/agentsdock-setup/uv')
+    expect(() => parseRemoteStagePath('/tmp/agents-server.tar.gz', 'agents-server.tar.gz')).toThrow(/uploaded installer/)
+  })
+
+  it('discovers and authenticates an existing compatible AgentsServer without installing', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentsdock-existing-server-'))
+    const installRoot = join(home, 'install')
+    const configRoot = join(home, 'config')
+    const pythonBin = join(installRoot, 'current', '.venv', 'bin')
+    const token = 'a'.repeat(64)
+    mkdirSync(pythonBin, { recursive: true })
+    mkdirSync(configRoot)
+    const python = execFileSync('python3', ['-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' }).trim()
+    symlinkSync(python, join(pythonBin, 'python'))
+    const server = createServer((request, response) => {
+      const authenticated = request.url === '/api/health'
+        ? request.headers.authorization === `Bearer ${token}`
+        : request.headers['x-agentsdock-token'] === token
+      if (!authenticated) {
+        response.writeHead(401).end()
+        return
+      }
+      response.setHeader('Content-Type', 'application/json')
+      if (request.url === '/api/health') {
+        response.end(JSON.stringify({
+          ok: true,
+          api_contract_version: 15,
+          server_version: '1.0.11',
+          server_identity: 'server-existing'
+        }))
+        return
+      }
+      if (request.url === '/api/connection-addresses') {
+        response.end(JSON.stringify({
+          version: 1,
+          server_identity: 'server-existing',
+          urls: [`http://100.64.0.8:${port}`, `http://192.168.1.8:${port}`]
+        }))
+        return
+      }
+      response.writeHead(404).end()
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    const port = typeof address === 'object' && address ? address.port : 0
+    writeFileSync(join(configRoot, 'env'), [
+      'AGENTSDOCK_AGENT_BIND=0.0.0.0',
+      `AGENTSDOCK_AGENT_PORT=${port}`,
+      `AGENTSDOCK_AGENT_TOKEN=${token}`,
+      ''
+    ].join('\n'), { mode: 0o600 })
+    try {
+      const output = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        const child = spawn('/bin/sh', ['-s', '--', '7850', '8'], {
+          env: { ...process.env, HOME: home, AGENTS_SERVER_INSTALL_DIR: installRoot, AGENTS_SERVER_CONFIG_DIR: configRoot },
+          stdio: ['pipe', 'pipe', 'pipe']
+        })
+        const stdout: Buffer[] = []
+        const stderr: Buffer[] = []
+        child.stdout.on('data', chunk => stdout.push(Buffer.from(chunk)))
+        child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)))
+        child.on('error', reject)
+        child.on('close', code => resolve({ code, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') }))
+        child.stdin.end(REMOTE_EXISTING_SERVER_DISCOVERY_SCRIPT)
+      })
+      expect(output.code, output.stderr).toBe(0)
+      const resultLine = output.stdout.split(/\r?\n/).find(line => line.startsWith('AGENTSDOCK_SETUP_RESULT='))
+      expect(resultLine && parseServerSetupResult(resultLine)).toEqual({
+        serverUrl: `http://127.0.0.1:${port}`,
+        serverUrls: [`http://192.168.1.8:${port}`, `http://100.64.0.8:${port}`],
+        accessToken: token,
+        service: 'existing-ssh',
+        tailscaleIP: '',
+        serverVersion: '1.0.11'
+      })
+      expect(existsSync(join(home, 'install-marker'))).toBe(false)
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('installs an uploaded archive without curling GitHub from the server', () => {
+    const home = mkdtempSync(join(tmpdir(), 'agentsdock-staged-release-'))
+    const stage = join(home, '.cache', 'agentsdock-setup')
+    const sourceName = `agents-server-${STABLE_RELEASE.version}`
+    const source = join(home, sourceName)
+    const fakeBin = join(home, 'fake-bin')
+    mkdirSync(stage, { recursive: true })
+    mkdirSync(source)
+    mkdirSync(fakeBin)
+    writeFileSync(join(source, 'VERSION'), `${STABLE_RELEASE.version}\n`)
+    writeFileSync(join(source, 'install.sh'), [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$@" > "$HOME/install-args"',
+      'case " $* " in *" --team-hub-host "*) echo "unexpected Team Network activation" >&2; exit 1 ;; esac',
+      'touch "$HOME/install-marker"',
+      'exit 0',
+      ''
+    ].join('\n'))
+    chmodSync(join(source, 'install.sh'), 0o755)
+    const archive = join(stage, 'agents-server.tar.gz')
+    execFileSync('tar', ['-czf', archive, '-C', home, sourceName])
+    const sha256 = createHash('sha256').update(readFileSync(archive)).digest('hex')
+    writeFileSync(join(fakeBin, 'curl'), '#!/bin/sh\ntouch "$HOME/curl-called"\nexit 28\n')
+    chmodSync(join(fakeBin, 'curl'), 0o755)
+    writeFileSync(join(stage, 'uv'), `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo uv-test
+  exit 0
+fi
+if [ "$1" = "python" ] && [ "$2" = "find" ]; then
+  if [ -x "$HOME/py/python3.12" ]; then
+    printf '%s\\n' "$HOME/py/python3.12"
+    exit 0
+  fi
+  exit 1
+fi
+if [ "$1" = "python" ] && [ "$2" = "install" ]; then
+  mkdir -p "$HOME/py"
+  printf '#!/bin/sh\\n' > "$HOME/py/python3.12"
+  chmod 755 "$HOME/py/python3.12"
+  exit 0
+fi
+echo "unexpected uv args: $*" >&2
+exit 1
+`)
+    chmodSync(join(stage, 'uv'), 0o755)
+    const script = REMOTE_BOOTSTRAP.replace(STABLE_RELEASE.sha256, sha256)
+    try {
+      const installed = spawnSync('/bin/sh', ['-s', '--', '7850', 'false', 'true', 'true'], {
+        input: script,
+        encoding: 'utf8',
+        env: { HOME: home, PATH: `${fakeBin}:/usr/bin:/bin`, AGENTS_SERVER_CONFIG_DIR: join(home, 'config') }
+      })
+      expect(installed.status, `${installed.stdout}\n${installed.stderr}`).toBe(0)
+      expect(existsSync(join(home, 'install-marker'))).toBe(true)
+      expect(readFileSync(join(home, 'install-args'), 'utf8')).toBe('--non-interactive\n--port\n7850\n')
+      expect(existsSync(join(home, 'curl-called'))).toBe(false)
+      expect(existsSync(archive)).toBe(false)
+      const rejected = spawnSync('/bin/sh', ['-s', '--', '7850', 'false', 'true; touch "$HOME/curl-called"'], {
+        input: REMOTE_BOOTSTRAP,
+        encoding: 'utf8',
+        env: { HOME: home, PATH: `${fakeBin}:/usr/bin:/bin` }
+      })
+      expect(rejected.status).toBe(2)
+      expect(rejected.stderr).toContain('Invalid staged archive choice.')
+      expect(existsSync(join(home, 'curl-called'))).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('verifies the archive on this computer before uploading it', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agentsdock-local-download-'))
+    const destination = join(directory, 'agents-server.tar.gz')
+    const bytes = Buffer.from('agents-server-fixture')
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('network down'))
+      .mockResolvedValueOnce(new Response(bytes, { status: 200 }))
+    try {
+      await expect(downloadVerifiedFile('https://example.test/agents-server.tar.gz', destination, {
+        fetchImpl, sha256, maxBytes: 1024, attempts: 2
+      })).resolves.toBeUndefined()
+      expect(readFileSync(destination).equals(bytes)).toBe(true)
+      expect(fetchImpl).toHaveBeenCalledTimes(2)
+      const mismatch = join(directory, 'mismatch.tar.gz')
+      fetchImpl.mockResolvedValueOnce(new Response(bytes, { status: 200 }))
+      await expect(downloadVerifiedFile('https://example.test/agents-server.tar.gz', mismatch, {
+        fetchImpl, sha256: '0'.repeat(64), maxBytes: 1024, attempts: 2
+      })).rejects.toThrow(/verification failed/)
+      expect(existsSync(mismatch)).toBe(false)
+      expect(fetchImpl).toHaveBeenCalledTimes(3)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('rejects an unsafe remote Team Network host position before running downloaded code', () => {
@@ -563,9 +897,33 @@ exit 1
     expect(resolveRelease).toHaveBeenCalledExactlyOnceWith('stable', expect.any(AbortSignal))
   })
 
+  it('connects to an existing compatible SSH server before release discovery or installation', async () => {
+    const resolveRelease = vi.fn().mockResolvedValue(STABLE_RELEASE)
+    const actual = new ServerSetupManager(undefined, resolveRelease)
+    const manager = actual as unknown as ServerSetupManagerHarness
+    const progress = vi.fn()
+    const result: ServerSetupResult = {
+      serverUrl: 'http://192.0.2.27:7850',
+      accessToken: '0123456789abcdef0123456789abcdef',
+      service: 'existing-ssh',
+      tailscaleIP: '',
+      serverVersion: '1.0.11'
+    }
+    const connectExisting = vi.spyOn(manager, 'connectExistingRemote').mockResolvedValue(result)
+    const runRemote = vi.spyOn(manager, 'runRemote')
+
+    await expect(actual.run({ target: 'ssh', sshHost: 'ubuntu@192.0.2.27' }, progress)).resolves.toEqual(result)
+
+    expect(connectExisting).toHaveBeenCalledWith('ubuntu@192.0.2.27', 7850, progress, undefined, undefined)
+    expect(resolveRelease).not.toHaveBeenCalled()
+    expect(runRemote).not.toHaveBeenCalled()
+  })
+
   it('does not connect or install when release verification fails', async () => {
     const actual = new ServerSetupManager(undefined, async () => { throw new Error('Invalid release signature') })
-    const runRemote = vi.spyOn(actual as unknown as ServerSetupManagerHarness, 'runRemote')
+    const manager = actual as unknown as ServerSetupManagerHarness
+    vi.spyOn(manager, 'connectExistingRemote').mockResolvedValue(null)
+    const runRemote = vi.spyOn(manager, 'runRemote')
     await expect(actual.run({ target: 'ssh', sshHost: 'qa-server' }, vi.fn())).rejects.toThrow('Invalid release signature')
     expect(runRemote).not.toHaveBeenCalled()
     expect(actual.diagnostics().state).toBe('failed')

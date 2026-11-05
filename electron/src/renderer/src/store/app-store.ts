@@ -75,11 +75,12 @@ import {
   type ChatThreePaneLayout,
   type ChatPaneLayout,
   type ChatPanes,
+  type ChatPaneServerAssignment,
   type ChatWorkspace,
   type ChatWorkspaceState
 } from '../lib/chat-panes'
 
-export type { ChatPane, ChatPaneCount, ChatPanes, ChatThreePaneLayout, ChatWorkspace } from '../lib/chat-panes'
+export type { ChatPane, ChatPaneCount, ChatPanes, ChatPaneServerAssignment, ChatThreePaneLayout, ChatWorkspace } from '../lib/chat-panes'
 
 const SEMANTIC_HISTORY_ITEM_LIMIT = 120
 const LEGACY_HISTORY_EVENT_LIMIT = 480
@@ -284,6 +285,7 @@ interface AppState {
   closeChatWorkspace(workspaceId: string): Promise<void>
   renameChatWorkspace(workspaceId: string, title: string): void
   moveChatWorkspace(workspaceId: string, targetWorkspaceId: string): void
+  setChatWorkspaceServerPanes(serverPanes: Partial<Record<ChatPane, ChatPaneServerAssignment>>): void
   setChatPaneCount(count: ChatPaneCount): void
   setChatThreePaneLayout(layout: ChatThreePaneLayout): void
   setChatWorkspaceRatios(ratios: { columnRatio?: number; rowRatio?: number; threeColumnRatios?: [number, number] }): void
@@ -1225,6 +1227,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
     try {
       await flushActiveWorkspace()
+      // The verified server identity owns the durable workspace namespace.
+      // Wait for the latest tab/pane layout before main switches away, but do
+      // not write into a temporary profile namespace while identity adoption
+      // is still pending.
+      if (get().profiles.find(profile => profile.id === get().activeProfileId)?.serverIdentity) {
+        await persistChatPaneState(get())
+      }
     } catch (error) {
       if (intent !== profileSwitchIntent) return false
       set({ switchingProfileId: null, mailHints: consumeBufferedMailHints({ ...get(), switchingProfileId: null }, get().mailHints), error: errorMessage(error) })
@@ -1736,6 +1745,32 @@ export const useAppStore = create<AppState>((set, get) => ({
     workspaces.splice(to, 0, workspaces.splice(from, 1)[0])
     // Ordering never selects a different workspace or remounts its panes.
     set({ chatWorkspaces: workspaces })
+    persistChatPaneState(get())
+  },
+
+  setChatWorkspaceServerPanes(serverPanes) {
+    const state = get()
+    if (state.switchingProfileId || !state.activeChatWorkspaceId) return
+    const sanitized = Object.fromEntries(CHAT_PANE_IDS.flatMap(pane => {
+      const assignment = serverPanes[pane]
+      if (!assignment || assignment.profileId === state.activeProfileId) return []
+      const profile = state.profiles.find(candidate => candidate.id === assignment.profileId)
+      if (!profile || (assignment.serverIdentity ?? null) !== (profile.serverIdentity ?? null)) return []
+      const sessionId = typeof assignment.sessionId === 'string' && assignment.sessionId
+        && assignment.sessionId.length <= 2_048 && !/[\u0000-\u001f\u007f]/.test(assignment.sessionId)
+        ? assignment.sessionId : null
+      const sessionTitle = typeof assignment.sessionTitle === 'string' && assignment.sessionTitle.trim()
+        ? assignment.sessionTitle.trim().slice(0, 1_024) : null
+      return [[pane, {
+        profileId: profile.id,
+        serverIdentity: profile.serverIdentity ?? null,
+        sessionId,
+        sessionTitle
+      } satisfies ChatPaneServerAssignment]]
+    })) as Partial<Record<ChatPane, ChatPaneServerAssignment>>
+    set({ chatWorkspaces: state.chatWorkspaces.map(workspace => workspace.id === state.activeChatWorkspaceId
+      ? { ...workspace, ...(Object.keys(sanitized).length ? { serverPanes: sanitized } : { serverPanes: undefined }) }
+      : workspace) })
     persistChatPaneState(get())
   },
 
@@ -3352,15 +3387,17 @@ function storedChatPaneLayout(layout: ChatPaneLayout): StoredChatPaneLayout {
   }
 }
 
-function persistChatPaneState(state: AppState): void {
-  if (!window.agentsDock.preferences) return
+function persistChatPaneState(state: AppState): Promise<void> {
+  if (!window.agentsDock.preferences) return Promise.resolve()
   const scope = captureWorkspaceScope(state)
   const layout = storedChatPaneLayout(currentChatPaneLayout(state))
-  void Promise.all([
+  const pending = Promise.all([
     setWorkspacePreference(scope, 'chatWorkspaces', currentChatWorkspaceState(state)),
     setWorkspacePreference(scope, 'chatPaneLayout', layout),
     setWorkspacePreference(scope, 'selectedSessionId', state.selectedSessionId)
-  ]).catch(() => undefined)
+  ]).then(() => undefined)
+  void pending.catch(() => undefined)
+  return pending
 }
 
 async function hydrateVisibleChatPanes(get: () => AppState, forceSessionId?: string): Promise<void> {

@@ -134,6 +134,8 @@ interface OpenWorkspaceFile extends WorkspaceFile {
   viewerKind: WorkspaceViewerKind
   artifact?: AgentFile
   displayPath?: string
+  /** Relative authenticated preview path used when an absolute project entry is inside the chat cwd. */
+  workspacePreviewPath?: string
   saveDirectory?: string
   draft: string
   saved: string
@@ -157,6 +159,7 @@ interface DirectoryState {
 
 interface PersistedTab {
   path: string
+  workspacePreviewPath?: string
   artifact?: AgentFile
   external?: true
   untitled?: boolean
@@ -2693,16 +2696,22 @@ export function WorkspaceEditor({
     }
     const viewerKind = workspaceFileViewerKind(path)
     if (isMediaViewer(viewerKind)) {
-      if (capabilityVersion < 10) {
+      const legacyPreviewPath = capabilityVersion < 10
+        ? workspaceRelativePath(cwd, path)
+        : null
+      if (capabilityVersion < 10 && (capabilityVersion < 3 || legacyPreviewPath === null)) {
         reportOpenError(t('editor.updateAgentsserverToPreviewExplicitWorkspaceMedia'))
         return false
       }
-      const previewFile = openWorkspacePreviewFile(
-        workspaceRoot || cwd,
-        path,
-        viewerKind,
-        workspaceEntryForPath(directoriesRef.current, path)
-      )
+      const previewFile = {
+        ...openWorkspacePreviewFile(
+          workspaceRoot || cwd,
+          path,
+          viewerKind,
+          workspaceEntryForPath(directoriesRef.current, path)
+        ),
+        ...(legacyPreviewPath !== null ? { workspacePreviewPath: legacyPreviewPath } : {})
+      }
       const nextFiles = [...openFilesRef.current, previewFile]
       openFilesRef.current = nextFiles
       setOpenFiles(nextFiles)
@@ -3953,7 +3962,7 @@ export function WorkspaceEditor({
                 aria-pressed={editorOnly}
                 title={editorOnly ? t('editor.restoreChatSplitView') : t('editor.showFileWorkspaceFullScreen')}
                 onClick={() => {
-                  if (pdfPath) {
+                  if (pdfReader && pdfPath) {
                     setPdfFullPath(current => current === pdfPath ? null : pdfPath)
                     return
                   }
@@ -4016,7 +4025,10 @@ export function WorkspaceEditor({
                       label={editorContentLabel(file)}
                       load={() => file.origin === 'artifact' && file.artifact
                         ? window.agentsDock.files.previewBytes(session.id, file.artifact.id)
-                        : window.agentsDock.workspace.previewBytes(session.id, file.path)}
+                        : window.agentsDock.workspace.previewBytes(
+                          session.id,
+                          file.workspacePreviewPath ?? file.path
+                        )}
                       session={session}
                       scope={profileScope}
                       workspaceRoot={workspaceRoot || cwd}
@@ -5064,7 +5076,10 @@ function loadingArtifactTextFile(file: AgentFile): OpenWorkspaceFile {
 function restoredWorkspaceFile(cwd: string, tab: PersistedTab): OpenWorkspaceFile {
   const viewerKind = workspaceFileViewerKind(tab.path)
   if (isMediaViewer(viewerKind)) {
-    return openWorkspacePreviewFile(cwd, tab.path, viewerKind)
+    return {
+      ...openWorkspacePreviewFile(cwd, tab.path, viewerKind),
+      ...(tab.workspacePreviewPath ? { workspacePreviewPath: tab.workspacePreviewPath } : {})
+    }
   }
   const hasDraft = typeof tab.draft === 'string'
   const draft = tab.draft ?? ''
@@ -5332,9 +5347,12 @@ function persistedWorkspaceState(
         ? { path: file.path, external: true, revision: file.revision, draft: file.draft, ...editorState }
         : { path: file.path, external: true, ...editorState }
     }
+    const previewState = file.workspacePreviewPath
+      ? { workspacePreviewPath: file.workspacePreviewPath }
+      : {}
     return file.dirty
-      ? { path: file.path, revision: file.revision, draft: file.draft, ...editorState }
-      : { path: file.path, ...editorState }
+      ? { path: file.path, revision: file.revision, draft: file.draft, ...previewState, ...editorState }
+      : { path: file.path, ...previewState, ...editorState }
   })
   const persistedActivePath = activePath && persistedFiles.some(file => file.path === activePath)
     ? activePath
@@ -5681,7 +5699,7 @@ function workspaceMediaSource(
       scope.profileId,
       scope.profileGeneration,
       sessionId,
-      file.path
+      file.workspacePreviewPath ?? file.path
     )
   } catch {
     return null

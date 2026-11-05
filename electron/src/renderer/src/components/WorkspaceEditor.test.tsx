@@ -256,6 +256,7 @@ describe('WorkspaceEditor', () => {
         },
         files: {
           mediaURL: vi.fn().mockImplementation((_profileId: string, _generation: number, sessionId: string, fileId: string) => `agentsdock-media://file/profile-a/1/${sessionId}/${fileId}`),
+          previewBytes: vi.fn().mockResolvedValue(new Uint8Array([0x25, 0x50, 0x44, 0x46])),
           open: vi.fn().mockResolvedValue(undefined),
           openLinked: vi.fn().mockResolvedValue(undefined),
           readText: vi.fn().mockImplementation((_sessionId: string, file: AgentFile) => Promise.resolve({
@@ -494,6 +495,57 @@ describe('WorkspaceEditor', () => {
       )
       expect(window.agentsDock.files.openLinked).not.toHaveBeenCalled()
       expect(window.agentsDock.workspace.readAbsolute).not.toHaveBeenCalled()
+    } finally {
+      act(() => useAppStore.setState(previousState))
+    }
+  })
+
+  it('previews configured project media through the chat-relative route on an older server', async () => {
+    const scope = { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' }
+    const projectSession = { ...session, folder: 'Research' }
+    const previousState = useAppStore.getState()
+    const absolutePath = '/work/project/docs/paper.pdf'
+    useAppStore.setState({
+      sessions: [projectSession],
+      selectedSessionId: projectSession.id,
+      projectWorkspaces: { Research: { directories: ['/work/project'] } }
+    })
+    vi.mocked(window.agentsDock.workspace.absoluteEntries).mockResolvedValue({
+      root: '/work/project',
+      path: '/work/project',
+      entries: [{
+        name: 'paper.pdf',
+        path: absolutePath,
+        kind: 'file',
+        size: 4_096,
+        writable: false,
+        revision: 'entry-pdf'
+      }],
+      total: 1,
+      offset: 0,
+      limit: 500,
+      has_more: false
+    })
+    const panel = render(<WorkspaceFilesProvider>
+      <RealWorkspaceEditor workspaceKey="legacy-project-pdf" session={projectSession} profileScope={scope}
+        available capabilityVersion={8} chatContent={<p>Chat</p>} />
+      <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
+    </WorkspaceFilesProvider>)
+    try {
+      fireEvent.click(await within(panel.container).findByRole('button', { name: `Open ${absolutePath}` }))
+
+      expect(await within(panel.container).findByRole('region', { name: `PDF preview of ${absolutePath}` })).toBeVisible()
+      await waitFor(() => expect(window.agentsDock.workspace.previewBytes).toHaveBeenCalledWith(
+        projectSession.id,
+        'docs/paper.pdf'
+      ))
+      expect(window.agentsDock.workspace.mediaURL).toHaveBeenCalledWith(
+        scope.profileId,
+        scope.profileGeneration,
+        projectSession.id,
+        'docs/paper.pdf'
+      )
+      expect(screen.queryByText(/Update AgentsServer to preview/i)).not.toBeInTheDocument()
     } finally {
       act(() => useAppStore.setState(previousState))
     }
@@ -2982,6 +3034,39 @@ describe('WorkspaceEditor', () => {
     expect(view.container.querySelector('.workspace-editor-editor-panel')).toHaveClass('workspace-editor-pdf-focus')
     expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split')
     expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-right')
+  })
+
+  it('restores the chat split from a full-screen PDF in a tabbed chat pane', async () => {
+    const user = userEvent.setup()
+    const props = {
+      workspaceKey: 'tabbed-pdf',
+      session,
+      profileScope: { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' },
+      available: true,
+      capabilityVersion: 10,
+      tabbedPane: true,
+      chatContent: <p>Chat timeline</p>
+    }
+    vi.mocked(window.agentsDock.preferences.getScoped).mockResolvedValueOnce({
+      version: 5,
+      cwd: session.cwd,
+      activePath: 'docs/design.pdf',
+      secondaryPath: null,
+      activeGroup: 'primary',
+      filePresentation: 'full',
+      tabs: [{ path: 'docs/design.pdf' }]
+    })
+    const view = render(<WorkspaceEditor {...props} />)
+
+    expect(await screen.findByRole('region', { name: 'PDF preview of docs/design.pdf' })).toBeVisible()
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-editor-only')
+    expect(screen.getByText('Chat timeline')).not.toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Restore chat split view' }))
+
+    expect(view.container.querySelector('.workspace-editor-content')).toHaveClass('workspace-editor-content-split')
+    expect(view.container.querySelector('.workspace-editor-content')).not.toHaveClass('workspace-editor-content-editor-only')
+    expect(screen.getByText('Chat timeline')).toBeVisible()
   })
 
   it.each(['mp4', 'mov', 'webm', 'm4v'])('plays workspace %s videos through the preview transport without reading them as text', async extension => {

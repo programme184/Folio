@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { ChevronDown, ChevronRight, Columns2, Columns3, Folder, FolderPlus, Grid2X2, PanelLeft, Plus, Square, X } from 'lucide-react'
 import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
-import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount } from '../lib/chat-panes'
+import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount, type ChatPaneServerAssignment } from '../lib/chat-panes'
 import { notifyTimelineViewportLayout } from '../lib/workspace-layout'
 import { useAppStore } from '../store/app-store'
 import { ChatPane } from './ChatPane'
@@ -20,6 +20,8 @@ export interface CrossServerPaneState {
   serverIdentity: string | null
   profileName: string
   session: Session | null
+  sessionId?: string | null
+  sessionTitle?: string | null
   snapshot?: SessionSnapshot
 }
 
@@ -32,7 +34,7 @@ export interface CrossServerWorkspaceState {
   pendingPane?: ChatPaneId
 }
 
-export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWorkspaceChange = () => undefined, sidebarVisible, terminalOpen, onSidebarToggle, onTerminalToggle, sideChat, papersOpen = false, onPapersToggle, onAskPaper }: {
+export function ChatWorkspaceGrid({ crossServerWorkspace: controlledCrossServerWorkspace, onCrossServerWorkspaceChange, sidebarVisible, terminalOpen, onSidebarToggle, onTerminalToggle, sideChat, papersOpen = false, onPapersToggle, onAskPaper }: {
   crossServerWorkspace?: CrossServerWorkspaceState | null
   onCrossServerWorkspaceChange?: Dispatch<SetStateAction<CrossServerWorkspaceState | null>>
   sidebarVisible: boolean
@@ -57,8 +59,69 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
   const sessions = useAppStore(state => state.sessions)
   const profiles = useAppStore(state => state.profiles)
   const snapshots = useAppStore(state => state.snapshots)
-  const effectiveCount = crossServerWorkspace?.paneCount ?? count
   const active = workspaces.find(workspace => workspace.id === activeId)
+  const persistedCrossServerWorkspace = useMemo<CrossServerWorkspaceState | null>(() => {
+    if (!profileId || !active || !active.serverPanes) return null
+    const remotePanes = Object.entries(active.serverPanes).filter((entry): entry is [ChatPaneId, ChatPaneServerAssignment] => {
+      const assignment = entry[1]
+      const profile = profiles.find(candidate => candidate.id === assignment.profileId)
+      return Boolean(profile && profile.id !== profileId
+        && (profile.serverIdentity ?? null) === (assignment.serverIdentity ?? null))
+    })
+    if (!remotePanes.length) return null
+    const assignments: Partial<Record<ChatPaneId, CrossServerPaneState>> = {}
+    for (const pane of CHAT_PANE_IDS.slice(0, active.paneCount)) {
+      const remote = active.serverPanes[pane]
+      const remoteProfile = remote && profiles.find(candidate => candidate.id === remote.profileId
+        && candidate.id !== profileId && (candidate.serverIdentity ?? null) === (remote.serverIdentity ?? null))
+      if (remote && remoteProfile) {
+        assignments[pane] = {
+          profileId: remoteProfile.id,
+          profileGeneration,
+          serverIdentity: remoteProfile.serverIdentity ?? null,
+          profileName: remoteProfile.name,
+          session: null,
+          sessionId: remote.sessionId ?? null,
+          sessionTitle: remote.sessionTitle ?? null
+        }
+        continue
+      }
+      const sessionId = panes[pane]
+      const session = sessions.find(candidate => candidate.id === sessionId) ?? null
+      assignments[pane] = {
+        profileId,
+        profileGeneration,
+        serverIdentity,
+        profileName: profiles.find(candidate => candidate.id === profileId)?.name ?? '',
+        session,
+        ...(session && snapshots[session.id] ? { snapshot: snapshots[session.id] } : {})
+      }
+    }
+    return { activeProfileId: profileId, paneCount: active.paneCount, focusedPane: focused, panes: assignments }
+  }, [active, focused, panes, profileGeneration, profileId, profiles, serverIdentity, sessions, snapshots])
+  const crossServerWorkspace = controlledCrossServerWorkspace === undefined
+    ? persistedCrossServerWorkspace
+    : controlledCrossServerWorkspace
+  const updateCrossServerWorkspace = useCallback<Dispatch<SetStateAction<CrossServerWorkspaceState | null>>>(value => {
+    if (onCrossServerWorkspaceChange) {
+      onCrossServerWorkspaceChange(value)
+      return
+    }
+    const next = typeof value === 'function' ? value(persistedCrossServerWorkspace) : value
+    const serverPanes: Partial<Record<ChatPaneId, ChatPaneServerAssignment>> = {}
+    for (const pane of CHAT_PANE_IDS) {
+      const assignment = next?.panes[pane]
+      if (!assignment || assignment.profileId === profileId) continue
+      serverPanes[pane] = {
+        profileId: assignment.profileId,
+        serverIdentity: assignment.serverIdentity,
+        sessionId: assignment.session?.id ?? assignment.sessionId ?? null,
+        sessionTitle: assignment.session?.title ?? assignment.sessionTitle ?? null
+      }
+    }
+    useAppStore.getState().setChatWorkspaceServerPanes(serverPanes)
+  }, [onCrossServerWorkspaceChange, persistedCrossServerWorkspace, profileId])
+  const effectiveCount = crossServerWorkspace?.paneCount ?? count
   const threeColumns = effectiveCount === 3 && active?.threePaneLayout === 'columns'
   const [ratios, setRatios] = useState({
     column: (active?.columnRatio ?? 0.5) * 100, row: (active?.rowRatio ?? 0.5) * 100,
@@ -95,11 +158,6 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     }
     return next
   }), [panes])
-  useEffect(() => {
-    if (crossServerWorkspace && !crossServerWorkspace.pendingProfileId
-      && crossServerWorkspace.activeProfileId !== profileId) onCrossServerWorkspaceChange(null)
-  }, [crossServerWorkspace, onCrossServerWorkspaceChange, profileId])
-
   const bounds = (axis: ResizeAxis) => axis === 'first' ? [20, ratioRef.current.second - 20]
     : axis === 'second' ? [ratioRef.current.first + 20, 80] : [25, 75]
   const clampRatio = (axis: ResizeAxis, value: number) => {
@@ -234,13 +292,13 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
         }
       },
     }
-    onCrossServerWorkspaceChange(next)
+    updateCrossServerWorkspace(next)
   }
   const selectSessionForPane = async (pane: ChatPaneId, sessionId: string) => {
     const session = sessions.find(candidate => candidate.id === sessionId)
     if (!session) return
     if (crossServerWorkspace) {
-      onCrossServerWorkspaceChange(current => current ? {
+      updateCrossServerWorkspace(current => current ? {
         ...current,
         focusedPane: pane,
         panes: {
@@ -261,7 +319,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
       return next
     })
     const snapshot = useAppStore.getState().snapshots[sessionId]
-    if (snapshot) onCrossServerWorkspaceChange(current => {
+    if (snapshot) updateCrossServerWorkspace(current => {
       const assignment = current?.panes[pane]
       return current && assignment?.profileId === profileId && assignment.session?.id === sessionId
         ? { ...current, panes: { ...current.panes, [pane]: { ...assignment, snapshot } } }
@@ -269,7 +327,7 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
     })
   }
   const closeCrossServerPane = (pane: ChatPaneId) => {
-    onCrossServerWorkspaceChange(current => {
+    updateCrossServerWorkspace(current => {
       if (!current || current.paneCount <= 1) return current
       const visible = CHAT_PANE_IDS.slice(0, current.paneCount)
       const closingIndex = visible.indexOf(pane)
@@ -308,7 +366,6 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
           aria-label={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })} title={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
           aria-pressed={value === 'columns' ? threeColumns : effectiveCount === value && !threeColumns}
           onClick={() => {
-            onCrossServerWorkspaceChange(null)
             if (value === 'columns' || value === 3) useAppStore.getState().setChatThreePaneLayout(value === 'columns' ? 'columns' : 'split')
             else useAppStore.getState().setChatPaneCount(value)
           }}>
@@ -329,6 +386,12 @@ export function ChatWorkspaceGrid({ crossServerWorkspace = null, onCrossServerWo
           {inactive ? <ConcurrentServerPane pane={pane} assignment={assignment}
             closeable={effectiveCount > 1}
             onClose={() => closeCrossServerPane(pane)}
+            onSelection={(sessionId, sessionTitle) => updateCrossServerWorkspace(current => {
+              const existing = current?.panes[pane]
+              return current && existing?.profileId === assignment.profileId
+                ? { ...current, panes: { ...current.panes, [pane]: { ...existing, sessionId, sessionTitle } } }
+                : current
+            })}
             onChooseServer={targetProfileId => chooseServerForPane(pane, targetProfileId)} />
             : session && !browsing ? <ChatPane pane={pane} session={session} focused={focused === pane} split={effectiveCount > 1}
             sidebarVisible={sidebarVisible} terminalOpen={focused === pane && terminalOpen}
@@ -434,29 +497,52 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
   </section>
 }
 
-function ConcurrentServerPane({ pane, assignment, closeable, onChooseServer, onClose }: {
+function ConcurrentServerPane({ pane, assignment, closeable, onChooseServer, onClose, onSelection }: {
   pane: ChatPaneId
   assignment: CrossServerPaneState
   closeable: boolean
   onChooseServer: (profileId: string) => void | Promise<void>
   onClose: () => void
+  onSelection: (sessionId: string | null, sessionTitle: string | null) => void
 }) {
-  const source = useMemo(() => {
+  const webviewRef = useRef<HTMLElement | null>(null)
+  // Capture the initial restored target. When the live guest reports a newly
+  // selected chat we persist it for the next mount without navigating the
+  // current webview away from its in-memory draft and scroll position.
+  const [source] = useState(() => {
     const url = new URL(window.location.href)
     url.searchParams.set('embeddedPane', '1')
     url.searchParams.set('profileId', assignment.profileId)
-    if (assignment.session?.id) url.searchParams.set('sessionId', assignment.session.id)
+    const sessionId = assignment.session?.id ?? assignment.sessionId
+    if (sessionId) url.searchParams.set('sessionId', sessionId)
     else url.searchParams.delete('sessionId')
     return url.toString()
-  }, [assignment.profileId, assignment.session?.id])
+  })
+  useEffect(() => {
+    const webview = webviewRef.current
+    if (!webview) return
+    const receive = (event: Event) => {
+      const message = event as Event & { channel?: string; args?: unknown[] }
+      if (message.channel !== 'agentsdock:embedded-pane-selection') return
+      const payload = message.args?.[0]
+      if (!payload || typeof payload !== 'object') return
+      const selected = payload as { profileId?: unknown; serverIdentity?: unknown; sessionId?: unknown; sessionTitle?: unknown }
+      if (selected.profileId !== assignment.profileId
+        || (selected.serverIdentity ?? null) !== (assignment.serverIdentity ?? null)) return
+      onSelection(typeof selected.sessionId === 'string' ? selected.sessionId : null,
+        typeof selected.sessionTitle === 'string' ? selected.sessionTitle : null)
+    }
+    webview.addEventListener('ipc-message', receive)
+    return () => webview.removeEventListener('ipc-message', receive)
+  }, [assignment.profileId, assignment.serverIdentity, onSelection])
   return <section className="concurrent-server-pane" data-chat-pane={pane} data-profile-id={assignment.profileId}>
     <header className="concurrent-server-pane-header">
       <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={assignment.profileId} onChooseProfile={onChooseServer} /></div>
       {closeable && <button type="button" className="icon-button concurrent-server-pane-close"
         title={t('ui.ChatHeader.ChatHeader.close_this_chat_pane_4926598')}
-        aria-label={t('ui.ChatHeader.ChatHeader.close_pane_fe2672f', { title: assignment.session?.title ?? assignment.profileName })}
+        aria-label={t('ui.ChatHeader.ChatHeader.close_pane_fe2672f', { title: assignment.session?.title ?? assignment.sessionTitle ?? assignment.profileName })}
         onClick={onClose}><X size={15} /></button>}
     </header>
-    <webview key={source} className="concurrent-server-webview" src={source} />
+    <webview ref={webviewRef} key={source} className="concurrent-server-webview" src={source} />
   </section>
 }

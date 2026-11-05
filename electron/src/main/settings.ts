@@ -26,6 +26,7 @@ import type {
   UpdateServerProfilePatch
 } from '../shared/types'
 import { DEFAULT_SERVER_URL, normalizeServerURL } from '../shared/server-url'
+import { mergeConnectionURLs } from '../shared/server-connection-link'
 
 interface StoredSettingsV1 {
   serverUrl?: string
@@ -47,6 +48,7 @@ export interface StoredServerProfile {
   /** Missing on older profiles; distinguish user labels from URL-derived defaults. */
   nameSource?: 'custom' | 'url'
   serverUrl: string
+  serverUrls?: string[]
   serverIdentity?: string | null
   encryptedAccessToken?: string
   keychainAccessToken?: boolean
@@ -190,6 +192,28 @@ export class SettingsStore {
     return normalizeServerURL(this.requireProfile(profileId).serverUrl)
   }
 
+  serverUrls(profileId = this.value.activeProfileId): string[] {
+    const profile = this.requireProfile(profileId)
+    return profileServerUrls(profile.serverUrl, profile.serverUrls)
+  }
+
+  /** Persist a verified route choice without changing the profile's label or endpoint set. */
+  selectServerUrl(profileId: string, serverUrl: string): PublicServerProfile {
+    const current = this.requireProfile(profileId)
+    const selected = normalizeServerURL(serverUrl)
+    const serverUrls = profileServerUrls(current.serverUrl, current.serverUrls)
+    if (!serverUrls.includes(selected)) throw new Error('The selected server address is not saved for this profile.')
+    if (selected === current.serverUrl) return this.publicProfile(current)
+    const duplicate = this.value.profiles.find(profile => profile.id !== profileId && normalizeServerURL(profile.serverUrl) === selected)
+    if (duplicate) throw new Error(`A server profile already uses ${selected}.`)
+    const updated: StoredServerProfile = { ...current, serverUrl: selected, serverUrls, updatedAt: this.now() }
+    const next = cloneSettings(this.value)
+    next.profiles = next.profiles.map(profile => profile.id === profileId ? updated : profile)
+    this.persist(next)
+    this.invalidateCredentialRead(profileId)
+    return this.publicProfile(updated)
+  }
+
   serverIdentity(profileId = this.value.activeProfileId): string | null {
     return cleanIdentity(this.requireProfile(profileId).serverIdentity)
   }
@@ -253,11 +277,13 @@ export class SettingsStore {
 
     const id = this.uniqueProfileId()
     const timestamp = this.now()
+    const serverUrls = profileServerUrls(serverUrl, input.serverUrls)
     let profile: StoredServerProfile = {
       id,
       name: cleanProfileName(input.name) || defaultProfileName(serverUrl),
       nameSource: cleanProfileName(input.name) ? 'custom' : 'url',
       serverUrl,
+      ...(serverUrls.length > 1 ? { serverUrls } : {}),
       serverIdentity,
       serverSetupComplete: input.serverSetupComplete ?? Boolean(serverIdentity),
       createdAt: timestamp,
@@ -288,6 +314,11 @@ export class SettingsStore {
       throw new Error(UNREADABLE_ACCESS_TOKEN_ERROR)
     }
     const serverUrl = patch.serverUrl === undefined ? current.serverUrl : normalizeServerURL(patch.serverUrl)
+    const serverUrls = patch.serverUrls !== undefined
+      ? profileServerUrls(serverUrl, patch.serverUrls)
+      : patch.serverUrl !== undefined && serverUrl !== current.serverUrl
+        ? [serverUrl]
+        : profileServerUrls(serverUrl, current.serverUrls)
     const updated: StoredServerProfile = {
       ...current,
       name: patch.name === undefined
@@ -295,6 +326,7 @@ export class SettingsStore {
         : requireProfileName(patch.name),
       nameSource: patch.name === undefined ? current.nameSource : 'custom',
       serverUrl,
+      serverUrls: serverUrls.length > 1 ? serverUrls : undefined,
       serverIdentity: patch.serverIdentity === undefined ? current.serverIdentity : cleanIdentity(patch.serverIdentity),
       serverSetupComplete: patch.serverSetupComplete ?? current.serverSetupComplete,
       retiredServerNamespaces: patch.retiredServerNamespaces === undefined
@@ -307,7 +339,10 @@ export class SettingsStore {
     const duplicateIdentity = updated.serverIdentity && this.value.profiles.find(profile => profile.id !== profileId && profile.serverIdentity === updated.serverIdentity)
     if (duplicateIdentity) throw new Error(`Server identity ${updated.serverIdentity} already belongs to “${duplicateIdentity.name}”.`)
 
-    if (!keepsCredential || updated.serverUrl !== current.serverUrl || updated.serverIdentity !== current.serverIdentity) {
+    if (!keepsCredential
+      || updated.serverUrl !== current.serverUrl
+      || !sameURLs(updated.serverUrls, current.serverUrls)
+      || updated.serverIdentity !== current.serverIdentity) {
       this.invalidateCredentialRead(profileId)
     }
 
@@ -731,10 +766,12 @@ function unchangedCredential(profile: StoredServerProfile): CredentialMutation {
 function profileKeychainAccount(profileId: string): string { return `${PROFILE_KEYCHAIN_PREFIX}${profileId}` }
 
 function publicProfile(profile: StoredServerProfile, hasAccessToken: boolean, runtime?: ServerProfileRuntimeState): PublicServerProfile {
+  const serverUrls = profileServerUrls(profile.serverUrl, profile.serverUrls)
   return {
     id: profile.id,
     name: profile.name,
     serverUrl: profile.serverUrl,
+    ...(serverUrls.length > 1 ? { serverUrls } : {}),
     serverIdentity: profile.serverIdentity ?? null,
     hasAccessToken,
     serverSetupComplete: profile.serverSetupComplete,
@@ -825,6 +862,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
   const id = typeof value.id === 'string' ? value.id.trim() : ''
   if (!id) throw new Error(`Server profile ${index + 1} has no ID.`)
   const serverUrl = normalizeServerURL(typeof value.serverUrl === 'string' ? value.serverUrl : DEFAULT_SERVER_URL)
+  const serverUrls = profileServerUrls(serverUrl, value.serverUrls)
   const serverIdentity = cleanIdentity(typeof value.serverIdentity === 'string' ? value.serverIdentity : null)
   const savedName = cleanProfileName(typeof value.name === 'string' ? value.name : undefined)
   // Previous releases used the opaque identity (or hostname before connection)
@@ -840,6 +878,7 @@ function normalizeProfile(value: unknown, timestamp: string, index: number): Sto
     name: nameSource === 'url' || !savedName ? defaultProfileName(serverUrl) : savedName,
     nameSource,
     serverUrl,
+    ...(serverUrls.length > 1 ? { serverUrls } : {}),
     serverIdentity,
     encryptedAccessToken: cleanEncryptedToken(value.encryptedAccessToken),
     keychainAccessToken: Boolean(value.keychainAccessToken),
@@ -858,8 +897,20 @@ function validateSettings(value: StoredSettingsV2): void {
     ids.add(profile.id)
     if (!profile.name.trim()) throw new Error(`Server profile ${profile.id} has no name.`)
     if (!profile.serverUrl) throw new Error(`Server profile ${profile.id} has no URL.`)
+    profileServerUrls(profile.serverUrl, profile.serverUrls)
   }
   if (!ids.has(value.activeProfileId)) throw new Error('The active server profile does not exist.')
+}
+
+function profileServerUrls(serverUrl: string, value: unknown): string[] {
+  const primary = normalizeServerURL(serverUrl)
+  if (value !== undefined && !Array.isArray(value)) throw new Error('Server addresses are invalid.')
+  const candidates = value === undefined ? [primary] : value
+  return mergeConnectionURLs(candidates, [primary])
+}
+
+function sameURLs(left: string[] | undefined, right: string[] | undefined): boolean {
+  return JSON.stringify(left ?? []) === JSON.stringify(right ?? [])
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

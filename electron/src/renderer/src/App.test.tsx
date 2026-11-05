@@ -212,7 +212,8 @@ describe('App chat workspace identity', () => {
           set: vi.fn().mockResolvedValue(undefined),
           getScoped: vi.fn((_scope, _key, fallback) => Promise.resolve(fallback)),
           setScoped: vi.fn().mockResolvedValue(undefined)
-        }
+        },
+        embeddedPane: { notifySelection: vi.fn() }
       } as unknown as AgentsDockAPI
     })
     useAppStore.setState({
@@ -268,6 +269,9 @@ describe('App chat workspace identity', () => {
   it('mounts an independent Files inspector for an embedded server pane', () => {
     window.history.replaceState({}, '', '/?embeddedPane=1&profileId=profile-a&sessionId=chat-a')
     const view = render(<App />)
+    expect(window.agentsDock.embeddedPane?.notifySelection).toHaveBeenCalledWith({
+      profileId: 'profile-a', serverIdentity: 'server-a', sessionId: 'chat-a', sessionTitle: 'Chat A'
+    })
     expect(view.container.querySelector('.embedded-pane-app.app-shell')).toBeInTheDocument()
     expect(inspectorHarness.props).toEqual(expect.objectContaining({
       session: expect.objectContaining({ id: 'chat-a' }),

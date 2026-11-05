@@ -38,6 +38,8 @@ import { FolderDialog, ProjectFoldersDialog, RenameProjectDialog } from './Proje
 import { ADD_SERVER_EVENT, MANAGE_SERVERS_EVENT } from './ServerSelector'
 import { TeamMentionPalette, type TeamMentionCandidate } from './Composer'
 import { parseServerUpdateIntents, serverUpdateIntentKey, serverUpdateIntentResolved, serverUpdateIntentHealthResolved, serverUpdateStartErrorIsAmbiguous, type ServerUpdateIntent } from '../lib/server-update-intent'
+import { mergeConnectionURLs, prioritizeConnectionURLs } from '@shared/server-connection-link'
+import { normalizeServerURL } from '@shared/server-url'
 
 const AGENTS_SERVER_SETUP_GUIDE_URL = 'https://github.com/ZhengyiLuo/AgentsServer/tree/v0.1.20#guided-setup'
 const DEFERRED_SERVER_UPDATES_STORAGE_KEY = 'agentsdock:deferred-server-updates:v1'
@@ -742,9 +744,11 @@ export function ServerOnboardingDialog() {
   const [target, setTarget] = useState<'ssh' | 'local'>('ssh')
   const [sshHost, setSSHHost] = useState('')
   const [sshPassword, setSSHPassword] = useState('')
+  const [sshIdentityPath, setSSHIdentityPath] = useState('')
+  const [sshIdentityLabel, setSSHIdentityLabel] = useState('')
   const [configuredSSHHosts, setConfiguredSSHHosts] = useState<string[]>([])
   const [port, setPort] = useState('7850')
-  const [teamHubHost, setTeamHubHost] = useState(true)
+  const [teamHubHost, setTeamHubHost] = useState(false)
   const [hostOrigin, setHostOrigin] = useState<TeamNetworkHostOrigin | null>(null)
   const [teamNetworkServerName, setTeamNetworkServerName] = useState('')
   const [installing, setInstalling] = useState(false)
@@ -788,7 +792,10 @@ export function ServerOnboardingDialog() {
           : 'setup'
       setMode(nextIntent === 'host-team-network' ? 'configure-active' : detail?.mode === 'add' ? 'add' : 'configure-active')
       setIntent(nextIntent)
-      setTeamHubHost(nextIntent !== 'update-beta')
+      // Ordinary guided setup should only install/connect AgentsServer. Starting
+      // a Team Network is a separate opt-in and can require guarded reactivation
+      // when this machine already contains preserved Team Hub state.
+      setTeamHubHost(false)
       setProgress([])
       setSetupError(null)
       setDiagnosticNotice(null)
@@ -829,7 +836,13 @@ export function ServerOnboardingDialog() {
     return () => window.clearInterval(timer)
   }, [installStartedAt, installing])
 
-  const applyConnection = async (profileId: string | null, profileGeneration: number, serverUrl: string, accessToken: string) => {
+  const applyConnection = async (
+    profileId: string | null,
+    profileGeneration: number,
+    serverUrl: string,
+    accessToken: string,
+    discoveredServerUrls?: string[]
+  ) => {
     const current = useAppStore.getState()
     if (!profileId || current.switchingProfileId || current.activeProfileId !== profileId || current.profileGeneration !== profileGeneration) {
       throw new Error('The active server changed while setup was running. The installed server was not bound to a different profile; review the connection details and try Connect again.')
@@ -847,29 +860,56 @@ export function ServerOnboardingDialog() {
         : 'The active server changed while setup was finishing. The installed server was not bound to a different profile; review the connection details and try Connect again.')
     }
     let targetProfileId = profileId
+    let switched: boolean
     if (mode === 'add') {
       const duplicate = health.server_identity
         ? latest.profiles.find(profile => profile.serverIdentity === health.server_identity)
         : null
-      if (duplicate) throw new Error(`This server is already saved as “${duplicate.name}”. Activate or edit that profile instead.`)
-      const added = await window.agentsDock.servers.add({
-        serverUrl,
-        accessToken,
-        serverIdentity: health.server_identity ?? null,
-        serverSetupComplete: true
-      })
-      const profiles = await window.agentsDock.servers.list()
-      useAppStore.setState({ profiles })
-      targetProfileId = added.id
-    }
-    const switched = mode === 'add'
-      ? await latest.switchServer(targetProfileId)
-      : await latest.switchServer(profileId, true, {
+      if (duplicate) {
+        // A reachable address can change while the server's canonical identity
+        // remains stable (for example LAN IP -> Tailscale IP). Reuse the saved
+        // profile so its name and identity-owned workspace are retained, while
+        // atomically replacing the verified endpoint and credential.
+        targetProfileId = duplicate.id
+        const serverUrls = mergeConnectionURLs(
+          [duplicate.serverUrl, normalizeServerURL(serverUrl)],
+          discoveredServerUrls ?? [normalizeServerURL(serverUrl)],
+          duplicate.serverUrls ?? [duplicate.serverUrl]
+        )
+        switched = await latest.switchServer(targetProfileId, true, {
           serverUrl,
+          ...(serverUrls.length > 1 ? { serverUrls } : {}),
           accessToken,
-          resetServerIdentity: true,
           serverSetupComplete: true
         })
+      } else {
+        const serverUrls = discoveredServerUrls?.length
+          ? prioritizeConnectionURLs([...discoveredServerUrls, normalizeServerURL(serverUrl)])
+          : undefined
+        const added = await window.agentsDock.servers.add({
+          serverUrl,
+          ...(serverUrls && serverUrls.length > 1 ? { serverUrls } : {}),
+          accessToken,
+          serverIdentity: health.server_identity ?? null,
+          serverSetupComplete: true
+        })
+        const profiles = await window.agentsDock.servers.list()
+        useAppStore.setState({ profiles })
+        targetProfileId = added.id
+        switched = await latest.switchServer(targetProfileId)
+      }
+    } else {
+      const serverUrls = discoveredServerUrls?.length
+        ? prioritizeConnectionURLs([...discoveredServerUrls, normalizeServerURL(serverUrl)])
+        : undefined
+      switched = await latest.switchServer(profileId, true, {
+        serverUrl,
+        ...(serverUrls && serverUrls.length > 1 ? { serverUrls } : {}),
+        accessToken,
+        resetServerIdentity: true,
+        serverSetupComplete: true
+      })
+    }
     const reopened = useAppStore.getState()
     if (!switched || reopened.activeProfileId !== targetProfileId || reopened.profileGeneration <= profileGeneration) {
       throw new Error('AgentsDock could not reopen the configured server safely.')
@@ -890,6 +930,14 @@ export function ServerOnboardingDialog() {
     }
   }
 
+  const chooseIdentity = async () => {
+    const selected = await window.agentsDock.setup.chooseIdentity?.()
+    if (!selected) return
+    setSSHIdentityPath(selected)
+    setSSHIdentityLabel(selected.split('/').pop() || selected)
+    setSSHPassword('')
+  }
+
   const install = async () => {
     const initiating = useAppStore.getState()
     cancelRequestedRef.current = false
@@ -904,7 +952,8 @@ export function ServerOnboardingDialog() {
       const setup = window.agentsDock.setup.run({
         target,
         sshHost: target === 'ssh' ? sshHost.trim() : undefined,
-        ...(target === 'ssh' && sshPassword ? { sshPassword } : {}),
+        ...(target === 'ssh' && sshIdentityPath ? { sshIdentityPath } : {}),
+        ...(target === 'ssh' && sshPassword && !sshIdentityPath ? { sshPassword } : {}),
         port: Number(port),
         track: intent === 'update-beta' ? 'beta' : 'stable',
         ...(intent === 'update-beta' && !teamHubHost ? {} : { teamHubHost })
@@ -915,7 +964,7 @@ export function ServerOnboardingDialog() {
       setURL(result.serverUrl)
       setToken(result.accessToken)
       setProgress(current => [...current.slice(-49), { phase: 'complete', message: 'Connecting AgentsDock…' }])
-      await applyConnection(initiating.activeProfileId, initiating.profileGeneration, result.serverUrl, result.accessToken)
+      await applyConnection(initiating.activeProfileId, initiating.profileGeneration, result.serverUrl, result.accessToken, result.serverUrls)
       setOpen(false)
     } catch (error) {
       const detail = message(error)
@@ -1103,7 +1152,8 @@ export function ServerOnboardingDialog() {
         <div className={`server-setup-fields ${target === 'local' ? 'local' : ''}`}>
           {target === 'ssh' && <label><span>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_7e873f3")}</span><div className="input-with-icon"><KeyRound size={15} /><input autoFocus list={configuredSSHHosts.length > 0 ? 'agentsdock-configured-ssh-hosts' : undefined} value={sshHost} disabled={installing} onChange={event => setSSHHost(event.target.value)} placeholder={t("ui.Dialogs.ServerOnboardingDialog.user_server_or_ssh_alias_86bea1d")} autoCapitalize="none" autoCorrect="off" />{configuredSSHHosts.length > 0 && <datalist id="agentsdock-configured-ssh-hosts">{configuredSSHHosts.map(host => <option key={host} value={host} />)}</datalist>}</div></label>}
           <label className="server-port-field"><span>{t("ui.Dialogs.ServerOnboardingDialog.agentsserver_port_93ea882")}</span><input name="agentsdock-server-http-port" autoComplete="off" inputMode="numeric" min={1024} max={65535} aria-invalid={port.length > 0 && !validServerPort} value={port} disabled={installing} onChange={event => setPort(event.target.value.replace(/\D/g, '').slice(0, 5))} /></label>
-          {target === 'ssh' && <label className="server-password-field"><span>{t('ui.Dialogs.ServerOnboardingDialog.ssh_password')}</span><input type="password" value={sshPassword} disabled={installing} maxLength={1024} onChange={event => setSSHPassword(event.target.value)} placeholder={t('ui.Dialogs.ServerOnboardingDialog.ssh_password_placeholder')} autoComplete="new-password" /></label>}
+          {target === 'ssh' && <label className="server-password-field"><span>{t('ui.Dialogs.ServerOnboardingDialog.ssh_identity')}</span><div className="server-identity-picker"><input readOnly value={sshIdentityLabel} title={sshIdentityPath} placeholder={t('ui.Dialogs.ServerOnboardingDialog.ssh_identity_placeholder')} /><button type="button" className="quiet-button" disabled={installing} onClick={() => void chooseIdentity()}>{t('ui.Dialogs.ServerOnboardingDialog.ssh_identity_choose')}</button>{sshIdentityPath && <button type="button" className="quiet-button" disabled={installing} onClick={() => { setSSHIdentityPath(''); setSSHIdentityLabel('') }}>{t('ui.Dialogs.ServerOnboardingDialog.ssh_identity_clear')}</button>}</div></label>}
+          {target === 'ssh' && <label className="server-password-field"><span>{t('ui.Dialogs.ServerOnboardingDialog.ssh_password')}</span><input type="password" value={sshPassword} disabled={installing || Boolean(sshIdentityPath)} maxLength={1024} onChange={event => setSSHPassword(event.target.value)} placeholder={t('ui.Dialogs.ServerOnboardingDialog.ssh_password_placeholder')} autoComplete="new-password" /></label>}
         </div>
         <p className="server-setup-help">{target === 'ssh' ? <>{t("ui.Dialogs.ServerOnboardingDialog.ssh_host_key_and_connection_port_come_from_25c52e3")} {configuredSSHHosts.length > 0 && t('ui.Dialogs.ServerOnboardingDialog.ssh_config_hosts_loaded')}</> : t("ui.Dialogs.ServerOnboardingDialog.agentsserver_http_api_port_default_7850_po_9ba1d3d")}</p>
         <label className="server-setup-team-hub"><input type="checkbox" checked={teamHubHost} disabled={installing} onChange={event => setTeamHubHost(event.target.checked)} /><span><strong>{t('teamNetwork.setup.start')}</strong><small>{betaUpdate ? t('teamNetwork.setup.preserveRole') : t('teamNetwork.setup.privateHost')}</small></span></label>

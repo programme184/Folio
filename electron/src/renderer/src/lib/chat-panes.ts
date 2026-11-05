@@ -16,6 +16,13 @@ export interface ChatPaneLayout {
   paneCount?: ChatPaneCount
 }
 
+export interface ChatPaneServerAssignment {
+  profileId: string
+  serverIdentity: string | null
+  sessionId?: string | null
+  sessionTitle?: string | null
+}
+
 export interface ChatWorkspace extends ChatPaneLayout {
   id: string
   title?: string
@@ -24,6 +31,8 @@ export interface ChatWorkspace extends ChatPaneLayout {
   rowRatio: number
   threePaneLayout?: ChatThreePaneLayout
   threeColumnRatios?: [number, number]
+  /** Panes hosted by another saved AgentsServer. Local panes stay in `panes`. */
+  serverPanes?: Partial<Record<ChatPane, ChatPaneServerAssignment>>
 }
 
 export interface ChatWorkspaceState {
@@ -169,12 +178,31 @@ export function parseChatWorkspaces(value: unknown, validSessionIds: ReadonlySet
     const paneCount = ([1, 2, 3, 4].includes(raw.paneCount) ? raw.paneCount : chatPaneCount({ panes, focusedPane: 'primary' })) as ChatPaneCount
     const focusedPane = CHAT_PANE_IDS.slice(0, paneCount).includes(raw.focusedPane) ? raw.focusedPane : 'primary'
     const layout = reconcileChatPaneLayout({ panes, focusedPane, paneCount }, validSessionIds)
+    const serverPanes: Partial<Record<ChatPane, ChatPaneServerAssignment>> = {}
+    if (raw.serverPanes && typeof raw.serverPanes === 'object') {
+      for (const pane of CHAT_PANE_IDS) {
+        const assignment = raw.serverPanes[pane]
+        if (!assignment || typeof assignment !== 'object'
+          || typeof assignment.profileId !== 'string' || !assignment.profileId
+          || assignment.profileId.length > 256 || /[\u0000-\u001f\u007f]/.test(assignment.profileId)) continue
+        const serverIdentity = typeof assignment.serverIdentity === 'string' && assignment.serverIdentity
+          && assignment.serverIdentity.length <= 512 && !/[\u0000-\u001f\u007f]/.test(assignment.serverIdentity)
+          ? assignment.serverIdentity : null
+        const sessionId = typeof assignment.sessionId === 'string' && assignment.sessionId
+          && assignment.sessionId.length <= 2_048 && !/[\u0000-\u001f\u007f]/.test(assignment.sessionId)
+          ? assignment.sessionId : null
+        const sessionTitle = typeof assignment.sessionTitle === 'string' && assignment.sessionTitle.trim()
+          ? assignment.sessionTitle.trim().slice(0, 1_024) : null
+        serverPanes[pane] = { profileId: assignment.profileId, serverIdentity, sessionId, sessionTitle }
+      }
+    }
     workspaces.push({
       id: raw.id, ...layout, paneCount,
       ...(typeof raw.title === 'string' && raw.title.trim() ? { title: raw.title.trim() } : {}),
       columnRatio: workspaceRatio(raw.columnRatio), rowRatio: workspaceRatio(raw.rowRatio),
       threePaneLayout: raw.threePaneLayout === 'columns' ? 'columns' : 'split',
-      threeColumnRatios: workspaceThreeColumnRatios(raw.threeColumnRatios)
+      threeColumnRatios: workspaceThreeColumnRatios(raw.threeColumnRatios),
+      ...(Object.keys(serverPanes).length ? { serverPanes } : {})
     })
     ids.add(raw.id)
   }

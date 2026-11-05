@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   parseWorkspaceCodeReference,
+  parseWorkspaceFileReference,
   requestOpenAgentFile,
   requestOpenWorkspaceReference,
   workspacePathForAgentFile
@@ -57,6 +58,17 @@ describe('requestOpenAgentFile', () => {
 })
 
 describe('workspace code references', () => {
+  it('accepts safe generated-file links without making them inline code links', () => {
+    expect(parseWorkspaceFileReference('closed_loop_trajectories.png')).toEqual({
+      path: 'closed_loop_trajectories.png'
+    })
+    expect(parseWorkspaceFileReference('./outputs/model.npz')).toEqual({
+      path: 'outputs/model.npz'
+    })
+    expect(parseWorkspaceFileReference('../outside/model.npz')).toBeNull()
+    expect(parseWorkspaceCodeReference('closed_loop_trajectories.png')).toBeNull()
+  })
+
   it('parses line and column references in common agent formats', () => {
     expect(parseWorkspaceCodeReference('launcher.py:72')).toEqual({
       path: 'launcher.py',

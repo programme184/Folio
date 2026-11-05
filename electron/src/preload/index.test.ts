@@ -123,6 +123,14 @@ describe('preload session IPC bridge', () => {
     expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:run', input)
   })
 
+  it('opens the SSH key picker without accepting key material from the renderer', async () => {
+    electronHarness.invoke.mockResolvedValue('/home/ubuntu/.ssh/id_ed25519')
+
+    await expect(electronHarness.exposed?.setup.chooseIdentity()).resolves.toBe('/home/ubuntu/.ssh/id_ed25519')
+
+    expect(electronHarness.invoke).toHaveBeenCalledWith('server-setup:choose-identity')
+  })
+
   it('reads configured SSH host aliases through a narrow setup bridge', async () => {
     electronHarness.invoke.mockResolvedValue(['Synria', 'A800'])
 

@@ -4,12 +4,12 @@ import { customModelBackend, customModelInput, type CustomModelBackend, type Cus
 import { cliAccountBackend, type CLIAccountBackend, connectionRequest, type ConnectionBackend, type ConnectionAction, type ProviderConnectionRequest, type ProviderConnectionReply } from '../shared/provider-connections'
 import { app, BrowserWindow, clipboard, dialog, nativeImage, Notification, shell, type WebContents } from 'electron'
 import QRCode from 'qrcode'
-import { localOnlyServerUrl, normalizeConnectionURLs, serverConnectionLink, type ServerConnectionQr } from '../shared/server-connection-link'
+import { localOnlyServerUrl, mergeConnectionURLs, normalizeConnectionURLs, prioritizeConnectionURLs, serverConnectionLink, type ServerConnectionQr } from '../shared/server-connection-link'
 import { discoverLocalServers, type DiscoveredLocalServer } from './local-server-discovery'
 import { imagePreviewResponse } from './image-preview'
 import { applyOpenCodeSessionEvent } from '../shared/opencode'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { open, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { open, rename, rm, stat, writeFile, type FileHandle } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -218,6 +218,7 @@ const LOCAL_SESSION_PROFILE_BINDINGS_KEY = 'localSessionProfileBindings:v1'
 const FINISHED_CHAT_PREFETCH_LIMIT = 3
 // A failed background read waits this long before it is retried for the same reply.
 const FINISHED_CHAT_PREFETCH_RETRY_MS = 60_000
+const ARTIFACT_DOWNLOAD_CHUNK_BYTES = 128 * 1024
 const HISTORY_PAGE_SEMANTIC_ITEM_LIMIT = 120
 const LEGACY_TIMELINE_EVENT_LIMIT = 480
 const LEGACY_BOUNDARY_BACKFILL_EVENT_LIMIT = 1_000
@@ -250,6 +251,8 @@ const BACKGROUND_REFRESH_INTERVAL_MS = 30_000
 const FOREGROUND_INTERACTION_QUIET_MS = 3_000
 const INACTIVE_PROFILE_HEALTH_INTERVAL_MS = 30_000
 const INACTIVE_PROFILE_HEALTH_TIMEOUT_MS = 5_000
+const PROFILE_ENDPOINT_PROBE_TIMEOUT_MS = 2_000
+const PROFILE_ENDPOINT_MONITOR_INTERVAL_MS = 10_000
 const INACTIVE_PROFILE_HEALTH_MAX_CONCURRENCY = 2
 const INACTIVE_PROFILE_HEALTH_FRESH_MS = 75_000
 const MAX_REMEMBERED_EMERGENCY_ALERT_IDS = 4_096
@@ -318,6 +321,12 @@ interface ConnectionScope {
   readonly serverUrl: string
   namespace: string
   readonly client: AgentServerClient
+}
+
+interface PreparedProfileEndpoint {
+  serverUrl: string
+  client: AgentServerClient
+  health: Health
 }
 
 interface FinishedChatPrefetchAttempt {
@@ -394,6 +403,14 @@ export interface AppServiceOptions {
   fileUploadGrants?: FileUploadGrantRegistry
   /** Test seam for private clipboard staging/scavenging. */
   clipboardTempRoot?: string
+  /** Test seam; production retries user-requested artifact downloads during a brief transport reconnect. */
+  artifactDownloadRetryDelaysMs?: readonly number[]
+  /** Test seam for resumable artifact range requests. */
+  artifactDownloadChunkBytes?: number
+  /** Test seam; production bounds response-start and stalled-body waits for each range. */
+  artifactDownloadAttemptTimeoutMs?: number
+  /** Test seam for a user-confirmed Save that remains owned by its original server. */
+  artifactDownloadClientFactory?: (serverUrl: string, accessToken: string) => AgentServerClient
   /** Start a renderer-isolated service on one saved profile without changing the desktop-wide selection. */
   initialProfileId?: string
   /** Avoid duplicate discovery and inactive-profile polling for an embedded pane service. */
@@ -421,6 +438,10 @@ export class AppService {
   private readonly serverRestartReconnectTimeoutMs: number
   private readonly serverRestartPollDelayMs: number
   private readonly serverRestartHealthTimeoutMs: number
+  private readonly artifactDownloadRetryDelaysMs: readonly number[]
+  private readonly artifactDownloadChunkBytes: number
+  private readonly artifactDownloadAttemptTimeoutMs: number
+  private readonly artifactDownloadClientFactory: (serverUrl: string, accessToken: string) => AgentServerClient
   private profileRuntime = new Map<string, ServerProfileRuntimeState>()
   private profileHealthProbeInFlight = new Map<string, Promise<void>>()
   private profileHealthProbeClients = new Map<string, AgentServerClient>()
@@ -465,6 +486,8 @@ export class AppService {
   private pendingEventCache = new Map<string, PendingEventBatch>()
   private eventCacheTimer: NodeJS.Timeout | null = null
   private pollTimer: NodeJS.Timeout | null = null
+  private endpointMonitorTimer: NodeJS.Timeout | null = null
+  private endpointMonitorInFlight: Promise<void> | null = null
   private deferredBackgroundRefreshTimer: NodeJS.Timeout | null = null
   private deferredBackgroundRefresh: ConnectionScope | null = null
   private lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
@@ -500,6 +523,7 @@ export class AppService {
   private filesRefreshInFlight = new Set<string>()
   private filesRefreshedAt = new Map<string, number>()
   private fileDownloads = new Map<string, Promise<string>>()
+  private artifactDownloadQueues = new Map<string, Promise<void>>()
   private codexThreadLoads = new Map<string, Promise<CodexRuntimeSnapshot>>()
   private timelineIndexes = new Map<string, TimelineIndex>()
   private terminalConnections = new Map<string, TerminalConnection>()
@@ -558,6 +582,19 @@ export class AppService {
     this.serverRestartReconnectTimeoutMs = options.serverRestartReconnectTimeoutMs ?? SERVER_RESTART_RECONNECT_TIMEOUT_MS
     this.serverRestartPollDelayMs = options.serverRestartPollDelayMs ?? SERVER_RESTART_POLL_DELAY_MS
     this.serverRestartHealthTimeoutMs = options.serverRestartHealthTimeoutMs ?? SERVER_RESTART_HEALTH_TIMEOUT_MS
+    // An SSH forwarding process can need a complete keepalive failure window
+    // before systemd replaces it. Preserve the exact byte offset across that
+    // outage instead of turning a healthy slow transfer into another Save click.
+    this.artifactDownloadRetryDelaysMs = options.artifactDownloadRetryDelaysMs
+      ?? [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 30_000, 60_000]
+    this.artifactDownloadChunkBytes = Math.max(1, Math.floor(
+      options.artifactDownloadChunkBytes ?? ARTIFACT_DOWNLOAD_CHUNK_BYTES
+    ))
+    this.artifactDownloadAttemptTimeoutMs = Math.max(1, Math.floor(
+      options.artifactDownloadAttemptTimeoutMs ?? 10_000
+    ))
+    this.artifactDownloadClientFactory = options.artifactDownloadClientFactory
+      ?? ((serverUrl, accessToken) => new AgentServerClient(serverUrl, accessToken))
     for (const profile of this.settings.listProfiles()) {
       const retiredNamespaces = this.settings.retiredServerNamespaces(profile.id)
       if (retiredNamespaces.length) this.pendingProfileAuthorityNamespaces.set(profile.id, retiredNamespaces)
@@ -808,6 +845,7 @@ export class AppService {
       () => this.scheduleBackgroundRefresh(this.captureScope()),
       BACKGROUND_REFRESH_INTERVAL_MS
     )
+    this.endpointMonitorTimer = setInterval(() => this.monitorActiveProfileEndpoints(), PROFILE_ENDPOINT_MONITOR_INTERVAL_MS)
     if (!this.embeddedPane) this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
     this.jobsPollTimer = setInterval(() => void this.refreshJobs(this.captureScope()), 30_000)
     this.scheduleSearchBackfill(1_000)
@@ -837,11 +875,14 @@ export class AppService {
       cleanupError = attemptCleanup(cleanupError, operation)
     }
     if (this.pollTimer) clearInterval(this.pollTimer)
+    if (this.endpointMonitorTimer) clearInterval(this.endpointMonitorTimer)
     if (this.deferredBackgroundRefreshTimer) clearTimeout(this.deferredBackgroundRefreshTimer)
     if (this.profileHealthPollTimer) clearInterval(this.profileHealthPollTimer)
     if (this.jobsPollTimer) clearInterval(this.jobsPollTimer)
     if (this.searchBackfillTimer) clearTimeout(this.searchBackfillTimer)
     this.pollTimer = null
+    this.endpointMonitorTimer = null
+    this.endpointMonitorInFlight = null
     this.deferredBackgroundRefreshTimer = null
     this.deferredBackgroundRefresh = null
     this.lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
@@ -1821,13 +1862,30 @@ export class AppService {
     this.assertProfileSelection(profileId, intent, revision)
     const before = this.settings.getProfile(profileId)
     if (!before) throw new Error(`Unknown server profile: ${profileId}`)
-    const nextServerUrl = patch.serverUrl === undefined ? this.settings.serverUrl(profileId) : normalizeServerURL(patch.serverUrl)
+    let nextServerUrl = patch.serverUrl === undefined ? this.settings.serverUrl(profileId) : normalizeServerURL(patch.serverUrl)
     const nextAccessToken = this.localChatExecution ? '' : patch.accessToken === undefined || patch.accessToken === '__KEEP__'
       ? await this.settings.accessTokenForConnectionAsync(profileId)
       : patch.accessToken ?? ''
     this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = this.localChatExecution ? undefined : this.clientFactory(nextServerUrl, nextAccessToken)
-    const resettingIdentity = patch.resetServerIdentity === true
+    let effectivePatch = patch
+    let nextClient: AgentServerClient | undefined
+    if (!this.localChatExecution) {
+      const serverUrls = patch.serverUrls === undefined
+        ? [nextServerUrl]
+        : mergeConnectionURLs(patch.serverUrls, [nextServerUrl])
+      const prepared = patch.resetServerIdentity || serverUrls.length < 2
+        ? null
+        : await this.prepareProfileEndpoint(nextAccessToken, serverUrls, before.serverIdentity?.trim() || null)
+      this.assertProfileSelection(profileId, intent, revision)
+      if (prepared) {
+        nextServerUrl = prepared.serverUrl
+        effectivePatch = { ...patch, serverUrl: nextServerUrl, serverUrls }
+        nextClient = prepared.client
+      } else {
+        nextClient = this.clientFactory(nextServerUrl, nextAccessToken)
+      }
+    }
+    const resettingIdentity = effectivePatch.resetServerIdentity === true
     const retryingRetiredCleanup = this.pendingProfileAuthorityNamespaces.has(profileId)
     const resettingActiveProfile = resettingIdentity && profileId === this.activeProfileId
     const retainedPendingNamespaces = this.profileResetPending?.profileId === profileId
@@ -1842,11 +1900,11 @@ export class AppService {
     let preActivationCleanupError: string | null = null
     try {
       if (resettingActiveProfile) {
-        const { resetServerIdentity: _resetServerIdentity, ...connectionPatch } = patch
+        const { resetServerIdentity: _resetServerIdentity, ...connectionPatch } = effectivePatch
         this.persistServerUpdate(profileId, connectionPatch)
         revision = this.settings.connectionRevision(profileId)
       } else {
-        this.persistServerUpdate(profileId, patch)
+        this.persistServerUpdate(profileId, effectivePatch)
         revision = this.settings.connectionRevision(profileId)
         if (resettingIdentity || retryingRetiredCleanup) {
           preActivationCleanupError = await this.cleanupRetiredProfileAuthority(profileId, retiredNamespaces)
@@ -1998,9 +2056,112 @@ export class AppService {
       : this.switchServerOnce(profileId, force, intent)
   }
 
+  private async prepareProfileEndpoint(
+    token: string,
+    serverUrls: readonly string[],
+    expectedIdentity: string | null
+  ): Promise<PreparedProfileEndpoint | null> {
+    if (!expectedIdentity || serverUrls.length < 1) return null
+    for (const serverUrl of serverUrls) {
+      const client = this.clientFactory(serverUrl, token)
+      try {
+        const health = await client.health(PROFILE_ENDPOINT_PROBE_TIMEOUT_MS)
+        if (health.ok === true && health.server_identity?.trim() === expectedIdentity) {
+          return { serverUrl, client, health }
+        }
+      } catch { /* Try the next verified endpoint. */ }
+      client.dispose()
+    }
+    return null
+  }
+
+  private async transitionActiveProfileEndpoint(
+    scope: ConnectionScope,
+    serverUrls: readonly string[],
+    reason: 'prefer-lan' | 'failover'
+  ): Promise<ConnectionScope | null> {
+    const profile = this.settings.getProfile(scope.profileId)
+    const expectedIdentity = profile?.serverIdentity?.trim() || null
+    if (!profile || !expectedIdentity || serverUrls.length < 1) return null
+    const revision = this.settings.connectionRevision(scope.profileId)
+    const token = await this.settings.accessTokenForConnectionAsync(scope.profileId)
+    this.assertCurrentScope(scope)
+    if (this.settings.connectionRevision(scope.profileId) !== revision) return null
+    const prepared = await this.prepareProfileEndpoint(token, serverUrls, expectedIdentity)
+    if (!prepared) return null
+    if (!this.isCurrentScope(scope) || this.settings.connectionRevision(scope.profileId) !== revision) {
+      prepared.client.dispose()
+      return null
+    }
+    const allServerUrls = this.settings.serverUrls(scope.profileId)
+    const previousUrl = this.settings.serverUrl(scope.profileId)
+    try {
+      this.settings.selectServerUrl(scope.profileId, prepared.serverUrl)
+      const transitioned = this.activateProfile(scope.profileId, false, true, prepared.client)
+      this.setProfileRuntime(scope.profileId, {
+        connectionState: 'connecting',
+        lastConnectionError: null,
+        lastConnectionCheckedAt: Date.now()
+      })
+      appLog('connection', 'server endpoint changed', {
+        profileId: scope.profileId,
+        reason,
+        from: previousUrl,
+        to: prepared.serverUrl,
+        candidates: allServerUrls.length
+      })
+      this.emitProfiles()
+      return transitioned
+    } catch (error) {
+      prepared.client.dispose()
+      try { this.settings.selectServerUrl(scope.profileId, previousUrl) } catch { /* Preserve the original error. */ }
+      throw error
+    }
+  }
+
+  private async preferActiveProfileEndpoint(scope: ConnectionScope): Promise<ConnectionScope | null> {
+    const serverUrls = this.settings.serverUrls(scope.profileId)
+    const currentIndex = serverUrls.indexOf(scope.serverUrl)
+    if (currentIndex <= 0) return null
+    return this.transitionActiveProfileEndpoint(scope, serverUrls.slice(0, currentIndex), 'prefer-lan')
+  }
+
+  private async failoverActiveProfileEndpoint(scope: ConnectionScope): Promise<ConnectionScope | null> {
+    const alternatives = this.settings.serverUrls(scope.profileId).filter(serverUrl => serverUrl !== scope.serverUrl)
+    return alternatives.length ? this.transitionActiveProfileEndpoint(scope, alternatives, 'failover') : null
+  }
+
+  private monitorActiveProfileEndpoints(): void {
+    if (this.endpointMonitorInFlight || !this.running || !this.clientAvailable) return
+    const task = this.performActiveProfileEndpointMonitor().catch(() => undefined).finally(() => {
+      if (this.endpointMonitorInFlight === task) this.endpointMonitorInFlight = null
+    })
+    this.endpointMonitorInFlight = task
+  }
+
+  private async performActiveProfileEndpointMonitor(): Promise<void> {
+    const scope = this.captureScope()
+    const serverUrls = this.settings.serverUrls(scope.profileId)
+    if (serverUrls.length < 2) return
+    const preferredScope = await this.preferActiveProfileEndpoint(scope)
+    if (preferredScope) {
+      void this.runBackgroundRefresh(false, preferredScope)
+      return
+    }
+    if (!this.isCurrentScope(scope)) return
+    try {
+      const health = await scope.client.health(PROFILE_ENDPOINT_PROBE_TIMEOUT_MS)
+      const identity = this.settings.serverIdentity(scope.profileId)
+      if (health.ok !== true || !identity || health.server_identity?.trim() !== identity) throw new Error('Current server endpoint is unavailable.')
+    } catch {
+      const failoverScope = await this.failoverActiveProfileEndpoint(scope)
+      if (failoverScope) void this.runBackgroundRefresh(false, failoverScope)
+    }
+  }
+
   private async switchServerOnce(profileId: string, force: boolean, intent: number): Promise<ProfileBootstrapPayload> {
     this.requireProfileNotRemoving(profileId)
-    const revision = this.settings.connectionRevision(profileId)
+    let revision = this.settings.connectionRevision(profileId)
     this.assertProfileSelection(profileId, intent, revision)
     const token = this.localChatExecution ? '' : await this.settings.accessTokenForConnectionAsync(profileId)
     this.assertProfileSelection(profileId, intent, revision)
@@ -2009,9 +2170,25 @@ export class AppService {
       ? await this.cleanupRetiredProfileAuthority(profileId, pendingNamespaces)
       : null
     this.assertProfileSelection(profileId, intent, revision)
-    const nextClient = !this.localChatExecution && (force || pendingNamespaces || profileId !== this.activeProfileId)
-      ? this.clientFactory(this.settings.serverUrl(profileId), token)
-      : undefined
+    let nextClient: AgentServerClient | undefined
+    if (!this.localChatExecution && (force || pendingNamespaces || profileId !== this.activeProfileId)) {
+      const profile = this.settings.getProfile(profileId)
+      const serverUrls = this.settings.serverUrls(profileId)
+      const prepared = serverUrls.length > 1
+        ? await this.prepareProfileEndpoint(token, serverUrls, profile?.serverIdentity?.trim() || null)
+        : null
+      this.assertProfileSelection(profileId, intent, revision)
+      if (prepared) {
+        if (prepared.serverUrl !== this.settings.serverUrl(profileId)) {
+          this.settings.selectServerUrl(profileId, prepared.serverUrl)
+          revision = this.settings.connectionRevision(profileId)
+        }
+        nextClient = prepared.client
+      } else {
+        nextClient = this.clientFactory(this.settings.serverUrl(profileId), token)
+      }
+    }
+    this.assertProfileSelection(profileId, intent, revision)
     const scope = this.activateProfile(
       profileId,
       this.persistProfileSelection,
@@ -5024,11 +5201,24 @@ export class AppService {
     if (result.canceled || !result.filePath) return null
     this.assertCurrentScope(scope)
     appLog('files', 'save requested', { fileId: file.id, filename: file.filename, destination: result.filePath })
+    const credentialProfileId = this.localChatExecution
+      ? this.executionConnection(scope.profileId).profileId
+      : scope.profileId
+    const accessToken = await this.settings.accessTokenForConnectionAsync(credentialProfileId)
     try {
-      await this.downloadFile(scope, sessionId, file, result.filePath)
-      this.assertCurrentScope(scope)
-      appLog('files', 'save completed', { fileId: file.id, filename: file.filename, destination: result.filePath })
-      return result.filePath
+      return await this.withArtifactDownloadSlot(scope.serverUrl, async () => {
+        const downloadClient = this.artifactDownloadClientFactory(scope.serverUrl, accessToken)
+        const downloadScope = { ...scope, client: downloadClient }
+        try {
+          // The native destination is already user-confirmed and remains owned
+          // by this exact server client. Navigation must not cancel the transfer.
+          await this.downloadFile(downloadScope, sessionId, file, result.filePath, true)
+          appLog('files', 'save completed', { fileId: file.id, filename: file.filename, destination: result.filePath })
+          return result.filePath
+        } finally {
+          downloadClient.dispose()
+        }
+      })
     } catch (error) {
       appLog('files', 'save failed', { fileId: file.id, filename: file.filename, destination: result.filePath, error: errorText(error) })
       throw error
@@ -5423,7 +5613,7 @@ export class AppService {
     this.assertCurrentScope(scope)
     const response = await imagePreviewResponse(request, async mediaRequest => {
       this.assertCurrentScope(scope)
-      const original = await scope.client.fileRequest(sessionId, fileId, mediaRequest)
+      const original = await scope.client.fileRequest(sessionId, fileId, mediaRequest, undefined, true)
       this.assertCurrentScope(scope)
       return original
     })
@@ -5743,6 +5933,15 @@ export class AppService {
     identityReady: () => void
   ): Promise<void> {
     const started = Date.now()
+    if (deferApplyDuringInteraction) {
+      const preferredScope = await this.preferActiveProfileEndpoint(scope)
+      if (preferredScope) {
+        identityReady()
+        queueMicrotask(() => void this.runBackgroundRefresh(includeJobs, preferredScope))
+        return
+      }
+      if (!this.isCurrentScope(scope)) return
+    }
     const healthResult = Promise.allSettled([
       this.readActivityHealth(scope, () => scope.client.health())
     ])
@@ -5775,6 +5974,13 @@ export class AppService {
         this.adoptSystemCodexLogin(activeScope)
       } catch (error) {
         if (!this.isCurrentScope(scope)) return
+        const failoverScope = await this.failoverActiveProfileEndpoint(scope)
+        if (failoverScope) {
+          identityReady()
+          queueMicrotask(() => void this.runBackgroundRefresh(includeJobs, failoverScope))
+          return
+        }
+        if (!this.isCurrentScope(scope)) return
         this.portTunnels.disposeAll()
         this.health = null
         this.validatedGeneration = null
@@ -5792,6 +5998,13 @@ export class AppService {
         this.emitConnection(scope, false, undefined, message)
       }
     } else {
+      const failoverScope = await this.failoverActiveProfileEndpoint(scope)
+      if (failoverScope) {
+        identityReady()
+        queueMicrotask(() => void this.runBackgroundRefresh(includeJobs, failoverScope))
+        return
+      }
+      if (!this.isCurrentScope(scope)) return
       // Revalidate privileged requests after failed health, but a transient
       // HTTP failure does not invalidate an already authenticated chat socket.
       // Let that transport report its own disconnect instead of closing it.
@@ -7176,13 +7389,34 @@ export class AppService {
     let client: AgentServerClient | null = null
     try {
       if (this.pendingProfileAuthorityNamespaces.has(profileId)) return
-      const credentialRevision = this.settings.connectionRevision(profileId)
+      let credentialRevision = this.settings.connectionRevision(profileId)
       const token = await this.profileHealthAccessToken(profileId)
       if (!this.profileHealthProbeIsCurrent(profileId, revision, epoch)
         || this.settings.connectionRevision(profileId) !== credentialRevision) return
-      client = this.clientFactory(this.settings.serverUrl(profileId), token)
+      const profileBeforeProbe = this.settings.getProfile(profileId)
+      const serverUrls = this.settings.serverUrls(profileId)
+      const prepared = serverUrls.length > 1
+        ? await this.prepareProfileEndpoint(token, serverUrls, profileBeforeProbe?.serverIdentity?.trim() || null)
+        : null
+      if (!this.profileHealthProbeIsCurrent(profileId, revision, epoch)
+        || this.settings.connectionRevision(profileId) !== credentialRevision) {
+        prepared?.client.dispose()
+        return
+      }
+      let preparedHealth: Health | null = null
+      if (prepared) {
+        client = prepared.client
+        preparedHealth = prepared.health
+        if (prepared.serverUrl !== this.settings.serverUrl(profileId)) {
+          this.settings.selectServerUrl(profileId, prepared.serverUrl)
+          credentialRevision = this.settings.connectionRevision(profileId)
+          this.profileHealthAccessTokens.set(profileId, { revision: credentialRevision, token })
+        }
+      } else {
+        client = this.clientFactory(this.settings.serverUrl(profileId), token)
+      }
       this.profileHealthProbeClients.set(profileId, client)
-      const health = await this.profileHealthWithTimeout(profileId, client)
+      const health = preparedHealth ?? await this.profileHealthWithTimeout(profileId, client)
       if (!this.profileHealthProbeIsCurrent(profileId, revision, epoch)
         || this.settings.connectionRevision(profileId) !== credentialRevision) return
       if (health.ok !== true) throw new Error('Server health check reported unavailable.')
@@ -7637,18 +7871,153 @@ export class AppService {
     return join(app.getPath('temp'), 'AgentsDockFiles', profileKey, sessionKey, fileKey, basename(file.filename))
   }
 
-  private async downloadFile(scope: ConnectionScope, sessionId: string, file: AgentFile, path: string): Promise<void> {
-    requireSessionFile(sessionId, file)
-    await this.ensureValidatedScope(scope)
-    const response = await scope.client.fileRequest(sessionId, file.id)
-    this.assertCurrentScope(scope)
-    if (!response.ok) {
-      const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
-      const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
-      throw new Error(`Download failed (${status})${detail ? `: ${detail}` : ''}`)
+  private async withArtifactDownloadSlot<T>(serverUrl: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.artifactDownloadQueues.get(serverUrl)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const tail = (previous ?? Promise.resolve()).catch(() => undefined).then(() => gate)
+    this.artifactDownloadQueues.set(serverUrl, tail)
+    if (previous) {
+      appLog('files', 'download queued behind active transfer', { serverUrl })
+      await previous.catch(() => undefined)
     }
-    if (!response.body) throw new Error('Download failed: server returned an empty response')
-    await this.downloadResponse(response, path)
+    try {
+      return await task()
+    } finally {
+      release()
+      if (this.artifactDownloadQueues.get(serverUrl) === tail) this.artifactDownloadQueues.delete(serverUrl)
+    }
+  }
+
+  private async downloadFile(
+    scope: ConnectionScope,
+    sessionId: string,
+    file: AgentFile,
+    path: string,
+    detachedFromSelection = false
+  ): Promise<void> {
+    requireSessionFile(sessionId, file)
+    if (!detachedFromSelection) await this.ensureValidatedScope(scope)
+    const assertOwned = () => {
+      if (!detachedFromSelection) this.assertCurrentScope(scope)
+    }
+    mkdirSync(dirname(path), { recursive: true })
+    const partial = `${path}.part-${randomUUID()}`
+    const output = await open(partial, 'wx', 0o600)
+    let offset = 0
+    let totalSize = validArtifactSize(file.size)
+    let stalledAttempts = 0
+    try {
+      while (totalSize === null || offset < totalSize) {
+        assertOwned()
+        const requestStart = offset
+        const requestEnd = totalSize === null
+          ? requestStart + this.artifactDownloadChunkBytes - 1
+          : Math.min(totalSize - 1, requestStart + this.artifactDownloadChunkBytes - 1)
+        const rangeRequest = new Request('https://agentsdock.invalid/artifact-download', {
+          headers: { Range: `bytes=${requestStart}-${requestEnd}` }
+        })
+        let response: Response | null = null
+        let resumable = false
+        try {
+          const timeoutController = new AbortController()
+          let responseStartTimedOut = false
+          const responseStartTimeout = setTimeout(() => {
+            responseStartTimedOut = true
+            timeoutController.abort()
+          }, this.artifactDownloadAttemptTimeoutMs)
+          responseStartTimeout.unref?.()
+          try {
+            response = await scope.client.fileRequest(
+              sessionId,
+              file.id,
+              rangeRequest,
+              timeoutController.signal
+            )
+          } catch (error) {
+            if (responseStartTimedOut) {
+              throw artifactDownloadTimeout('Timed out waiting for the download to start.')
+            }
+            throw error
+          } finally {
+            clearTimeout(responseStartTimeout)
+          }
+          assertOwned()
+          if (!response.ok) throw await artifactDownloadHTTPError(response)
+          if (!response.body) throw new Error('Download failed: server returned an empty response')
+
+          let expectedBytes: number | null = null
+          if (response.status === 206) {
+            const range = parseArtifactContentRange(response.headers.get('Content-Range'))
+            if (!range || range.start !== requestStart || range.end > requestEnd) {
+              throw new Error('Download failed: server returned an invalid byte range')
+            }
+            if (totalSize !== null && range.total !== totalSize) {
+              throw new Error('Download failed: the server file changed during transfer')
+            }
+            totalSize = range.total
+            expectedBytes = range.end - range.start + 1
+            resumable = true
+          } else if (response.status === 200 && requestStart === 0) {
+            const advertised = parseArtifactContentLength(response.headers.get('Content-Length'))
+            if (totalSize !== null && advertised !== null && advertised !== totalSize) {
+              throw new Error('Download failed: the server file changed during transfer')
+            }
+            totalSize ??= advertised
+            expectedBytes = totalSize
+          } else {
+            throw new Error(`Download failed: server ignored the byte range (${response.status})`)
+          }
+
+          const written = await writeArtifactResponse(
+            output,
+            response,
+            requestStart,
+            expectedBytes,
+            nextOffset => { offset = nextOffset },
+            this.artifactDownloadAttemptTimeoutMs
+          )
+          offset = requestStart + written
+          if (expectedBytes !== null && written !== expectedBytes) {
+            throw new ArtifactDownloadInterruptedError('Artifact download ended before the requested range was complete.')
+          }
+          if (response.status === 200 && totalSize === null) totalSize = offset
+          stalledAttempts = 0
+        } catch (error) {
+          await response?.body?.cancel().catch(() => undefined)
+          // Previews remain tied to the active selection. Native Save uses a
+          // dedicated original-server client and may continue through navigation.
+          assertOwned()
+          if (!resumable && offset > requestStart) {
+            await output.truncate(requestStart)
+            offset = requestStart
+          }
+          const madeProgress = resumable && offset > requestStart
+          if (madeProgress) stalledAttempts = 0
+          const delayMs = this.artifactDownloadRetryDelaysMs[stalledAttempts]
+          if (delayMs === undefined || !artifactDownloadTransportFailed(error)) throw error
+          stalledAttempts += 1
+          appLog('files', 'download transport interrupted; resuming', {
+            fileId: file.id,
+            filename: file.filename,
+            offset,
+            totalSize,
+            attempt: stalledAttempts,
+            delayMs,
+            error: errorText(error)
+          })
+          await restartDelay(delayMs)
+        }
+      }
+      assertOwned()
+      await output.sync()
+      await output.close()
+      await rename(partial, path)
+    } catch (error) {
+      await output.close().catch(() => undefined)
+      await rm(partial, { force: true }).catch(() => undefined)
+      throw error
+    }
   }
 
   private async downloadResponse(response: Response, path: string): Promise<void> {
@@ -7874,6 +8243,8 @@ function profileConnectionChanged(profile: PublicServerProfile, patch: UpdateSer
     patch.accessToken !== undefined
     || patch.resetServerIdentity
     || patch.serverUrl !== undefined && normalizeServerURL(patch.serverUrl) !== normalizeServerURL(profile.serverUrl)
+    || patch.serverUrls !== undefined
+      && JSON.stringify(prioritizeConnectionURLs(patch.serverUrls)) !== JSON.stringify(profile.serverUrls ?? [profile.serverUrl])
   )
 }
 
@@ -8397,6 +8768,120 @@ function pinSyncCanDefer(error: unknown): boolean {
   // input is normalized before it is staged, so permanent user mutations reach
   // this point as explicit 4xx ServerErrors and are rolled back above.
   return true
+}
+class ArtifactDownloadInterruptedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ArtifactDownloadInterruptedError'
+  }
+}
+
+function validArtifactSize(value: number | null | undefined): number | null {
+  return Number.isSafeInteger(value) && (value as number) >= 0 ? value as number : null
+}
+
+function parseArtifactContentLength(value: string | null): number | null {
+  const normalized = value?.trim() ?? ''
+  if (!/^\d+$/.test(normalized)) return null
+  const length = Number(normalized)
+  return Number.isSafeInteger(length) && length >= 0 ? length : null
+}
+
+function parseArtifactContentRange(value: string | null): { start: number; end: number; total: number } | null {
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value?.trim() ?? '')
+  if (!match) return null
+  const start = Number(match[1])
+  const end = Number(match[2])
+  const total = Number(match[3])
+  if (
+    !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || !Number.isSafeInteger(total)
+    || start < 0 || end < start || total < 1 || end >= total
+  ) return null
+  return { start, end, total }
+}
+
+async function artifactDownloadHTTPError(response: Response): Promise<Error> {
+  const detail = (await response.text().catch(() => '')).trim().slice(0, 500)
+  const status = `${response.status}${response.statusText ? ` ${response.statusText}` : ''}`
+  return new Error(`Download failed (${status})${detail ? `: ${detail}` : ''}`)
+}
+
+async function writeArtifactResponse(
+  output: FileHandle,
+  response: Response,
+  start: number,
+  maximumBytes: number | null,
+  onProgress: (offset: number) => void,
+  idleTimeoutMs: number
+): Promise<number> {
+  if (!response.body) throw new Error('Download failed: server returned an empty response')
+  const reader = response.body.getReader()
+  let written = 0
+  try {
+    while (true) {
+      const next = await readArtifactChunk(reader, idleTimeoutMs)
+      if (next.done) break
+      const bytes = next.value
+      if (maximumBytes !== null && written + bytes.byteLength > maximumBytes) {
+        throw new Error('Download failed: server returned more bytes than requested')
+      }
+      let consumed = 0
+      while (consumed < bytes.byteLength) {
+        const result = await output.write(
+          bytes,
+          consumed,
+          bytes.byteLength - consumed,
+          start + written
+        )
+        if (result.bytesWritten < 1) throw new Error('Download failed: local file write made no progress')
+        consumed += result.bytesWritten
+        written += result.bytesWritten
+        onProgress(start + written)
+      }
+    }
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined)
+    throw error
+  } finally {
+    reader.releaseLock()
+  }
+  return written
+}
+
+function readArtifactChunk(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      const error = artifactDownloadTimeout('The download stopped receiving data.')
+      reject(error)
+      void reader.cancel(error).catch(() => undefined)
+    }, timeoutMs)
+    timeout.unref?.()
+    reader.read().then(resolve, reject).finally(() => clearTimeout(timeout))
+  })
+}
+
+function artifactDownloadTransportFailed(error: unknown): boolean {
+  if (error instanceof ArtifactDownloadInterruptedError) return true
+  if (error instanceof TypeError) return true
+  if (error instanceof Error && error.name === 'TimeoutError') return true
+  const cause = error && typeof error === 'object' && 'cause' in error
+    ? (error as { cause?: unknown }).cause
+    : undefined
+  const code = cause && typeof cause === 'object' && 'code' in cause
+    ? (cause as { code?: unknown }).code
+    : error && typeof error === 'object' && 'code' in error
+      ? (error as { code?: unknown }).code
+      : undefined
+  return typeof code === 'string' && [
+    'ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_SOCKET'
+  ].includes(code)
+}
+function artifactDownloadTimeout(message: string): Error {
+  return Object.assign(new Error(message), { name: 'TimeoutError' })
 }
 function restartDelay(delayMs: number): Promise<void> {
   return delayMs > 0 ? new Promise(resolve => setTimeout(resolve, delayMs)) : Promise.resolve()

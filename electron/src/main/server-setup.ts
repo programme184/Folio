@@ -1,8 +1,11 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { appendFileSync, closeSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { app, net } from 'electron'
 import type {
   ServerSetupCapabilities,
@@ -11,6 +14,7 @@ import type {
   ServerSetupProgress,
   ServerSetupResult
 } from '../shared/types'
+import { mergeConnectionURLs, prioritizeConnectionURLs } from '../shared/server-connection-link'
 import { appLog } from './logger'
 import { resolveServerSetupRelease, serverSetupVersionGuard, type PinnedServerRelease } from './server-setup-release'
 const RESULT_PREFIX = 'AGENTSDOCK_SETUP_RESULT='
@@ -21,6 +25,7 @@ const LAUNCHD_STOPPING_FAILURE = 'macOS is still stopping the previous AgentsSer
 const LAUNCHD_RETRY_DELAY_MS = 600
 const SETUP_LOG_MAX_BYTES = 2 * 1024 * 1024
 const SETUP_LOG_TAIL_LINES = 100
+const MINIMUM_DIRECT_CONNECT_API_CONTRACT = 8
 const electronFetch = ((input: URL | RequestInfo, init?: RequestInit) => (
   net.fetch(input instanceof URL ? input.toString() : input, init)
 )) as typeof fetch
@@ -43,6 +48,12 @@ const DEFAULT_TIMINGS: ServerSetupTimings = Object.freeze({
     complete: 60_000
   }
 })
+
+type SetupDownload = (
+  url: string,
+  destination: string,
+  options: { sha256?: string; maxBytes: number; signal?: AbortSignal }
+) => Promise<void>
 
 export interface ServerSetupTimings {
   overallTimeoutMs: number
@@ -69,6 +80,151 @@ if [ -r "$AGENTSDOCK_PREFLIGHT_ENV_FILE" ]; then
   done < "$AGENTSDOCK_PREFLIGHT_ENV_FILE"
 fi
 export PATH="\${AGENTSDOCK_PREFLIGHT_SAVED_PATH:+$AGENTSDOCK_PREFLIGHT_SAVED_PATH:}$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin:/usr/sbin:/sbin\${PATH:+:$PATH}"
+`
+export const REMOTE_EXISTING_SERVER_DISCOVERY_SCRIPT = `set -u
+AGENTSDOCK_DISCOVERY_PORT="\${1:-7850}"
+AGENTSDOCK_DISCOVERY_MINIMUM_API="\${2:-8}"
+case "$AGENTSDOCK_DISCOVERY_PORT" in *[!0-9]*|'') exit 0 ;; esac
+case "$AGENTSDOCK_DISCOVERY_MINIMUM_API" in *[!0-9]*|'') exit 0 ;; esac
+AGENTSDOCK_DISCOVERY_INSTALL_ROOT="\${AGENTS_SERVER_INSTALL_DIR:-$HOME/.local/share/agents-server}"
+AGENTSDOCK_DISCOVERY_CONFIG_ROOT="\${AGENTS_SERVER_CONFIG_DIR:-$HOME/.config/agents-server}"
+AGENTSDOCK_DISCOVERY_PYTHON="$AGENTSDOCK_DISCOVERY_INSTALL_ROOT/current/.venv/bin/python"
+AGENTSDOCK_DISCOVERY_ENV="$AGENTSDOCK_DISCOVERY_CONFIG_ROOT/env"
+if [ ! -x "$AGENTSDOCK_DISCOVERY_PYTHON" ] || [ ! -f "$AGENTSDOCK_DISCOVERY_ENV" ]; then
+  exit 0
+fi
+"$AGENTSDOCK_DISCOVERY_PYTHON" - "$AGENTSDOCK_DISCOVERY_ENV" "$AGENTSDOCK_DISCOVERY_PORT" "$AGENTSDOCK_DISCOVERY_MINIMUM_API" <<'PY'
+import ipaddress
+import json
+import os
+import stat
+import sys
+import urllib.request
+import urllib.parse
+
+
+def unavailable():
+    raise SystemExit(0)
+
+
+try:
+    env_path = sys.argv[1]
+    requested_port = int(sys.argv[2])
+    minimum_api = int(sys.argv[3])
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(env_path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) & 0o022
+            or not 1 <= before.st_size <= 65536
+        ):
+            unavailable()
+        payload = b""
+        while len(payload) <= 65536:
+            chunk = os.read(descriptor, min(8192, 65537 - len(payload)))
+            if not chunk:
+                break
+            payload += chunk
+        after = os.fstat(descriptor)
+        linked = os.stat(env_path, follow_symlinks=False)
+        if (
+            len(payload) != before.st_size
+            or bytes([0]) in payload
+            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or (before.st_dev, before.st_ino) != (linked.st_dev, linked.st_ino)
+        ):
+            unavailable()
+    finally:
+        os.close(descriptor)
+
+    values = {}
+    for line in payload.decode("utf-8", "strict").splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name in {
+            "AGENTSDOCK_AGENT_BIND",
+            "AGENTSDOCK_AGENT_PORT",
+            "AGENTSDOCK_AGENT_TOKEN",
+        }:
+            values[name] = value
+    token = values.get("AGENTSDOCK_AGENT_TOKEN", "")
+    if not 32 <= len(token) <= 512 or not token.isascii() or any(character.isspace() for character in token):
+        unavailable()
+    port = int(values.get("AGENTSDOCK_AGENT_PORT", str(requested_port)))
+    if not 1 <= port <= 65535:
+        unavailable()
+    bind = ipaddress.ip_address(values.get("AGENTSDOCK_AGENT_BIND", "0.0.0.0"))
+    if bind.is_loopback:
+        # A loopback-only server needs a durable SSH forwarding profile, which
+        # guided setup does not create yet. Keep the installer fallback honest.
+        unavailable()
+    if bind.is_unspecified:
+        probe_host = "127.0.0.1"
+        result_host = "127.0.0.1"
+    else:
+        probe_host = f"[{bind}]" if bind.version == 6 else str(bind)
+        result_host = probe_host
+    request = urllib.request.Request(
+        f"http://{probe_host}:{port}/api/health",
+        headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=5) as response:
+        if response.status != 200:
+            unavailable()
+        body = response.read(65537)
+    if len(body) > 65536:
+        unavailable()
+    health = json.loads(body)
+    api_contract = health.get("api_contract_version")
+    if health.get("ok") is not True or not isinstance(api_contract, int) or api_contract < minimum_api:
+        unavailable()
+    server_identity = health.get("server_identity")
+    if not isinstance(server_identity, str) or not 1 <= len(server_identity) <= 256:
+        unavailable()
+    address_request = urllib.request.Request(
+        f"http://{probe_host}:{port}/api/connection-addresses",
+        headers={"Accept": "application/json", "X-AgentsDock-Token": token},
+    )
+    with opener.open(address_request, timeout=5) as response:
+        if response.status != 200:
+            unavailable()
+        address_body = response.read(8193)
+    if len(address_body) > 8192:
+        unavailable()
+    advertised = json.loads(address_body)
+    addresses = advertised.get("urls")
+    if advertised.get("version") != 1 or advertised.get("server_identity") != server_identity or not isinstance(addresses, list) or not 1 <= len(addresses) <= 6:
+        unavailable()
+    checked_addresses = []
+    for address in addresses:
+        if not isinstance(address, str) or not 1 <= len(address) <= 2048 or any(character.isspace() for character in address):
+            unavailable()
+        parsed = urllib.parse.urlsplit(address)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            unavailable()
+        checked_addresses.append(address.rstrip("/"))
+    version = health.get("server_version")
+    if not isinstance(version, str) or not 1 <= len(version) <= 128:
+        version = None
+    result = {
+        "server_url": f"http://{result_host}:{port}",
+        "access_token": token,
+        "service": "existing-ssh",
+        "tailscale_ip": "",
+        "server_urls": checked_addresses,
+    }
+    if version is not None:
+        result["server_version"] = version
+    print("[AgentsDock setup] Existing compatible AgentsServer is healthy; connecting without reinstalling.")
+    print("AGENTSDOCK_SETUP_RESULT=" + json.dumps(result, ensure_ascii=True, separators=(",", ":")))
+except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError):
+    unavailable()
+PY
 `
 export const SERVER_SETUP_PREFLIGHT_SCRIPT = `set -u
 ${SERVER_SETUP_PATH_BOOTSTRAP}
@@ -122,6 +278,7 @@ case "$AGENTSDOCK_PREFLIGHT_OS" in
     ;;
     *) agentsdock_preflight_fail "Guided setup does not support $AGENTSDOCK_PREFLIGHT_OS. Use a macOS launchd GUI user session or a Linux systemd user session." ;;
 esac
+printf 'AGENTSDOCK_REMOTE_PLATFORM=%s %s\n' "$(uname -s 2>/dev/null || printf unknown)" "$(uname -m 2>/dev/null || printf unknown)" >&2
 `
 // The published installer still selects Python >=3.10, drops proxy variables,
 // and treats systemd 249's silent is-enabled as an unknown service state.
@@ -130,7 +287,21 @@ esac
 export const SERVER_SETUP_HOST_PREP_SCRIPT = `set -eu
 COMPAT_BIN="\${1:?}"
 INSTALLER="\${2:-}"
+PREBUILT_UV="\${3:-}"
 mkdir -p "$COMPAT_BIN" "$HOME/.local/bin"
+case "$PREBUILT_UV" in
+  '') ;;
+  /*) ;;
+  *) echo "Invalid uv path." >&2; exit 1 ;;
+esac
+if [ -n "$PREBUILT_UV" ]; then
+  if [ ! -f "$PREBUILT_UV" ]; then
+    echo "The prepared uv program is missing." >&2
+    exit 1
+  fi
+  install -m 755 "$PREBUILT_UV" "$HOME/.local/bin/uv"
+  rm -f "$PREBUILT_UV"
+fi
 
 folio_safe_value() {
   case "$1" in
@@ -267,9 +438,19 @@ export function remoteReleaseBootstrap(release: PinnedServerRelease): string {
 ${SERVER_SETUP_PATH_BOOTSTRAP}
 PORT="\${1:-7850}"
 TEAM_HUB_HOST="\${2:-false}"
+USE_LOCAL_ARCHIVE="\${3:-false}"
+USE_LOCAL_UV="\${4:-false}"
 case "$TEAM_HUB_HOST" in
   true|false) ;;
   *) printf 'Invalid Team Network host choice.\n' >&2; exit 2 ;;
+esac
+case "$USE_LOCAL_ARCHIVE" in
+  true|false) ;;
+  *) printf 'Invalid staged archive choice.\n' >&2; exit 2 ;;
+esac
+case "$USE_LOCAL_UV" in
+  true|false) ;;
+  *) printf 'Invalid staged runtime choice.\n' >&2; exit 2 ;;
 esac
 VERSION="${release.version}"
 RELEASE_URL="${release.url}"
@@ -277,8 +458,22 @@ EXPECTED_SHA="${release.sha256}"
 DIR="\$(mktemp -d)"
 trap 'rm -rf "\$DIR"' EXIT
 ARCHIVE="\$DIR/agents-server.tar.gz"
-printf '[AgentsDock setup] Downloading pinned AgentsServer %s\\n' "\$VERSION"
-curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 "\$RELEASE_URL" -o "\$ARCHIVE"
+if [ "$USE_LOCAL_ARCHIVE" = true ]; then
+  STAGED_ARCHIVE="$HOME/.cache/agentsdock-setup/agents-server.tar.gz"
+  if [ ! -f "$STAGED_ARCHIVE" ]; then
+    printf 'The AgentsServer archive uploaded over SSH is missing.\n' >&2
+    exit 2
+  fi
+  printf '[AgentsDock setup] Installing pinned AgentsServer %s from this computer\\n' "\$VERSION"
+  cp "$STAGED_ARCHIVE" "\$ARCHIVE"
+  rm -f "$STAGED_ARCHIVE"
+else
+  printf '[AgentsDock setup] Downloading pinned AgentsServer %s\\n' "\$VERSION"
+  if ! curl --fail --location --silent --show-error --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 2 "\$RELEASE_URL" -o "\$ARCHIVE"; then
+    printf 'The server could not download AgentsServer. Retry guided setup so this computer can upload the verified archive over SSH.\n' >&2
+    exit 1
+  fi
+fi
 printf '[AgentsDock setup] Verifying downloaded archive\\n'
 if command -v shasum >/dev/null 2>&1 && shasum -a 256 /dev/null >/dev/null 2>&1; then
   ACTUAL_SHA="\$(shasum -a 256 "\$ARCHIVE" | awk '{print \$1}')"
@@ -307,7 +502,15 @@ trap cancel_remote_install HUP INT TERM
 mkdir -p "\$DIR/compat-bin"
 cat > "\$DIR/host-prep.sh" <<'AGENTSDOCK_HOST_PREP'
 ${SERVER_SETUP_HOST_PREP_SCRIPT}AGENTSDOCK_HOST_PREP
-/bin/sh "\$DIR/host-prep.sh" "\$DIR/compat-bin" "\$SOURCE/install.sh"
+AGENTSDOCK_STAGED_UV=""
+if [ "$USE_LOCAL_UV" = true ]; then
+  AGENTSDOCK_STAGED_UV="$HOME/.cache/agentsdock-setup/uv"
+  if [ ! -f "$AGENTSDOCK_STAGED_UV" ]; then
+    printf 'The uv program uploaded over SSH is missing.\n' >&2
+    exit 2
+  fi
+fi
+/bin/sh "\$DIR/host-prep.sh" "\$DIR/compat-bin" "\$SOURCE/install.sh" "$AGENTSDOCK_STAGED_UV"
 export PATH="\$DIR/compat-bin:\$PATH"
 if [ "$TEAM_HUB_HOST" = "true" ]; then
   set -- --non-interactive --port "$PORT" --team-hub-host
@@ -336,7 +539,7 @@ export function serverSetupCapabilities(): ServerSetupCapabilities {
   }
 }
 
-export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> & { sshHost?: string; sshPassword?: string } {
+export function validateServerSetupInput(input: ServerSetupInput): Required<Pick<ServerSetupInput, 'target' | 'port' | 'track'>> & Pick<ServerSetupInput, 'teamHubHost'> & { sshHost?: string; sshPassword?: string; sshIdentityPath?: string } {
   const target = input.target
   if (target !== 'local' && target !== 'ssh') throw new Error('Choose where to install AgentsServer.')
   const track = input.track ?? 'stable'
@@ -362,7 +565,33 @@ export function validateServerSetupInput(input: ServerSetupInput): Required<Pick
   if (sshPassword && (Buffer.byteLength(sshPassword, 'utf8') > 4096 || /[\u0000\r\n]/.test(sshPassword))) {
     throw new Error('The SSH password is too long or contains an unsupported line break.')
   }
-  return { target, port, track, sshHost, ...(sshPassword ? { sshPassword } : {}), ...hostChoice }
+  const sshIdentityPath = validateSSHIdentityPath(input.sshIdentityPath)
+  // A chosen private key authenticates by itself. Do not also submit a password.
+  return {
+    target,
+    port,
+    track,
+    sshHost,
+    ...(sshIdentityPath ? { sshIdentityPath } : sshPassword ? { sshPassword } : {}),
+    ...hostChoice
+  }
+}
+
+export function validateSSHIdentityPath(value: unknown): string | undefined {
+  if (value === undefined || value === '') return undefined
+  if (typeof value !== 'string') throw new Error('Choose an SSH private key file.')
+  const candidate = value.trim()
+  if (!candidate.startsWith('/') || candidate.includes('\0') || /[\r\n]/.test(candidate)) {
+    throw new Error('Choose an SSH private key file.')
+  }
+  let info: ReturnType<typeof statSync>
+  try { info = statSync(candidate) } catch {
+    throw new Error('The SSH private key file could not be read. Choose the key again.')
+  }
+  if (!info.isFile() || info.size < 1 || info.size > 1024 * 1024) {
+    throw new Error('Choose an SSH private key file.')
+  }
+  return candidate
 }
 
 export function parseServerSetupResult(line: string): ServerSetupResult | null {
@@ -371,8 +600,14 @@ export function parseServerSetupResult(line: string): ServerSetupResult | null {
   const serverUrl = typeof raw.server_url === 'string' ? raw.server_url : ''
   const accessToken = typeof raw.access_token === 'string' ? raw.access_token : ''
   if (!/^https?:\/\//.test(serverUrl) || accessToken.length < 32) throw new Error('AgentsServer returned an invalid setup result.')
+  let serverUrls: string[] | undefined
+  if (raw.server_urls !== undefined) {
+    try { serverUrls = prioritizeConnectionURLs(raw.server_urls) }
+    catch { throw new Error('AgentsServer returned invalid connection addresses.') }
+  }
   return {
     serverUrl,
+    ...(serverUrls ? { serverUrls } : {}),
     accessToken,
     service: typeof raw.service === 'string' ? raw.service : 'user-service',
     tailscaleIP: typeof raw.tailscale_ip === 'string' ? raw.tailscale_ip : '',
@@ -447,6 +682,7 @@ export class ServerSetupManager {
   private releaseAbort: AbortController | null = null
   private cancelRequested = false
   private overallDeadlineAt = 0
+  private remotePlatform = ''
   private state: ServerSetupDiagnostics['state'] = 'idle'
   private diagnosticTail: string[] = []
   private startedAt?: string
@@ -457,7 +693,11 @@ export class ServerSetupManager {
     private readonly timings: ServerSetupTimings = DEFAULT_TIMINGS,
     private readonly resolveRelease: typeof resolveServerSetupRelease = (track, signal) => (
       resolveServerSetupRelease(track, signal, electronFetch)
-    )
+    ),
+    private readonly downloadFile: SetupDownload = (url, destination, options) => downloadVerifiedFile(url, destination, {
+      ...options,
+      fetchImpl: electronFetch
+    })
   ) {}
 
   capabilities(): ServerSetupCapabilities { return serverSetupCapabilities() }
@@ -499,18 +739,27 @@ export class ServerSetupManager {
     this.diagnosticTail = []
     this.releaseAbort = new AbortController()
     try {
-      this.emitProgress(progress, { phase: 'download', message: `Checking the latest ${validated.track === 'beta' ? 'Beta' : 'Stable'} AgentsServer release…` })
-      const release = await this.resolveRelease(validated.track, this.releaseAbort.signal)
-      this.throwIfCancelled()
-      this.recordDiagnostic(`Setup started (${validated.target}, port ${validated.port}, ${release.track} AgentsServer ${release.version}).`)
-      appLog('server-setup', 'setup started', { target: validated.target, port: validated.port, track: release.track, version: release.version })
-      const result = validated.target === 'local'
-        ? await this.runLocal(validated.port, progress, validated.teamHubHost, release)
-        : await this.runRemote(validated.sshHost!, validated.port, progress, validated.teamHubHost, release, validated.sshPassword)
+      this.recordDiagnostic(`Setup started (${validated.target}, port ${validated.port}, ${validated.track} channel).`)
+      appLog('server-setup', 'setup started', { target: validated.target, port: validated.port, track: validated.track })
+      let release: PinnedServerRelease | null = null
+      let result: ServerSetupResult | null = null
+      if (validated.target === 'ssh' && validated.track === 'stable' && validated.teamHubHost !== true) {
+        result = await this.connectExistingRemote(
+          validated.sshHost!, validated.port, progress, validated.sshPassword, validated.sshIdentityPath
+        )
+      }
+      if (!result) {
+        this.emitProgress(progress, { phase: 'download', message: `Checking the latest ${validated.track === 'beta' ? 'Beta' : 'Stable'} AgentsServer release…` })
+        release = await this.resolveRelease(validated.track, this.releaseAbort.signal)
+        this.throwIfCancelled()
+        result = validated.target === 'local'
+          ? await this.runLocal(validated.port, progress, validated.teamHubHost, release)
+          : await this.runRemote(validated.sshHost!, validated.port, progress, validated.teamHubHost, release, validated.sshPassword, validated.sshIdentityPath)
+      }
       this.throwIfCancelled()
       this.state = 'completed'
       this.updatedAt = new Date().toISOString()
-      this.recordDiagnostic(`Setup completed (${result.service}, AgentsServer ${result.serverVersion || release.version}).`)
+      this.recordDiagnostic(`Setup completed (${result.service}, AgentsServer ${result.serverVersion || release?.version || 'existing'}).`)
       appLog('server-setup', 'setup completed', { target: validated.target, service: result.service, tailscale: Boolean(result.tailscaleIP) })
       return result
     } catch (error) {
@@ -524,6 +773,53 @@ export class ServerSetupManager {
       this.releaseAbort = null
       this.active = null
       this.overallDeadlineAt = 0
+    }
+  }
+
+  private async connectExistingRemote(
+    sshHost: string,
+    port: number,
+    progress: (value: ServerSetupProgress) => void,
+    sshPassword?: string,
+    sshIdentityPath?: string
+  ): Promise<ServerSetupResult | null> {
+    const identity = sshIdentityPath ? stageSSHIdentity(sshIdentityPath) : null
+    const sshConfig = identity ? createExplicitSSHConfig(identity.file) : createUserSSHConfig()
+    const passwordPrompt = identity || !sshPassword ? null : createSSHPasswordPrompt(sshPassword)
+    const usingPassword = Boolean(passwordPrompt)
+    try {
+      const resolvedHost = await resolveSSHConfigHost(sshHost, sshConfig?.file)
+      this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
+      const result = await this.runProcess(
+        sshCommand(),
+        remoteShellArgs(sshHost, 'sh', sshConfig?.file, usingPassword, identity?.file),
+        REMOTE_EXISTING_SERVER_DISCOVERY_SCRIPT,
+        progress,
+        false,
+        {
+          phase: 'connect',
+          message: `Checking for an existing AgentsServer on ${sshHost}…`,
+          environment: passwordPrompt?.environment
+        }
+      )
+      if (!result) {
+        this.recordDiagnostic('No compatible healthy AgentsServer was found; continuing with guided installation.', 'connect')
+        return null
+      }
+      if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
+        const discoveredPort = Number(new URL(result.serverUrl).port) || port
+        result.serverUrl = remoteFallbackURL(sshHost, discoveredPort, resolvedHost)
+      }
+      if (result.serverUrls) result.serverUrls = mergeConnectionURLs(result.serverUrls, [result.serverUrl])
+      this.emitProgress(progress, {
+        phase: 'complete',
+        message: `Connected to existing AgentsServer${result.serverVersion ? ` ${result.serverVersion}` : ''}; no installation was needed.`
+      })
+      return result
+    } finally {
+      if (identity) rmSync(identity.directory, { recursive: true, force: true })
+      if (passwordPrompt) rmSync(passwordPrompt.directory, { recursive: true, force: true })
+      if (sshConfig) rmSync(sshConfig.directory, { recursive: true, force: true })
     }
   }
 
@@ -584,27 +880,39 @@ export class ServerSetupManager {
     progress: (value: ServerSetupProgress) => void,
     teamHubHost = false,
     release: PinnedServerRelease,
-    sshPassword?: string
+    sshPassword?: string,
+    sshIdentityPath?: string
   ): Promise<ServerSetupResult> {
-    const sshConfig = createUserSSHConfig()
-    const passwordPrompt = sshPassword ? createSSHPasswordPrompt(sshPassword) : null
+    const identity = sshIdentityPath ? stageSSHIdentity(sshIdentityPath) : null
+    const sshConfig = identity ? createExplicitSSHConfig(identity.file) : createUserSSHConfig()
+    const passwordPrompt = identity || !sshPassword ? null : createSSHPasswordPrompt(sshPassword)
+    const usingPassword = Boolean(passwordPrompt)
     try {
       const resolvedHost = await resolveSSHConfigHost(sshHost, sshConfig?.file)
       if (resolvedHost !== sshHost.slice(sshHost.lastIndexOf('@') + 1)) {
         this.recordDiagnostic(`Resolved the SSH destination to ${resolvedHost}.`, 'connect')
       }
+      this.remotePlatform = ''
       this.emitProgress(progress, { phase: 'connect', message: `Connecting to ${sshHost}…` })
-      await this.runProcess(sshCommand(), remoteShellArgs(sshHost, 'sh', sshConfig?.file, Boolean(passwordPrompt)), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
+      const shellArgs = () => remoteShellArgs(sshHost, 'sh', sshConfig?.file, usingPassword, identity?.file)
+      await this.runProcess(sshCommand(), shellArgs(), SERVER_SETUP_PREFLIGHT_SCRIPT + serverSetupVersionGuard(release), progress, false, {
         phase: 'connect',
         message: `Connecting to ${sshHost}…`,
         environment: passwordPrompt?.environment
       })
       this.throwIfCancelled()
+      const staged = await this.stageRemoteInstallFiles(sshHost, release, progress, sshConfig?.file, usingPassword, identity?.file, passwordPrompt?.environment)
+      this.throwIfCancelled()
       const result = await this.runInstaller(sshCommand(), [
-        ...remoteShellArgs(sshHost, 'sh', sshConfig?.file, Boolean(passwordPrompt)), String(port), teamHubHost ? 'true' : 'false'
+        ...shellArgs(),
+        String(port),
+        teamHubHost ? 'true' : 'false',
+        ...(staged.archive || staged.uv ? [staged.archive ? 'true' : 'false', staged.uv ? 'true' : 'false'] : [])
       ], remoteReleaseBootstrap(release), progress, {
         phase: 'download',
-        message: `Downloading verified AgentsServer ${release.version} on ${sshHost}…`,
+        message: staged.archive
+          ? `Installing verified AgentsServer ${release.version} on ${sshHost}…`
+          : `Downloading verified AgentsServer ${release.version} on ${sshHost}…`,
         environment: passwordPrompt?.environment
       })
       if (result.serverUrl.startsWith('http://127.0.0.1:') && !result.tailscaleIP) {
@@ -612,9 +920,145 @@ export class ServerSetupManager {
       }
       return result
     } finally {
+      if (identity) rmSync(identity.directory, { recursive: true, force: true })
       if (passwordPrompt) rmSync(passwordPrompt.directory, { recursive: true, force: true })
       if (sshConfig) rmSync(sshConfig.directory, { recursive: true, force: true })
     }
+  }
+
+  private async stageRemoteInstallFiles(
+    sshHost: string,
+    release: PinnedServerRelease,
+    progress: (value: ServerSetupProgress) => void,
+    configFile: string | undefined,
+    password: boolean,
+    identityFile: string | undefined,
+    environment: NodeJS.ProcessEnv | undefined
+  ): Promise<{ archive: boolean; uv: boolean }> {
+    const directory = await mkdtemp(join(tmpdir(), 'agentsdock-setup-payload-'))
+    let archive = false
+    let uv = false
+    try {
+      this.emitProgress(progress, { phase: 'download', message: `Downloading verified AgentsServer ${release.version} on this computer…` })
+      const archivePath = join(directory, 'agents-server.tar.gz')
+      let archiveReady = false
+      try {
+        await this.downloadFile(release.url, archivePath, {
+          sha256: release.sha256,
+          maxBytes: 200 * 1024 * 1024,
+          signal: this.releaseAbort?.signal
+        })
+        archiveReady = true
+        this.throwIfCancelled()
+        this.emitProgress(progress, { phase: 'download', message: `Copying AgentsServer ${release.version} to ${sshHost}…` })
+        await this.streamFileToRemote(sshHost, archivePath, 'agents-server.tar.gz', configFile, password, identityFile, environment)
+        archive = true
+      } catch (error) {
+        if (this.cancelRequested || this.releaseAbort?.signal.aborted) throw error
+        if (archiveReady) {
+          throw new Error(`Could not copy AgentsServer to ${sshHost}: ${normalizeError(error).message}`)
+        }
+        this.recordDiagnostic(`Could not download AgentsServer on this computer: ${normalizeError(error).message} The server will try to download it directly.`, 'download')
+      }
+      const uvUrl = uvReleaseAsset(this.remotePlatform)
+      if (!uvUrl) return { archive, uv }
+      try {
+        const uvArchive = join(directory, 'uv.tar.gz')
+        this.emitProgress(progress, { phase: 'runtime', message: 'Downloading the Python installer on this computer…' })
+        await this.downloadFile(uvUrl, uvArchive, {
+          maxBytes: 80 * 1024 * 1024,
+          signal: this.releaseAbort?.signal
+        })
+        this.throwIfCancelled()
+        const uvBinary = await extractUvBinary(uvArchive, directory)
+        this.emitProgress(progress, { phase: 'runtime', message: `Copying the Python installer to ${sshHost}…` })
+        await this.streamFileToRemote(sshHost, uvBinary, 'uv', configFile, password, identityFile, environment)
+        uv = true
+      } catch (error) {
+        if (this.cancelRequested || this.releaseAbort?.signal.aborted) throw error
+        this.recordDiagnostic(`Could not prepare uv on this computer: ${normalizeError(error).message} The server will try to download it directly.`, 'runtime')
+      }
+      return { archive, uv }
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }
+
+  private streamFileToRemote(
+    sshHost: string,
+    localPath: string,
+    filename: RemoteStageFilename,
+    configFile: string | undefined,
+    password: boolean,
+    identityFile: string | undefined,
+    environment: NodeJS.ProcessEnv | undefined
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      if (this.cancelRequested) {
+        reject(setupCancelledError())
+        return
+      }
+      const child = spawn(sshCommand(), remoteCommandArgs(sshHost, remoteStageReceiveCommand(filename), configFile, password, identityFile), {
+        env: { ...process.env, PATH: serverSetupProcessPath(process.env.PATH), LC_ALL: 'C', LANG: 'C', ...environment },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32'
+      })
+      this.active = child
+      const stdout: Buffer[] = []
+      const stderr: Buffer[] = []
+      let settled = false
+      let terminalError: Error | null = null
+      const finish = (callback: () => void): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        clearInterval(cancelWatch)
+        if (this.active === child) this.active = null
+        callback()
+      }
+      const stop = (error: Error): void => {
+        if (terminalError) return
+        terminalError = error
+        terminateProcessTree(child, this.timings.terminateGraceMs)
+      }
+      const timeout = setTimeout(() => {
+        stop(new Error('Copying files to the server took too long. Check the SSH connection, then retry.'))
+      }, this.timings.stageTimeoutMs.download)
+      timeout.unref?.()
+      const cancelWatch = setInterval(() => {
+        if (this.cancelRequested) stop(setupCancelledError())
+      }, 200)
+      cancelWatch.unref?.()
+      child.stdout.on('data', chunk => stdout.push(Buffer.from(chunk)))
+      child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)))
+      child.on('error', error => finish(() => reject(new Error(`Could not start ${sshCommand()}: ${error.message}`))))
+      child.on('close', code => {
+        if (terminalError) {
+          finish(() => reject(terminalError!))
+          return
+        }
+        if (this.cancelRequested) {
+          finish(() => reject(setupCancelledError()))
+          return
+        }
+        if (code !== 0) {
+          const detail = Buffer.concat(stderr).toString('utf8').trim().split(/\r\n|\r|\n/).filter(Boolean).pop()
+          finish(() => reject(new Error(detail || 'Could not copy the installer to the server.')))
+          return
+        }
+        try {
+          finish(() => resolve(parseRemoteStagePath(Buffer.concat(stdout).toString('utf8'), filename)))
+        } catch (error) {
+          finish(() => reject(normalizeError(error)))
+        }
+      })
+      const source = createReadStream(localPath)
+      source.on('error', error => stop(new Error(`Could not read the downloaded installer: ${error.message}`)))
+      child.stdin.on('error', error => {
+        if ((error as NodeJS.ErrnoException).code !== 'EPIPE') stop(new Error(`Could not send the installer to ${sshHost}: ${error.message}`))
+      })
+      source.pipe(child.stdin)
+    })
   }
 
   private async runInstaller(
@@ -697,6 +1141,11 @@ export class ServerSetupManager {
       }
       const consumeLine = (line: string): void => {
         lastActivityAt = Date.now()
+        if (line.startsWith('AGENTSDOCK_REMOTE_PLATFORM=')) {
+          const value = line.slice('AGENTSDOCK_REMOTE_PLATFORM='.length).trim()
+          if (/^[A-Za-z0-9_.-]+ [A-Za-z0-9_.-]+$/.test(value)) this.remotePlatform = value
+          return
+        }
         updatePhase(line)
         try {
           const parsed = parseServerSetupResult(line)
@@ -851,6 +1300,42 @@ export function createUserSSHConfig(home = process.env.HOME?.trim() || ''): { di
   return { directory, file }
 }
 
+export function createExplicitSSHConfig(identityFile: string, home = process.env.HOME?.trim() || ''): { directory: string; file: string } {
+  const directory = mkdtempSync(join(tmpdir(), 'agentsdock-ssh-'))
+  const file = join(directory, 'config')
+  const known = home ? join(home, '.ssh', 'known_hosts') : join(directory, 'known_hosts')
+  try {
+    writeFileSync(file, [
+      'Host *',
+      `  IdentityFile ${identityFile}`,
+      '  IdentitiesOnly yes',
+      '  PreferredAuthentications publickey',
+      `  UserKnownHostsFile ${known}`,
+      '  GlobalKnownHostsFile /dev/null',
+      ''
+    ].join('\n'), { mode: 0o600 })
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true })
+    throw error
+  }
+  return { directory, file }
+}
+
+export function stageSSHIdentity(source: string): { directory: string; file: string } {
+  const directory = mkdtempSync(join(tmpdir(), 'agentsdock-ssh-identity-'))
+  const file = join(directory, 'id_key')
+  try {
+    const bytes = readFileSync(source)
+    if (bytes.length < 1 || bytes.length > 1024 * 1024) throw new Error('Choose an SSH private key file.')
+    writeFileSync(file, bytes, { mode: 0o600 })
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true })
+    if (error instanceof Error && error.message === 'Choose an SSH private key file.') throw error
+    throw new Error('The SSH private key file could not be read. Choose the key again.')
+  }
+  return { directory, file }
+}
+
 /** Return concrete aliases from the user's primary SSH config without exposing other config values. */
 export function parseSSHConfigHosts(text: string): string[] {
   const hosts: string[] = []
@@ -919,9 +1404,10 @@ export function resolveSSHConfigHost(sshHost: string, configFile?: string): Prom
   })
 }
 
-export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFile?: string, password = false): string[] {
+function sshClientOptions(configFile?: string, password = false, identityFile?: string): string[] {
   return [
     ...(configFile ? ['-F', configFile] : []),
+    ...(identityFile ? ['-i', identityFile, '-o', 'IdentitiesOnly=yes', '-o', 'PreferredAuthentications=publickey'] : []),
     '-o', `BatchMode=${password ? 'no' : 'yes'}`,
     ...(password ? [
       '-o', 'PreferredAuthentications=password,keyboard-interactive',
@@ -933,10 +1419,158 @@ export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFil
     '-o', 'ServerAliveInterval=15',
     '-o', 'ServerAliveCountMax=4',
     '-o', 'TCPKeepAlive=yes',
-    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'StrictHostKeyChecking=accept-new'
+  ]
+}
+
+export function remoteShellArgs(sshHost: string, shell: 'sh' | 'bash', configFile?: string, password = false, identityFile?: string): string[] {
+  return [
+    ...sshClientOptions(configFile, password, identityFile),
     sshHost,
     shell, '-s', '--'
   ]
+}
+
+export function remoteCommandArgs(sshHost: string, remoteCommand: string, configFile?: string, password = false, identityFile?: string): string[] {
+  return [...sshClientOptions(configFile, password, identityFile), sshHost, remoteCommand]
+}
+
+export type RemoteStageFilename = 'agents-server.tar.gz' | 'uv'
+
+export function remoteStageReceiveCommand(filename: RemoteStageFilename): string {
+  return `mkdir -p "$HOME/.cache/agentsdock-setup" && umask 077 && cat > "$HOME/.cache/agentsdock-setup/${filename}" && chmod 600 "$HOME/.cache/agentsdock-setup/${filename}" && printf '%s\\n' "$HOME/.cache/agentsdock-setup/${filename}"`
+}
+
+export function parseRemoteStagePath(output: string, filename: RemoteStageFilename): string {
+  const line = output.trim().split(/\r\n|\r|\n/).filter(Boolean).pop() || ''
+  const suffix = `/.cache/agentsdock-setup/${filename}`
+  if (!line.startsWith('/') || !line.endsWith(suffix) || !/^[A-Za-z0-9._~+:@/-]+$/.test(line)) {
+    throw new Error('The server did not accept the uploaded installer.')
+  }
+  return line
+}
+
+export function uvReleaseAsset(platformLine: string): string | null {
+  const match = platformLine.trim().match(/^(Darwin|Linux) (x86_64|aarch64|arm64)$/)
+  if (!match) return null
+  const arch = match[2] === 'x86_64' ? 'x86_64' : 'aarch64'
+  const target = match[1] === 'Darwin' ? `${arch}-apple-darwin` : `${arch}-unknown-linux-gnu`
+  return `https://github.com/astral-sh/uv/releases/latest/download/uv-${target}.tar.gz`
+}
+
+export async function downloadVerifiedFile(
+  url: string,
+  destination: string,
+  options: {
+    fetchImpl?: typeof fetch
+    signal?: AbortSignal
+    sha256?: string
+    maxBytes: number
+    attempts?: number
+  }
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch
+  const attempts = Math.max(1, options.attempts ?? 3)
+  let failure: Error | null = null
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await downloadVerifiedFileOnce(url, destination, fetchImpl, options)
+      return
+    } catch (error) {
+      failure = normalizeError(error)
+      rmSync(destination, { force: true })
+      if (options.signal?.aborted) throw failure
+      if (/verification failed|size limit|HTTP 4\d\d/.test(failure.message) || attempt === attempts) throw failure
+    }
+  }
+  throw failure || new Error('Download failed.')
+}
+
+async function downloadVerifiedFileOnce(
+  url: string,
+  destination: string,
+  fetchImpl: typeof fetch,
+  options: { signal?: AbortSignal; sha256?: string; maxBytes: number }
+): Promise<void> {
+  const timeout = AbortSignal.timeout(120_000)
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'AgentsDock-Guided-Setup', Accept: 'application/octet-stream' }
+    })
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    if (timeout.aborted) throw new Error('Timed out downloading the file on this computer.')
+    throw new Error('Could not download the file on this computer. Check this computer’s network or proxy, then retry.')
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined)
+    throw new Error(`Download failed (HTTP ${response.status}).`)
+  }
+  if (!response.body) throw new Error('The download response was empty.')
+  const hash = createHash('sha256')
+  let size = 0
+  const limiter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      size += chunk.length
+      if (size > options.maxBytes) {
+        callback(new Error('The download exceeds its size limit.'))
+        return
+      }
+      hash.update(chunk)
+      callback(null, chunk)
+    }
+  })
+  await pipeline(
+    Readable.fromWeb(response.body as import('node:stream/web').ReadableStream<Uint8Array>),
+    limiter,
+    createWriteStream(destination, { mode: 0o600 })
+  )
+  if (options.sha256 && hash.digest('hex') !== options.sha256) {
+    throw new Error('AgentsServer archive verification failed before it was sent to the server.')
+  }
+}
+
+export async function extractUvBinary(archive: string, directory: string): Promise<string> {
+  await new Promise<void>((resolve, reject) => {
+    execFile('tar', ['-xzf', archive, '-C', directory], { timeout: 60_000 }, error => error ? reject(error) : resolve())
+  })
+  const binary = findNamedFile(directory, 'uv')
+  assertNativeExecutable(binary)
+  return binary
+}
+
+function findNamedFile(directory: string, name: string): string {
+  const pending = [directory]
+  let seen = 0
+  while (pending.length) {
+    const current = pending.pop()!
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      seen += 1
+      if (seen > 50) throw new Error('The uv archive has an unexpected layout.')
+      const path = join(current, entry.name)
+      if (entry.isDirectory()) pending.push(path)
+      else if (entry.isFile() && entry.name === name) return path
+    }
+  }
+  throw new Error('The uv archive did not contain the uv program.')
+}
+
+function assertNativeExecutable(path: string): void {
+  const header = Buffer.alloc(4)
+  const descriptor = openSync(path, 'r')
+  try {
+    if (readSync(descriptor, header, 0, 4, 0) < 4) throw new Error('The downloaded uv program is not a supported executable.')
+  } finally { closeSync(descriptor) }
+  const elf = header[0] === 0x7f && header[1] === 0x45 && header[2] === 0x4c && header[3] === 0x46
+  const macho = (header[0] === 0xfe && header[1] === 0xed && header[2] === 0xfa && (header[3] === 0xce || header[3] === 0xcf))
+    || (header[0] === 0xce && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe)
+    || (header[0] === 0xcf && header[1] === 0xfa && header[2] === 0xed && header[3] === 0xfe)
+    || (header[0] === 0xca && header[1] === 0xfe && header[2] === 0xba && header[3] === 0xbe)
+  if (!elf && !macho) throw new Error('The downloaded uv program is not a supported executable.')
 }
 
 export function serverSetupProcessPath(currentPath = ''): string {

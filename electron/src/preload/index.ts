@@ -199,6 +199,7 @@ const api: AgentsDockAPI = {
   setup: {
     capabilities: () => ipcRenderer.invoke('server-setup:capabilities'),
     configuredSSHHosts: () => ipcRenderer.invoke('server-setup:ssh-hosts'),
+    chooseIdentity: () => ipcRenderer.invoke('server-setup:choose-identity'),
     run: input => ipcRenderer.invoke('server-setup:run', input),
     cancel: () => ipcRenderer.invoke('server-setup:cancel'),
     diagnostics: () => ipcRenderer.invoke('server-setup:diagnostics'),
@@ -468,6 +469,9 @@ const api: AgentsDockAPI = {
     set: (key, value) => ipcRenderer.invoke('preferences:set', key, value),
     getScoped: (scope, key, fallback) => ipcRenderer.invoke('preferences:get-scoped', scope, key, fallback),
     setScoped: (scope, key, value) => ipcRenderer.invoke('preferences:set-scoped', scope, key, value)
+  },
+  embeddedPane: {
+    notifySelection: payload => ipcRenderer.sendToHost('agentsdock:embedded-pane-selection', payload)
   },
   native: {
     issueReportEnvironment: () => ipcRenderer.invoke('native:issue-report-environment'),

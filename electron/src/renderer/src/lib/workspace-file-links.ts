@@ -101,6 +101,22 @@ export function requestOpenAgentFile(
 }
 
 export function parseWorkspaceCodeReference(value: string): WorkspaceCodeReference | null {
+  const reference = parseWorkspaceFileReference(value)
+  if (!reference) return null
+  const name = reference.path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
+  if (!name || (!CODE_FILE_NAMES.has(name) && !CODE_FILE_EXTENSIONS.has(name.split('.').at(-1) ?? ''))) return null
+  return reference
+}
+
+/**
+ * Parse a user-visible link to any file in the chat workspace.
+ *
+ * Markdown links are not limited to source files: agents commonly produce
+ * images, videos, archives and model outputs. Keep inline-code affordances
+ * restricted to source-like files, but let an explicit link click use the
+ * server's authenticated, chat-scoped workspace boundary.
+ */
+export function parseWorkspaceFileReference(value: string): WorkspaceCodeReference | null {
   const candidate = value.trim()
   if (!candidate || candidate.length > 1_024 || /[\r\n\0]/.test(candidate)) return null
   if (/^(?:[a-z][a-z0-9+.-]*:\/\/|mailto:)/i.test(candidate)) return null
@@ -126,8 +142,6 @@ export function parseWorkspaceCodeReference(value: string): WorkspaceCodeReferen
 
   path = path.trim().replace(/\\/g, '/').replace(/^\.\//, '')
   if (!path || path.startsWith('../') || path.includes('/../') || path.endsWith('/..')) return null
-  const name = path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
-  if (!name || (!CODE_FILE_NAMES.has(name) && !CODE_FILE_EXTENSIONS.has(name.split('.').at(-1) ?? ''))) return null
   return { path, ...(line ? { line } : {}), ...(column ? { column } : {}) }
 }
 

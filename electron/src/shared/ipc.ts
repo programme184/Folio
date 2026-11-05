@@ -377,6 +377,7 @@ export interface AgentsDockAPI {
   setup: {
     capabilities(): Promise<ServerSetupCapabilities>
     configuredSSHHosts(): Promise<string[]>
+    chooseIdentity(): Promise<string | null>
     run(input: ServerSetupInput): Promise<ServerSetupResult>
     cancel(): Promise<boolean>
     diagnostics(): Promise<ServerSetupDiagnostics>
@@ -655,6 +656,14 @@ export interface AgentsDockAPI {
     set<T>(key: string, value: T): Promise<void>
     getScoped<T>(scope: WorkspaceProfileScope, key: string, fallback: T): Promise<T>
     setScoped<T>(scope: WorkspaceProfileScope, key: string, value: T): Promise<void>
+  }
+  embeddedPane?: {
+    notifySelection(payload: {
+      profileId: string
+      serverIdentity: string | null
+      sessionId: string | null
+      sessionTitle: string | null
+    }): void
   }
   native: {
     issueReportEnvironment(): Promise<IssueReportEnvironment>

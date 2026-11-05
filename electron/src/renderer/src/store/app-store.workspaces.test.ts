@@ -763,6 +763,9 @@ describe('tabbed chat workspaces', () => {
     useAppStore.getState().setChatPaneCount(2)
     useAppStore.getState().focusChatPane('secondary')
     useAppStore.getState().setChatWorkspaceRatios({ columnRatio: 0.72 })
+    useAppStore.getState().setChatWorkspaceServerPanes({
+      quaternary: { profileId: 'two', serverIdentity: 'server-two', sessionId: 'remote-history', sessionTitle: 'Remote history' }
+    })
     await useAppStore.getState().createChatWorkspace('e')
     await useAppStore.getState().selectChatWorkspace(first)
     api.timeline.cached.mockClear()
@@ -771,6 +774,9 @@ describe('tabbed chat workspaces', () => {
     expect(useAppStore.getState()).toMatchObject({ activeChatWorkspaceId: first, chatPaneCount: 2, focusedChatPane: 'secondary' })
     expect(useAppStore.getState().chatWorkspaces).toHaveLength(2)
     expect(useAppStore.getState().chatWorkspaces[0]).toMatchObject({ panes: { tertiary: 'c', quaternary: 'd' }, columnRatio: 0.72 })
+    expect(useAppStore.getState().chatWorkspaces[0].serverPanes?.quaternary).toEqual({
+      profileId: 'two', serverIdentity: 'server-two', sessionId: 'remote-history', sessionTitle: 'Remote history'
+    })
     expect(api.timeline.cached.mock.calls.map(([id]) => id)).toEqual(['a', 'b'])
     expect(api.timeline.subscribe.mock.calls.map(([id]) => id)).toEqual(['a', 'b'])
     useAppStore.getState().setChatPaneCount(4)
@@ -783,6 +789,9 @@ describe('tabbed chat workspaces', () => {
     const firstServerTab = useAppStore.getState().activeChatWorkspaceId
     useAppStore.getState().setChatPaneCount(3)
     useAppStore.getState().focusChatPane('tertiary')
+    useAppStore.getState().setChatWorkspaceServerPanes({
+      secondary: { profileId: 'two', serverIdentity: 'server-two', sessionId: 'remote-two', sessionTitle: 'Remote two' }
+    })
     await useAppStore.getState().switchServer('two')
     expect(useAppStore.getState().chatWorkspaces).toHaveLength(0)
     expect(useAppStore.getState().chatPaneCount).toBe(1)
@@ -790,7 +799,40 @@ describe('tabbed chat workspaces', () => {
     await useAppStore.getState().switchServer('one')
     expect(useAppStore.getState()).toMatchObject({ activeChatWorkspaceId: firstServerTab, chatPaneCount: 3, focusedChatPane: 'tertiary', selectedSessionId: null })
     expect(useAppStore.getState().chatPanes.primary).toBe('c')
+    expect(useAppStore.getState().chatWorkspaces.find(workspace => workspace.id === firstServerTab)?.serverPanes).toEqual({
+      secondary: { profileId: 'two', serverIdentity: 'server-two', sessionId: 'remote-two', sessionTitle: 'Remote two' }
+    })
     expect(persisted.get('server-one:chatWorkspaces')).not.toEqual(persisted.get('server-two:chatWorkspaces'))
+  })
+
+  it('flushes the latest workspace tabs before switching the active server namespace', async () => {
+    let releaseWrites!: () => void
+    const writesBlocked = new Promise<void>(resolve => { releaseWrites = resolve })
+    api.preferences.setScoped.mockImplementation(async (scope: WorkspaceProfileScope, name: string, value: unknown) => {
+      if (scope.serverIdentity === 'server-one') await writesBlocked
+      if (useAppStore.getState().activeProfileId !== scope.profileId) throw new Error('Workspace scope was superseded')
+      persisted.set(key(scope, name), structuredClone(value))
+    })
+
+    await useAppStore.getState().createChatWorkspace('c')
+    const firstServerTab = useAppStore.getState().activeChatWorkspaceId
+    useAppStore.getState().setChatPaneCount(3)
+    useAppStore.getState().focusChatPane('tertiary')
+
+    const switching = useAppStore.getState().switchServer('two')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(api.servers.switch).not.toHaveBeenCalled()
+    releaseWrites()
+    await switching
+
+    await useAppStore.getState().switchServer('one')
+    expect(useAppStore.getState()).toMatchObject({
+      activeChatWorkspaceId: firstServerTab,
+      chatPaneCount: 3,
+      focusedChatPane: 'tertiary'
+    })
+    expect(useAppStore.getState().chatPanes.primary).toBe('c')
   })
 
   it('discards a delayed hidden-chat load after switching workspaces', async () => {

@@ -32,6 +32,39 @@ export function normalizeConnectionURLs(value: unknown): string[] {
   }))]
 }
 
+/** Prefer a directly reachable private LAN before public/DNS and Tailscale CGNAT routes. */
+export function prioritizeConnectionURLs(value: unknown): string[] {
+  return sortConnectionURLs(normalizeConnectionURLs(value))
+}
+
+export function mergeConnectionURLs(...groups: unknown[]): string[] {
+  const combined = [...new Set(groups.flatMap(group => normalizeConnectionURLs(group)))]
+  return sortConnectionURLs(combined).slice(0, 6)
+}
+
+function sortConnectionURLs(urls: string[]): string[] {
+  return urls
+    .map((url, index) => ({ url, index, preference: connectionURLPreference(url) }))
+    .sort((left, right) => left.preference - right.preference || left.index - right.index)
+    .map(candidate => candidate.url)
+}
+
+function connectionURLPreference(value: string): number {
+  const hostname = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  if (hostname.endsWith('.local')) return 0
+  if (hostname === 'fd7a:115c:a1e0::' || hostname.startsWith('fd7a:115c:a1e0:')) return 2
+  if (hostname.includes(':')) {
+    if (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe8') || hostname.startsWith('fe9') || hostname.startsWith('fea') || hostname.startsWith('feb')) return 0
+    return 1
+  }
+  const octets = hostname.split('.').map(part => Number(part))
+  if (octets.length !== 4 || octets.some(octet => !Number.isInteger(octet) || octet < 0 || octet > 255)) return 1
+  const [first, second] = octets
+  if (first === 100 && second >= 64 && second <= 127) return 2
+  if (first === 10 || first === 192 && second === 168 || first === 172 && second >= 16 && second <= 31 || first === 169 && second === 254 || first === 127) return 0
+  return 1
+}
+
 export function serverConnectionLink(value: ServerConnectionDetails): string {
   const details = checkedDetails(value)
   const params = new URLSearchParams(details.serverUrls

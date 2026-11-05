@@ -32,13 +32,15 @@ describe('AgentServerClient network diagnostics', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
-  it('records nested socket codes without secrets and preserves the original failure without retrying', async () => {
+  it('records nested socket codes without secrets after the configured retry budget is exhausted', async () => {
     const socket = Object.assign(new Error('secret token and request body'), { code: 'ECONNRESET', syscall: 'read' })
     const cause = Object.assign(new AggregateError([socket], 'private query'), { code: 'UND_ERR_SOCKET' })
     const error = new TypeError('fetch failed with secret', { cause })
     const fetchMock = vi.fn().mockRejectedValue(error)
     vi.stubGlobal('fetch', fetchMock)
-    const client = new AgentServerClient('http://example.test:7850', 'secret-token')
+    const client = new AgentServerClient('http://example.test:7850', 'secret-token', {
+      idempotentTransportRetryDelaysMs: []
+    })
 
     await expect(client.health()).rejects.toBe(error)
     expect(fetchMock).toHaveBeenCalledOnce()
@@ -47,6 +49,29 @@ describe('AgentServerClient network diagnostics', () => {
       error: { name: 'TypeError', cause: { name: 'AggregateError', code: 'UND_ERR_SOCKET', errors: [{ name: 'Error', code: 'ECONNRESET', syscall: 'read' }] } }
     })
     expect(JSON.stringify(vi.mocked(appLog).mock.calls)).not.toMatch(/secret|private/)
+  })
+
+  it('retries an idempotent GET after a socket reset but never replays a POST', async () => {
+    const reset = Object.assign(new Error('socket reset'), { code: 'ECONNRESET', syscall: 'read' })
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed', { cause: reset }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        headers: { 'Content-Type': 'application/json' }
+      }))
+      .mockRejectedValueOnce(new TypeError('fetch failed', { cause: reset }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'secret-token', {
+      idempotentTransportRetryDelaysMs: [0]
+    })
+
+    await expect(client.health()).resolves.toMatchObject({ ok: true })
+    await expect(client.sendTurn('chat', 'hello', [], null, null, [], [], []))
+      .rejects.toThrow('fetch failed')
+
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBeUndefined()
+    expect((fetchMock.mock.calls[1][1] as RequestInit).method).toBeUndefined()
+    expect((fetchMock.mock.calls[2][1] as RequestInit).method).toBe('POST')
   })
 })
 
@@ -2415,6 +2440,64 @@ describe('AgentServerClient live stream', () => {
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
 
+  it('recovers an absolute workspace listing after the tunnel drops one native GET', async () => {
+    let attempts = 0
+    await withLocalHTTPServer((_incoming, response) => {
+      attempts += 1
+      if (attempts === 1) {
+        response.destroy(Object.assign(new Error('tunnel reset'), { code: 'ECONNRESET' }))
+        return
+      }
+      response.setHeader('Content-Type', 'application/json')
+      response.end(JSON.stringify({
+        root: '/work', path: '/work', entries: [], total: 0,
+        offset: 0, limit: 500, has_more: false, scope: 'absolute'
+      }))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret', {
+        idempotentTransportRetryDelaysMs: [0]
+      })
+      await expect(client.absoluteWorkspaceEntries('chat-one', '/work')).resolves.toMatchObject({
+        root: '/work', path: '/work'
+      })
+    })
+
+    expect(attempts).toBe(2)
+  })
+
+  it('retries a stalled workspace listing over both authenticated transports', async () => {
+    for (const absolute of [false, true]) {
+      let attempts = 0
+      await withLocalHTTPServer((_incoming, response) => {
+        attempts += 1
+        if (attempts === 1) {
+          // Cover both a silent native response and a fetch response whose
+          // headers arrive before the forwarded body stalls.
+          if (!absolute) {
+            response.setHeader('Content-Type', 'application/json')
+            response.write('{')
+          }
+          return
+        }
+        response.setHeader('Content-Type', 'application/json')
+        response.end(JSON.stringify({
+          root: '/work', path: '/work', entries: [], total: 0,
+          offset: 0, limit: 500, has_more: false, scope: absolute ? 'absolute' : 'workspace'
+        }))
+      }, async baseURL => {
+        const client = new AgentServerClient(baseURL, 'secret', {
+          idempotentTransportRetryDelaysMs: [0],
+          workspaceListAttemptTimeoutMs: 30
+        })
+        const listing = absolute
+          ? client.absoluteWorkspaceEntries('chat-one', '/work')
+          : client.workspaceEntries('chat-one')
+        await expect(listing).resolves.toMatchObject({ root: '/work', entries: [] })
+      })
+      expect(attempts).toBe(2)
+    }
+  })
+
   it('creates an absolute workspace entry through the native transport', async () => {
     const requests: IncomingMessage[] = []
     const bodies: string[] = []
@@ -2566,6 +2649,30 @@ describe('AgentServerClient live stream', () => {
       '/api/sessions/chat/workspace/preview?path=runs%2Foverlay.mp4&compatible_video=true'
     )
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
+  })
+
+  it('requests browser-compatible session-file previews without changing downloads', async () => {
+    const requests: IncomingMessage[] = []
+    const request = new Request('agentsdock-media://file/profile/1/chat/video', {
+      headers: { Range: 'bytes=4-7', 'X-Untrusted-Renderer-Header': 'ignore-me' }
+    })
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      response.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Range': 'bytes 4-7/20' })
+      response.end(Buffer.from([1, 2, 3, 4]))
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await client.fileRequest('chat one', 'video file', request, undefined, true)
+      await client.fileRequest('chat one', 'video file')
+    })
+
+    expect(requests[0]?.url).toBe(
+      '/api/sessions/chat%20one/files/video%20file?compatible_video=true'
+    )
+    expect(requests[0]?.headers.range).toBe('bytes=4-7')
+    expect(requests[0]?.headers['x-agentsdock-token']).toBe('secret')
+    expect(requests[0]?.headers['x-untrusted-renderer-header']).toBe('ignore-me')
+    expect(requests[1]?.url).toBe('/api/sessions/chat%20one/files/video%20file')
   })
 
   it('streams explicit absolute workspace previews with only native auth and range headers', async () => {

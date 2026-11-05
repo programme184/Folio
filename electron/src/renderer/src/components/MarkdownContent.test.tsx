@@ -39,24 +39,41 @@ describe('MarkdownContent', () => {
     expect(openExternal).not.toHaveBeenCalled()
   })
 
-  it('opens unresolved relative links through the authorized session endpoint', () => {
+  it('opens unresolved relative links through the authenticated workspace boundary', () => {
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-workspace-path', open)
     render(<MarkdownContent text="[report](out/run/report.csv)" sessionId="chat-7" />)
     const link = screen.getByRole('link', { name: 'report' })
     expect(link.tagName).toBe('A')
     expect(link).toHaveAttribute('href', 'agentsdock-workspace:out%2Frun%2Freport.csv')
     fireEvent.click(link)
-    expect(openLinked).toHaveBeenCalledWith('chat-7', 'out/run/report.csv')
+    expect((open.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      sessionId: 'chat-7',
+      path: 'out/run/report.csv',
+      line: undefined,
+      column: undefined,
+      resolve: true
+    })
+    expect(openLinked).not.toHaveBeenCalled()
+    window.removeEventListener('agentsdock:open-workspace-path', open)
   })
 
-  it('shows actionable feedback for an unregistered ZIP instead of silently rejecting', async () => {
-    openLinked.mockRejectedValue(new Error("Error invoking remote method 'files:open-linked': Error: Linked file failed: 404"))
-    render(<MarkdownContent text="[Test app](/server/build/Test.zip)" sessionId="chat-7" />)
-    fireEvent.click(screen.getByRole('link', { name: 'Test app' }))
-    await waitFor(() => expect(useAppStore.getState().error).toBe(
-      'Could not open "Test.zip": This file is not available as an attachment in this chat. Ask the agent to attach it, then try again.'
-    ))
-    expect(openLinked).toHaveBeenCalledExactlyOnceWith('chat-7', '/server/build/Test.zip')
+  it.each([
+    'closed_loop_comparison.mp4',
+    'closed_loop_trajectories.png',
+    'metrics.json',
+    'closed_loop_trajectories.npz'
+  ])('opens generated server file links in the chat workspace: %s', target => {
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-workspace-path', open)
+    render(<MarkdownContent text={`[Result](${target})`} sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'Result' }))
+    expect((open.mock.calls[0][0] as CustomEvent).detail).toMatchObject({
+      sessionId: 'chat-7', path: target, resolve: true
+    })
+    expect(openLinked).not.toHaveBeenCalled()
     expect(openExternal).not.toHaveBeenCalled()
+    window.removeEventListener('agentsdock:open-workspace-path', open)
   })
 
   it('reports native failures opening matched binary attachments', async () => {

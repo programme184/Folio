@@ -444,11 +444,12 @@ describe('ServerOnboardingDialog', () => {
     expect(screen.getByRole('button', { name: /Remote machine/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: /This computer/ })).toHaveAttribute('aria-pressed', 'false')
     expect(guide.compareDocumentPosition(sshHost) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(screen.getByText(/SSH host, key, and connection port come from your SSH config/)).toBeInTheDocument()
+    expect(screen.getByText(/Enter user@IP and choose a private key to connect automatically/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Choose key' })).toBeInTheDocument()
     const serverPort = screen.getByLabelText('AgentsServer port')
     await user.clear(serverPort)
     await user.type(serverPort, '22')
-    expect(screen.getByRole('button', { name: 'Install over SSH' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Connect over SSH' })).toBeDisabled()
     expect(serverPort).toHaveAttribute('aria-invalid', 'true')
 
     await user.click(guide)
@@ -484,11 +485,11 @@ describe('ServerOnboardingDialog', () => {
     const user = userEvent.setup()
     render(<ServerOnboardingDialog />)
 
-    expect(await screen.findByRole('checkbox', { name: /Start a Team Network on this server/ })).toBeChecked()
+    expect(await screen.findByRole('checkbox', { name: /Start a Team Network on this server/ })).not.toBeChecked()
     await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
 
-    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'ssh', sshHost: 'user@server', port: 7850, track: 'stable', teamHubHost: true }))
+    await waitFor(() => expect(run).toHaveBeenCalledWith({ target: 'ssh', sshHost: 'user@server', port: 7850, track: 'stable', teamHubHost: false }))
     expect(testConnection).toHaveBeenCalledWith({
       serverUrl: 'http://100.64.0.10:7850',
       accessToken: 'generated-private-token-0123456789'
@@ -499,6 +500,119 @@ describe('ServerOnboardingDialog', () => {
       resetServerIdentity: true,
       serverSetupComplete: true
     }))
+  })
+
+  it('updates and reuses a saved server identity discovered at a new SSH address', async () => {
+    const existingProfile: PublicServerProfile = {
+      id: 'synria-profile',
+      name: 'Synria',
+      serverUrl: 'http://192.168.1.8:7850',
+      serverIdentity: 'server-synria',
+      hasAccessToken: true,
+      serverSetupComplete: true,
+      connectionState: 'offline',
+      cachedUnreadCount: 3
+    }
+    const run = vi.fn().mockResolvedValue({
+      serverUrl: 'http://100.83.237.96:7850',
+      accessToken: 'current-private-token-0123456789',
+      service: 'existing-ssh',
+      tailscaleIP: '100.83.237.96'
+    })
+    const testConnection = vi.fn().mockResolvedValue({ ok: true, server_identity: 'server-synria' })
+    const add = vi.fn()
+    const list = vi.fn()
+    const switchServer = vi.fn(async (profileId: string) => {
+      useAppStore.setState(state => ({ activeProfileId: profileId, profileGeneration: state.profileGeneration + 1 }))
+      return true
+    })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        settings: { get: vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: true, serverSetupComplete: true }) },
+        servers: { testConnection, add, list },
+        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run },
+        events: { on: vi.fn().mockReturnValue(() => undefined) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({
+      connected: true,
+      profiles: [{ ...existingProfile }, {
+        id: 'local-profile', name: 'This computer', serverUrl: 'http://127.0.0.1:7850',
+        serverIdentity: 'server-local', hasAccessToken: true, serverSetupComplete: true,
+        connectionState: 'online', cachedUnreadCount: 0
+      }],
+      activeProfileId: 'local-profile',
+      profileGeneration: 7,
+      switchingProfileId: null,
+      switchServer,
+      error: null
+    })
+    const user = userEvent.setup()
+    render(<ServerOnboardingDialog />)
+    await waitFor(() => expect(window.agentsDock.setup.capabilities).toHaveBeenCalled())
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('agentsdock:server-setup', { detail: { mode: 'add' } }))
+    })
+    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'ubuntu@100.83.237.96')
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
+
+    await waitFor(() => expect(switchServer).toHaveBeenCalledWith('synria-profile', true, {
+      serverUrl: 'http://100.83.237.96:7850',
+      serverUrls: ['http://192.168.1.8:7850', 'http://100.83.237.96:7850'],
+      accessToken: 'current-private-token-0123456789',
+      serverSetupComplete: true
+    }))
+    expect(add).not.toHaveBeenCalled()
+    expect(list).not.toHaveBeenCalled()
+    expect(useAppStore.getState().activeProfileId).toBe('synria-profile')
+  })
+
+  it('connects with a chosen private key instead of a password', async () => {
+    const get = vi.fn().mockResolvedValue({ serverUrl: 'http://127.0.0.1:7850', hasAccessToken: false, serverSetupComplete: false })
+    const switchServer = vi.fn(async () => {
+      useAppStore.setState(state => ({ profileGeneration: state.profileGeneration + 1 }))
+      return true
+    })
+    const run = vi.fn().mockResolvedValue({
+      serverUrl: 'http://192.0.2.27:7850',
+      accessToken: 'generated-private-token-0123456789',
+      service: 'systemd-user',
+      tailscaleIP: ''
+    })
+    const chooseIdentity = vi.fn().mockResolvedValue('/home/ubuntu/.ssh/laptop_ed25519')
+    const testConnection = vi.fn().mockResolvedValue({ ok: true, server_identity: 'server-1' })
+    Object.defineProperty(window, 'agentsDock', {
+      configurable: true,
+      value: {
+        settings: { get },
+        servers: { testConnection },
+        setup: { capabilities: vi.fn().mockResolvedValue({ available: true, local: true, ssh: true }), run, chooseIdentity },
+        events: { on: vi.fn().mockReturnValue(() => undefined) }
+      } as unknown as AgentsDockAPI
+    })
+    useAppStore.setState({ connected: false, activeProfileId: 'default-profile', profileGeneration: 1, switchingProfileId: null, switchServer, error: null })
+    const user = userEvent.setup()
+    render(<ServerOnboardingDialog />)
+
+    await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'ubuntu@192.0.2.27')
+    const password = screen.getByLabelText('SSH password (optional, used once)')
+    await user.type(password, 'one time secret')
+    await user.click(screen.getByRole('button', { name: 'Choose key' }))
+
+    expect(screen.getByPlaceholderText('Uses ~/.ssh when empty')).toHaveValue('laptop_ed25519')
+    expect(password).toBeDisabled()
+    expect(password).toHaveValue('')
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
+
+    await waitFor(() => expect(run).toHaveBeenCalledWith(expect.objectContaining({
+      target: 'ssh',
+      sshHost: 'ubuntu@192.0.2.27',
+      sshIdentityPath: '/home/ubuntu/.ssh/laptop_ed25519',
+      port: 7850
+    })))
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty('sshPassword')
   })
 
   it('shows a dedicated signed Beta update flow for legacy servers', async () => {
@@ -772,7 +886,7 @@ describe('ServerOnboardingDialog', () => {
     await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
     const password = screen.getByLabelText('SSH password (optional, used once)')
     await user.type(password, 'one time secret')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('macOS could not restart AgentsServer. Running as root is not required.')
     expect(run).toHaveBeenCalledWith(expect.objectContaining({ sshPassword: 'one time secret' }))
@@ -799,7 +913,7 @@ describe('ServerOnboardingDialog', () => {
     render(<ServerOnboardingDialog />)
 
     await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('chmod -R go-w ~/.local/share/agents-server')
     expect(screen.getByRole('alert')).not.toHaveTextContent('/home/test')
@@ -874,7 +988,7 @@ describe('ServerOnboardingDialog', () => {
     render(<ServerOnboardingDialog />)
 
     await user.type(await screen.findByPlaceholderText('user@server or SSH alias'), 'user@server')
-    await user.click(screen.getByRole('button', { name: 'Install over SSH' }))
+    await user.click(screen.getByRole('button', { name: 'Connect over SSH' }))
     await screen.findByRole('alert')
     await user.click(screen.getByRole('button', { name: 'Copy diagnostics' }))
 

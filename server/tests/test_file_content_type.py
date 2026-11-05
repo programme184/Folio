@@ -1,4 +1,5 @@
 import json
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -410,10 +411,13 @@ class SessionFileOwnershipTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(agent_server, "FILES_ROOT", root), patch.object(
                 agent_server.STORE, "sessions", sessions
             ):
-                response = await agent_server.get_session_file("session-a", "owned")
+                request = agent_server.Request({
+                    "type": "http", "method": "GET", "path": "/", "headers": []
+                })
+                response = await agent_server.get_session_file(request, "session-a", "owned")
                 self.assertEqual(Path(response.path), Path(record["path"]))
                 with self.assertRaises(HTTPException) as scoped_error:
-                    await agent_server.get_session_file("session-b", "owned")
+                    await agent_server.get_session_file(request, "session-b", "owned")
                 with self.assertRaises(HTTPException) as alias_error:
                     await agent_server.get_file("owned", session_id="session-b")
                 compatibility_response = await agent_server.get_file("owned", session_id=None)
@@ -421,6 +425,54 @@ class SessionFileOwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scoped_error.exception.status_code, 404)
         self.assertEqual(alias_error.exception.status_code, 404)
         self.assertEqual(Path(compatibility_response.path), Path(record["path"]))
+
+    async def test_builtin_preview_transcodes_an_unsupported_session_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "files"
+            root.mkdir()
+            record = self.write_file(
+                root,
+                "video",
+                session_id="session-a",
+                filename="trajectory.mp4",
+            )
+            Path(record["path"]).write_bytes(b"unsupported-mp4v-source")
+            record["content_type"] = "video/mp4"
+            (root / "video" / "meta.json").write_text(json.dumps(record))
+            converted = b"\x00\x00\x00\x18ftypisom-compatible-h264"
+
+            def fake_ffmpeg(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+                Path(command[-1]).write_bytes(converted)
+                return subprocess.CompletedProcess(command, 0, b"", b"")
+
+            request = agent_server.Request({
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": [(b"range", b"bytes=4-11")],
+            })
+            with (
+                patch.object(agent_server, "FILES_ROOT", root),
+                patch.object(agent_server.STORE, "sessions", {"session-a": {"id": "session-a"}}),
+                patch.object(agent_server, "WORKSPACE_VIDEO_PREVIEW_CACHE", Path(temporary) / "cache"),
+                patch.object(agent_server, "workspace_video_codec", return_value="mpeg4"),
+                patch.object(agent_server.shutil, "which", return_value="/usr/bin/ffmpeg"),
+                patch.object(agent_server.subprocess, "run", side_effect=fake_ffmpeg) as run,
+            ):
+                response = await agent_server.get_session_file(
+                    request,
+                    "session-a",
+                    "video",
+                    True,
+                )
+                body = b"".join([chunk async for chunk in response.body_iterator])
+
+        self.assertEqual(response.status_code, 206)
+        self.assertEqual(response.headers["content-type"], "video/mp4")
+        self.assertEqual(response.headers["content-range"], f"bytes 4-11/{len(converted)}")
+        self.assertEqual(body, converted[4:12])
+        self.assertIn("libx264", run.call_args.args[0])
+        self.assertIn("+faststart", run.call_args.args[0])
 
 
 if __name__ == "__main__":

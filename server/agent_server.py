@@ -102200,6 +102200,58 @@ def resolve_session_file_event(
     raise HTTPException(status_code=404, detail="file event not found")
 
 
+def open_session_file_preview_sync(
+    session_id: str,
+    file_id: str,
+) -> dict[str, Any]:
+    """Securely open one session-owned artifact for in-app media preview."""
+
+    meta = require_session_file_meta(session_id, file_id)
+    media_type = file_response_media_type(meta)
+    path = Path(str(meta.get("path") or ""))
+    try:
+        files_root = FILES_ROOT.resolve(strict=True)
+        relative = path.resolve(strict=True).relative_to(files_root).as_posix()
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="file not found in session") from exc
+    parent_fd, name = open_workspace_parent_fd(files_root, relative)
+    file_fd = -1
+    try:
+        try:
+            file_fd = os.open(name, workspace_open_flags(), dir_fd=parent_fd)
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="file not found in session") from exc
+        item_stat = os.fstat(file_fd)
+        if not stat.S_ISREG(item_stat.st_mode):
+            raise HTTPException(status_code=404, detail="file not found in session")
+        if item_stat.st_size > MAX_WORKSPACE_PREVIEW_BYTES:
+            raise workspace_http_error(
+                413,
+                "workspace_preview_too_large",
+                (
+                    f"{name} is larger than the "
+                    f"{MAX_WORKSPACE_PREVIEW_BYTES // (1024 * 1024)} MiB preview limit."
+                ),
+            )
+        result = {
+            "file_fd": file_fd,
+            "root": str(files_root),
+            "path": relative,
+            "name": name,
+            "media_type": media_type,
+            "revision": workspace_entry_revision(item_stat),
+            "size": int(item_stat.st_size),
+            "mtime_ns": int(item_stat.st_mtime_ns),
+            "scope": "session-file",
+        }
+        file_fd = -1
+        return result
+    finally:
+        if file_fd >= 0:
+            os.close(file_fd)
+        os.close(parent_fd)
+
+
 @app.get("/api/sessions/{session_id}/files")
 async def list_session_files(
     session_id: str,
@@ -102263,9 +102315,25 @@ async def get_session_linked_file(session_id: str, target: str) -> FileResponse:
 
 @app.get("/api/sessions/{session_id}/files/{file_id}")
 @app.head("/api/sessions/{session_id}/files/{file_id}")
-async def get_session_file(session_id: str, file_id: str) -> FileResponse:
+async def get_session_file(
+    request: Request,
+    session_id: str,
+    file_id: str,
+    compatible_video: bool = False,
+) -> Response:
     if session_id not in STORE.sessions:
         raise HTTPException(status_code=404, detail="session not found")
+    if compatible_video:
+        preview = await asyncio.to_thread(
+            open_session_file_preview_sync,
+            session_id,
+            file_id,
+        )
+        preview = await asyncio.to_thread(
+            compatible_workspace_video_preview_sync,
+            preview,
+        )
+        return workspace_preview_response(request, preview)
     meta = await asyncio.to_thread(
         require_session_file_meta,
         session_id,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { localOnlyServerUrl, parseServerConnectionLink, serverConnectionLink } from './server-connection-link'
+import { localOnlyServerUrl, parseServerConnectionLink, prioritizeConnectionURLs, serverConnectionLink } from './server-connection-link'
 
 const details = { name: '工作电脑 & QA', serverUrl: 'https://server.example:7851',
   accessToken: 'synthetic+token&?#=', serverIdentity: 'fixture-server' }
@@ -25,5 +25,18 @@ describe('server connection QR contract', () => {
   })
   it.each(['http://192.168.1.20:7851', 'http://100.64.0.20:7851', 'https://server.example'])('does not mistake a network address for localhost: %s', value => {
     expect(localOnlyServerUrl(value)).toBe(false)
+  })
+  it('prefers private LAN routes before DNS/public routes and Tailscale CGNAT', () => {
+    expect(prioritizeConnectionURLs([
+      'http://100.83.237.96:7850',
+      'https://server.example',
+      'http://192.168.1.8:7850',
+      'http://10.0.0.8:7850'
+    ])).toEqual([
+      'http://192.168.1.8:7850',
+      'http://10.0.0.8:7850',
+      'https://server.example',
+      'http://100.83.237.96:7850'
+    ])
   })
 })

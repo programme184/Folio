@@ -13,7 +13,7 @@ import {
 import { LoaderCircle, RotateCcw, Siren, X } from 'lucide-react'
 import type { AppUpdateStatus } from '@shared/types'
 import { normalizeSecurePeerJoinTarget } from '@shared/secure-peer'
-import { ChatWorkspaceGrid, PaneProjectBrowser, type CrossServerWorkspaceState } from './components/ChatWorkspaceGrid'
+import { ChatWorkspaceGrid, PaneProjectBrowser } from './components/ChatWorkspaceGrid'
 import { ChatPane } from './components/ChatPane'
 import { ChatHeader, WindowFrameControls } from './components/ChatHeader'
 import { AnswerFollowUp } from './components/AnswerFollowUp'
@@ -84,6 +84,15 @@ function EmbeddedPaneApp() {
     void useAppStore.getState().selectSession(requestedSessionId)
   }, [initialized, requestedSessionId, selectedSessionId, sessions])
   useEffect(() => {
+    if (!initialized || !activeProfileId) return
+    window.agentsDock.embeddedPane?.notifySelection({
+      profileId: activeProfileId,
+      serverIdentity: activeServerIdentity,
+      sessionId: selectedSession?.id ?? null,
+      sessionTitle: selectedSession?.title ?? null
+    })
+  }, [activeProfileId, activeServerIdentity, initialized, selectedSession?.id, selectedSession?.title])
+  useEffect(() => {
     if (browsing && selectedSessionId !== browsingSessionIdRef.current) setBrowsing(false)
   }, [browsing, selectedSessionId])
   useEffect(() => () => sideChatController.reset(), [sideChatController])
@@ -129,7 +138,6 @@ function EmbeddedPaneApp() {
 
 function AppWorkspace() {
   useLocale()
-  const [crossServerWorkspace, setCrossServerWorkspace] = useState<CrossServerWorkspaceState | null>(null)
   const initialize = useAppStore(state => state.initialize)
   const initialized = useAppStore(state => state.initialized)
   const activeProfileId = useAppStore(state => state.activeProfileId)
@@ -660,8 +668,6 @@ function AppWorkspace() {
             ? <><ChatHeader sidebarVisible={sidebarVisible} onSidebarToggle={toggleSidebar} /><WelcomeChat /></>
             : <ChatWorkspaceGrid
               key={activeRenderKey}
-              crossServerWorkspace={crossServerWorkspace}
-              onCrossServerWorkspaceChange={setCrossServerWorkspace}
               sidebarVisible={sidebarVisible}
               terminalOpen={Boolean(terminalOpen)}
               onSidebarToggle={toggleSidebar}

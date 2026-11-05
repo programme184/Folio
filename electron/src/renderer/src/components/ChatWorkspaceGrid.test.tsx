@@ -186,6 +186,51 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     expect(useAppStore.getState().chatPaneCount).toBe(1)
   })
 
+  it('persists a remote pane per workspace and records the embedded chat selection', async () => {
+    const left = { id: 'left-chat', title: 'Left chat', backend: 'codex', cwd: '/left', archived: false } as Session
+    useAppStore.setState({
+      profiles: [profile('a'), profile('b')], sessions: [left],
+      chatPanes: { primary: left.id, secondary: null }, chatPaneCount: 2,
+      chatWorkspaces: [
+        { ...workspace('workspace-main'), panes: { primary: left.id, secondary: null } },
+        { ...workspace('workspace-other'), panes: { primary: left.id, secondary: null } }
+      ]
+    })
+    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+
+    const right = view.container.querySelector('[data-pane="secondary"]') as HTMLElement
+    fireEvent.pointerDown(within(right).getByRole('button', { name: /a, Online.*Choose AgentsServer/ }), { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByRole('menuitem', { name: /b/ }))
+
+    expect(useAppStore.getState().chatWorkspaces[0].serverPanes).toEqual({
+      secondary: { profileId: 'b', serverIdentity: 'server-b', sessionId: null, sessionTitle: null }
+    })
+    const webview = view.container.querySelector('[data-pane="secondary"] webview')!
+    const selection = Object.assign(new Event('ipc-message'), {
+      channel: 'agentsdock:embedded-pane-selection',
+      args: [{ profileId: 'b', serverIdentity: 'server-b', sessionId: 'remote-chat', sessionTitle: 'Remote history' }]
+    })
+    fireEvent(webview, selection)
+    expect(useAppStore.getState().chatWorkspaces[0].serverPanes?.secondary).toMatchObject({
+      sessionId: 'remote-chat', sessionTitle: 'Remote history'
+    })
+    expect(view.container.querySelector('[data-pane="secondary"] webview')).toHaveAttribute('src', expect.not.stringContaining('sessionId=remote-chat'))
+
+    act(() => useAppStore.setState({ activeChatWorkspaceId: 'workspace-other',
+      chatWorkspaces: useAppStore.getState().chatWorkspaces, chatPanes: { primary: left.id, secondary: null } }))
+    expect(view.container.querySelector('[data-pane="secondary"] webview')).toBeNull()
+    act(() => useAppStore.setState({ activeChatWorkspaceId: 'workspace-main',
+      chatWorkspaces: useAppStore.getState().chatWorkspaces, chatPanes: { primary: left.id, secondary: null } }))
+    expect(view.container.querySelector('[data-pane="secondary"] webview')).toHaveAttribute('src', expect.stringContaining('sessionId=remote-chat'))
+    expect(setScoped).toHaveBeenCalledWith(
+      { profileId: 'a', profileGeneration: 1, serverIdentity: 'server-a' },
+      'chatWorkspaces', expect.objectContaining({ workspaces: expect.arrayContaining([
+        expect.objectContaining({ id: 'workspace-main', serverPanes: expect.objectContaining({ secondary: expect.any(Object) }) })
+      ]) })
+    )
+  })
+
   it('opens a project-grouped browser from every populated pane and can move that pane to another server', async () => {
     const folio = { id: 'folio-chat', title: 'Folio chat', backend: 'codex', cwd: '/folio', folder: 'Folio', archived: false } as Session
     const folioOther = { id: 'folio-other', title: 'Other Folio chat', backend: 'codex', cwd: '/folio/other', folder: 'Folio', archived: false } as Session

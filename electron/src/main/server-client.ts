@@ -140,7 +140,14 @@ import { parseTeamActivityHintPacket, TEAM_ACTIVITY_HINTS_PROTOCOL, emptyBulleti
   type BulletinChangeCursor, type TeamActivityHintPacket } from '../shared/team-bulletin-hints'
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const IDEMPOTENT_READ_TIMEOUT_MS = 90_000
+const IDEMPOTENT_TRANSPORT_RETRY_DELAYS_MS = [250, 750, 1_500, 3_000, 5_000, 10_000] as const
 const WORKSPACE_PREVIEW_MAX_RESPONSE_BYTES = 100 * 1024 * 1024
+// SSH-backed profiles may replace a stale forwarding transport underneath an
+// in-flight read. Keep workspace browsing alive across that bounded recovery;
+// mutations retain the normal deadline and are never replayed.
+const WORKSPACE_READ_TIMEOUT_MS = 120_000
+const WORKSPACE_LIST_ATTEMPT_TIMEOUT_MS = 15_000
 // Snapshot scans have a server-side 30s deadline. Leave response/transport
 // headroom without extending unrelated requests or retrying a creation.
 const CHAT_SHARE_SNAPSHOT_TIMEOUT_MS = 40_000
@@ -300,6 +307,10 @@ export interface AgentServerClientOptions {
   uploadTimeoutMs?: number
   /** Test seam which avoids wall-clock waits when exercising upload expiry. */
   timeoutSignal?: (timeoutMs: number) => AbortSignal
+  /** Test seam; production retries only GET/HEAD requests which received no HTTP response. */
+  idempotentTransportRetryDelaysMs?: readonly number[]
+  /** Test seam for a stalled workspace listing attempt. */
+  workspaceListAttemptTimeoutMs?: number
 }
 
 export interface OpenedUploadSource {
@@ -336,12 +347,18 @@ export class AgentServerClient {
   private readonly historyProjectionRevisions = new Map<string, string>()
   private readonly uploadTimeoutMs: number | null
   private readonly timeoutSignal: (timeoutMs: number) => AbortSignal
+  private readonly idempotentTransportRetryDelaysMs: readonly number[]
+  private readonly workspaceListAttemptTimeoutMs: number
 
   constructor(baseURL: string, token: string, options: AgentServerClientOptions = {}) {
     this.placeholderClientId = options.placeholderClientId
     this.configuration = createConfiguration(baseURL, token)
     this.uploadTimeoutMs = options.uploadTimeoutMs === undefined ? null : positiveTimeout(options.uploadTimeoutMs)
     this.timeoutSignal = options.timeoutSignal ?? (timeoutMs => AbortSignal.timeout(timeoutMs))
+    this.idempotentTransportRetryDelaysMs = options.idempotentTransportRetryDelaysMs
+      ?? IDEMPOTENT_TRANSPORT_RETRY_DELAYS_MS
+    this.workspaceListAttemptTimeoutMs = options.workspaceListAttemptTimeoutMs === undefined
+      ? WORKSPACE_LIST_ATTEMPT_TIMEOUT_MS : positiveTimeout(options.workspaceListAttemptTimeoutMs)
   }
 
   configure(baseURL: string, token: string): void {
@@ -1847,36 +1864,43 @@ export class AgentServerClient {
 
   workspaceEntries(sessionId: string, path = '', offset = 0, limit = 500): Promise<WorkspaceEntriesPage> {
     const query = new URLSearchParams({ path, offset: String(offset), limit: String(limit) })
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entries?${query}`, this.configuration, WORKSPACE_READ_TIMEOUT_MS, undefined, this.workspaceListAttemptTimeoutMs)
   }
 
   absoluteWorkspaceEntries(sessionId: string, path: string, offset = 0, limit = 500, remoteHost?: string | null): Promise<WorkspaceEntriesPage> {
     const query = new URLSearchParams({ path, offset: String(offset), limit: String(limit) })
     if (remoteHost) query.set('remote_host', remoteHost)
-    return this.privilegedNativeRequest(`/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entries?${query}`)
+    return this.privilegedNativeRequest(
+      `/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entries?${query}`,
+      {},
+      WORKSPACE_READ_TIMEOUT_MS,
+      undefined,
+      undefined,
+      this.workspaceListAttemptTimeoutMs
+    )
   }
 
   workspaceSearch(sessionId: string, query = '', limit = 100): Promise<WorkspaceSearchPage> {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/search?${params}`)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/search?${params}`, this.configuration, WORKSPACE_READ_TIMEOUT_MS)
   }
 
   completeWorkingDirectory(path: string, limit = 24, remoteHost?: string | null): Promise<WorkingDirectoryCompletion> {
     const query = new URLSearchParams({ path, limit: String(limit) })
-    if (!remoteHost) return this.get(`/api/working-directories/complete?${query}`)
+    if (!remoteHost) return this.get(`/api/working-directories/complete?${query}`, this.configuration, WORKSPACE_READ_TIMEOUT_MS)
     query.set('remote_host', remoteHost)
-    return this.privilegedNativeRequest(`/api/working-directories/complete?${query}`)
+    return this.privilegedNativeRequest(`/api/working-directories/complete?${query}`, {}, WORKSPACE_READ_TIMEOUT_MS)
   }
 
   workspaceFile(sessionId: string, path: string): Promise<WorkspaceFile> {
     const query = new URLSearchParams({ path })
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/file?${query}`)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/file?${query}`, this.configuration, WORKSPACE_READ_TIMEOUT_MS)
   }
 
   absoluteFile(sessionId: string, path: string, remoteHost?: string | null): Promise<WorkspaceFile> {
     const query = new URLSearchParams({ path })
     if (remoteHost) query.set('remote_host', remoteHost)
-    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-file?${query}`)
+    return this.get(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/absolute-file?${query}`, this.configuration, WORKSPACE_READ_TIMEOUT_MS)
   }
 
   writeAbsoluteFile(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile> {
@@ -2356,13 +2380,20 @@ export class AgentServerClient {
     return response.digest
   }
 
-  fileRequest(sessionId: string, fileId: string, request?: Request, callerSignal?: AbortSignal): Promise<Response> {
+  fileRequest(
+    sessionId: string,
+    fileId: string,
+    request?: Request,
+    callerSignal?: AbortSignal,
+    compatibleVideo = false
+  ): Promise<Response> {
     const configuration = this.configuration
     const headers = new Headers(request?.headers)
     this.applyAuth(headers, configuration)
+    const query = compatibleVideo ? '?compatible_video=true' : ''
     return fetch(configurationURL(
       configuration,
-      `/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`
+      `/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}${query}`
     ), {
       method: request?.method ?? 'GET',
       headers,
@@ -2803,8 +2834,8 @@ export class AgentServerClient {
     return stop
   }
 
-  private get<T>(path: string, configuration = this.configuration, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, maxResponseBytes?: number): Promise<T> {
-    return this.request(path, { signal: AbortSignal.timeout(timeoutMs) }, configuration, maxResponseBytes)
+  private get<T>(path: string, configuration = this.configuration, timeoutMs = IDEMPOTENT_READ_TIMEOUT_MS, maxResponseBytes?: number, attemptTimeoutMs?: number): Promise<T> {
+    return this.request(path, { signal: AbortSignal.timeout(timeoutMs) }, configuration, maxResponseBytes, attemptTimeoutMs)
   }
   private post<T>(path: string, body: unknown, configuration = this.configuration, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, maxResponseBytes?: number): Promise<T> {
     return this.request(path, { method: 'POST', body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) }, configuration, maxResponseBytes)
@@ -2869,7 +2900,8 @@ export class AgentServerClient {
     init: RequestInit = {},
     timeoutMs: number | null = DEFAULT_REQUEST_TIMEOUT_MS,
     expectedStatus?: number,
-    maxResponseBytes?: number
+    maxResponseBytes?: number,
+    attemptTimeoutMs?: number
   ): Promise<T> {
     const configuration = this.configuration
     const target = new URL(configurationURL(configuration, path))
@@ -2883,17 +2915,19 @@ export class AgentServerClient {
     // larger bound exclusive to the validated Git action route.
     const gitAction = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/git\/action$/.test(target.pathname.slice(serverPrefix.length))
     const body = boundedJSONRequestBody(init.body, method, gitAction ? 8 * 1024 * 1024 : SECURE_PEER_MAX_REQUEST_BYTES)
-    const response = await securePeerNodeResponse(target, {
+    const signal = combineAbortSignals(
+      configuration.abortController.signal,
+      init.signal,
+      timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)
+    )
+    const headers = privilegedNativeTransportHeaders(configuration.token, body)
+    const response = await idempotentTransportRequest(
       method,
-      headers: privilegedNativeTransportHeaders(configuration.token, body),
-      body,
-      maxResponseBytes,
-      signal: combineAbortSignals(
-        configuration.abortController.signal,
-        init.signal,
-        timeoutMs === null ? undefined : AbortSignal.timeout(timeoutMs)
-      )
-    })
+      signal,
+      this.idempotentTransportRetryDelaysMs,
+      attemptSignal => securePeerNodeResponse(target, { method, headers, body, maxResponseBytes, signal: attemptSignal }),
+      attemptTimeoutMs
+    )
     if (!response.ok || expectedStatus !== undefined && response.status !== expectedStatus) {
       let detail = `${response.status} ${response.statusText}`
       let rawDetail: unknown
@@ -2964,23 +2998,45 @@ export class AgentServerClient {
     if (value?.revoked !== true) throw new Error('Share revocation was not confirmed.')
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, configuration = this.configuration, maxResponseBytes?: number): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, configuration = this.configuration, maxResponseBytes?: number, attemptTimeoutMs?: number): Promise<T> {
     const headers = new Headers(init.headers)
     this.applyAuth(headers, configuration)
     if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
     const target = new URL(configurationURL(configuration, path))
+    const method = String(init.method ?? 'GET').toUpperCase()
+    const signal = combineAbortSignals(
+      configuration.abortController.signal,
+      init.signal ?? AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS)
+    )
     const started = performance.now()
     let response: Response
     try {
-      response = await fetch(target.toString(), {
-        ...init,
-        headers,
-        // Never allow a profile credential to be replayed to a redirect target.
-        // Even same-origin redirects are rejected so an intermediary cannot
-        // silently rewrite the authenticated method or request body.
-        redirect: 'error',
-        signal: combineAbortSignals(configuration.abortController.signal, init.signal ?? AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS))
-      })
+      response = await idempotentTransportRequest(
+        method,
+        signal,
+        this.idempotentTransportRetryDelaysMs,
+        async attemptSignal => {
+          const received = await fetch(target.toString(), {
+            ...init,
+            headers,
+            // Never allow a profile credential to be replayed to a redirect target.
+            // Even same-origin redirects are rejected so an intermediary cannot
+            // silently rewrite the authenticated method or request body.
+            redirect: 'error',
+            signal: attemptSignal
+          })
+          if (attemptTimeoutMs === undefined) return received
+          // fetch resolves when headers arrive. Keep the attempt deadline active
+          // until the small listing body finishes, including a stalled SSH stream.
+          const bytes = await received.arrayBuffer()
+          return new Response(received.status === 204 || received.status === 304 ? null : bytes, {
+            status: received.status,
+            statusText: received.statusText,
+            headers: received.headers
+          })
+        },
+        attemptTimeoutMs
+      )
     } catch (error) {
       // Profile retirement is expected cancellation. Preserve unexpected socket
       // failures that otherwise become only "fetch failed" across Electron IPC.
@@ -3627,6 +3683,74 @@ function securePeerAbortReason(signal: AbortSignal): Error {
     : new DOMException('The operation was aborted.', 'AbortError')
 }
 
+const RETRYABLE_IDEMPOTENT_TRANSPORT_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETRESET',
+  'ENETUNREACH',
+  'EPIPE',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET'
+])
+
+function retryableIdempotentTransportFailure(error: unknown, depth = 0): boolean {
+  if (!error || typeof error !== 'object' || depth >= 4) return false
+  const value = error as Record<string, unknown>
+  if (value.name === 'AbortError' || value.name === 'TimeoutError') return false
+  if (typeof value.code === 'string' && RETRYABLE_IDEMPOTENT_TRANSPORT_CODES.has(value.code)) return true
+  if (retryableIdempotentTransportFailure(value.cause, depth + 1)) return true
+  return Array.isArray(value.errors)
+    && value.errors.slice(0, 4).some(item => retryableIdempotentTransportFailure(item, depth + 1))
+}
+
+function transportRetryDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(securePeerAbortReason(signal))
+  if (delayMs <= 0) return Promise.resolve()
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', abort)
+      resolve()
+    }, delayMs)
+    const abort = (): void => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      reject(securePeerAbortReason(signal))
+    }
+    signal.addEventListener('abort', abort, { once: true })
+  })
+}
+
+async function idempotentTransportRequest<T>(
+  method: string,
+  signal: AbortSignal,
+  retryDelaysMs: readonly number[],
+  request: (attemptSignal: AbortSignal) => Promise<T>,
+  attemptTimeoutMs?: number
+): Promise<T> {
+  const retryableMethod = method === 'GET' || method === 'HEAD'
+  let failures = 0
+  while (true) {
+    const attemptDeadline = retryableMethod && attemptTimeoutMs !== undefined
+      ? AbortSignal.timeout(attemptTimeoutMs) : undefined
+    const attemptSignal = attemptDeadline ? combineAbortSignals(signal, attemptDeadline) : signal
+    try {
+      return await request(attemptSignal)
+    } catch (error) {
+      if (
+        !retryableMethod
+        || signal.aborted
+        || !(attemptDeadline?.aborted || retryableIdempotentTransportFailure(error))
+        || failures >= retryDelaysMs.length
+      ) throw error
+      await transportRetryDelay(retryDelaysMs[failures], signal)
+      failures += 1
+    }
+  }
+}
+
 function securePeerNodeResponse(url: URL, init: SecurePeerNodeRequest): Promise<Response> {
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     return Promise.reject(new TypeError('Secure peer transport requires HTTP or HTTPS.'))
@@ -3697,7 +3821,10 @@ function securePeerNodeResponse(url: URL, init: SecurePeerNodeRequest): Promise<
         }
         chunks.push(chunk)
       })
-      incoming.once('aborted', () => fail(new Error('Secure peer response was interrupted.')))
+      incoming.once('aborted', () => fail(Object.assign(
+        new Error('Secure peer response was interrupted.'),
+        { code: 'ECONNRESET' }
+      )))
       incoming.once('error', fail)
       incoming.once('end', () => {
         if (settled) return

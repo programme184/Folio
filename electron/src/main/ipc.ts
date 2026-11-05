@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron'
 import type { AppService } from './service'
 import { appLog } from './logger'
 import type { AppUpdateManager } from './updater'
@@ -294,6 +294,14 @@ export function registerIpc(
   handle('server-updates:cancel', scheduleId => service.cancelServerUpdate(scheduleId))
   handle('server-setup:capabilities', () => serverSetup.capabilities())
   handle('server-setup:ssh-hosts', () => serverSetup.configuredSSHHosts())
+  handle('server-setup:choose-identity', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose the SSH private key',
+      properties: ['openFile'],
+      buttonLabel: 'Use key'
+    })
+    return result.canceled ? null : result.filePaths[0] || null
+  })
   handle('server-setup:cancel', () => serverSetup.cancel())
   handle('server-setup:diagnostics', () => serverSetup.diagnostics())
   handle('server-setup:open-log', async () => {

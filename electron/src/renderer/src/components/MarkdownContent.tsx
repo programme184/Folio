@@ -18,6 +18,7 @@ import { openAgentFile, openLinkedFile, saveAgentFile } from '../lib/file-action
 import { parseStoredTeamReferences, teamReferenceText } from '../lib/team-references'
 import { openTeamMessageLink, parseTeamMessageLink } from '../lib/team-message-links'
 import {
+  parseWorkspaceFileReference,
   parseWorkspaceCodeReference,
   requestOpenAgentFile,
   requestOpenWorkspaceReference
@@ -99,7 +100,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     if (href.startsWith('#')) return
     const decoded = decodeLinkTarget(href)
-    const reference = parseWorkspaceCodeReference(decoded)
+    const reference = parseWorkspaceFileReference(decoded)
     const clean = (reference?.path ?? decoded).replace(/^\.\//, '')
     const file = files.find(candidate => (
       candidate.path === clean

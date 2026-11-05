@@ -235,6 +235,36 @@ describe('server profile default names', () => {
   })
 })
 
+describe('server profile endpoint failover', () => {
+  it('persists LAN-first candidates while retaining the currently selected route and custom name', () => {
+    const path = settingsPath()
+    const options = { path, keychain: new MemoryKeychain(), safeStorage: memorySafeStorage }
+    const store = new SettingsStore(options)
+    const profile = store.addProfile({
+      name: 'Synria',
+      serverUrl: 'http://100.83.237.96:7850',
+      serverUrls: ['http://100.83.237.96:7850', 'http://192.168.1.8:7850'],
+      serverIdentity: 'server-synria'
+    })
+
+    expect(profile).toMatchObject({
+      name: 'Synria',
+      serverUrl: 'http://100.83.237.96:7850',
+      serverUrls: ['http://192.168.1.8:7850', 'http://100.83.237.96:7850']
+    })
+    expect(store.selectServerUrl(profile.id, 'http://192.168.1.8:7850')).toMatchObject({
+      name: 'Synria',
+      serverUrl: 'http://192.168.1.8:7850',
+      serverUrls: ['http://192.168.1.8:7850', 'http://100.83.237.96:7850']
+    })
+    expect(new SettingsStore(options).getProfile(profile.id)).toMatchObject({
+      name: 'Synria',
+      serverUrl: 'http://192.168.1.8:7850',
+      serverUrls: ['http://192.168.1.8:7850', 'http://100.83.237.96:7850']
+    })
+  })
+})
+
 describe('SettingsStore schema v2 migration', () => {
   it('reads configured profile metadata without accessing Keychain or decrypting credentials', () => {
     const keychain = new MemoryKeychain()
