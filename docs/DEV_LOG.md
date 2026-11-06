@@ -1,5 +1,34 @@
 # Public development log
 
+## 2026-11-06 — Discover LAN routes for existing server profiles
+
+- Existing verified profiles created before multi-address support now read the
+  connected AgentsServer's authenticated address list once per connection
+  revision. After confirming the same durable server identity, the desktop
+  saves the candidates and immediately prefers a reachable private LAN route.
+- Missing, malformed, unavailable or identity-mismatched discovery leaves the
+  current route unchanged. This allows an older Tailscale-only Synria profile
+  to move to its advertised `192.168.1.8` endpoint when the desktop joins that
+  LAN without asking the user to recreate the profile.
+
+```text
+Source commit / app build / server version: `5b676412`; electron-vite production
+build; unchanged AgentsServer 1.0.11.
+Test surface: active-route service regressions, complete Electron suite, current
+network routing and the authenticated Synria connection-address endpoint.
+Actions exercised and observed outcomes: the LAN endpoint accepted TCP and
+returned the expected authenticated-service response; Synria advertised the LAN
+and Tailscale URLs for the saved durable identity. Legacy-profile discovery,
+LAN preference and identity-mismatch rejection pass in service fixtures.
+Focused regression / typecheck / production build: 577 focused tests and all
+6,114 Electron tests pass (5 skipped), with 8 compile/license checks, TypeScript
+checking and production build/output verification.
+Remaining limitations or blocked acceptance: the connected server still had an
+active turn, so the running desktop was not restarted and live UI route switching
+remains pending to avoid interrupting that work.
+Availability: committed source only; not installed, published or deployed.
+```
+
 ## 2026-11-05 — Move a project's chats when its folders change
 
 - Saving Change folders kept the new directories on the Folio project, but
