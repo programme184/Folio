@@ -166,6 +166,63 @@ describe('profile endpoint failover', () => {
     expect(test.urls).toContain(lan)
   })
 
+  it('discovers LAN candidates for a verified legacy profile and moves off Tailscale', async () => {
+    const { settings } = profileSettings()
+    settings.updateProfile('b', {
+      serverUrl: tailscale,
+      serverIdentity: 'server-synria',
+      serverSetupComplete: true
+    })
+    settings.setActiveProfile('b')
+    const cache = new LocalCache(':memory:')
+    const advertised = vi.fn(async () => ({
+      version: 1,
+      server_identity: 'server-synria',
+      urls: [tailscale, lan]
+    }))
+    const service = new AppService({
+      settings,
+      cache,
+      clientFactory: serverUrl => fakeClient({
+        health: async () => ({ ok: true, server_identity: 'server-synria' }),
+        ...(serverUrl === tailscale ? { connectionAddresses: advertised } : {})
+      }) as unknown as AgentServerClient
+    })
+    cleanup.push(() => { service.stop(); cache.close() })
+
+    service.start()
+
+    await vi.waitFor(() => expect(settings.serverUrl('b')).toBe(lan))
+    expect(settings.serverUrls('b')).toEqual([lan, tailscale])
+    expect(advertised).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trust discovered routes for a different server identity', async () => {
+    const { settings } = profileSettings()
+    settings.updateProfile('b', {
+      serverUrl: tailscale,
+      serverIdentity: 'server-synria',
+      serverSetupComplete: true
+    })
+    settings.setActiveProfile('b')
+    const cache = new LocalCache(':memory:')
+    const service = new AppService({
+      settings,
+      cache,
+      clientFactory: () => fakeClient({
+        health: async () => ({ ok: true, server_identity: 'server-synria' }),
+        connectionAddresses: async () => ({ version: 1, server_identity: 'other-server', urls: [lan, tailscale] })
+      }) as unknown as AgentServerClient
+    })
+    cleanup.push(() => { service.stop(); cache.close() })
+
+    service.start()
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(settings.serverUrl('b')).toBe(tailscale)
+    expect(settings.serverUrls('b')).toEqual([tailscale])
+  })
+
   it('falls back from a failed LAN route to Tailscale without changing server identity', async () => {
     const test = failoverService(lan, new Set([tailscale]))
     test.service.start()
@@ -4167,6 +4224,7 @@ const runtimeCatalog: RuntimeCatalog = {
 }
 
 interface FakeClientOptions {
+  connectionAddresses?: AgentServerClient['connectionAddresses']
   health?: () => Promise<Health>
   serverRestartStatus?: () => Promise<ServerRestartStatus>
   restartServer?: (input: ServerRestartRequest) => Promise<ServerRestartStatus>
@@ -4261,6 +4319,9 @@ interface FakeClientOptions {
 function fakeClient(options: FakeClientOptions = {}) {
   return {
     dispose: vi.fn(),
+    connectionAddresses: vi.fn(options.connectionAddresses ?? (async () => {
+      throw new ServerError(404, 'Connection addresses are unavailable')
+    })),
     health: vi.fn(options.health ?? (async () => ({ ok: true }))),
     serverRestartStatus: vi.fn(options.serverRestartStatus ?? (async () => ({
       phase: 'idle', message: 'No restart is active.'

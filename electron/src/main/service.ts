@@ -488,6 +488,7 @@ export class AppService {
   private pollTimer: NodeJS.Timeout | null = null
   private endpointMonitorTimer: NodeJS.Timeout | null = null
   private endpointMonitorInFlight: Promise<void> | null = null
+  private readonly endpointDiscoveryRevisions = new Map<string, number>()
   private deferredBackgroundRefreshTimer: NodeJS.Timeout | null = null
   private deferredBackgroundRefresh: ConnectionScope | null = null
   private lastForegroundInteractionAt = Number.NEGATIVE_INFINITY
@@ -846,6 +847,7 @@ export class AppService {
       BACKGROUND_REFRESH_INTERVAL_MS
     )
     this.endpointMonitorTimer = setInterval(() => this.monitorActiveProfileEndpoints(), PROFILE_ENDPOINT_MONITOR_INTERVAL_MS)
+    this.monitorActiveProfileEndpoints()
     if (!this.embeddedPane) this.profileHealthPollTimer = setInterval(() => void this.refreshInactiveProfileHealth(), INACTIVE_PROFILE_HEALTH_INTERVAL_MS)
     this.jobsPollTimer = setInterval(() => void this.refreshJobs(this.captureScope()), 30_000)
     this.scheduleSearchBackfill(1_000)
@@ -2126,6 +2128,33 @@ export class AppService {
     return this.transitionActiveProfileEndpoint(scope, serverUrls.slice(0, currentIndex), 'prefer-lan')
   }
 
+  private async discoverActiveProfileEndpointCandidates(scope: ConnectionScope): Promise<string[]> {
+    const saved = this.settings.serverUrls(scope.profileId)
+    if (saved.length > 1) return saved
+    const profile = this.settings.getProfile(scope.profileId)
+    const expectedIdentity = profile?.serverIdentity?.trim() || ''
+    if (!expectedIdentity) return saved
+    const revision = this.settings.connectionRevision(scope.profileId)
+    if (this.endpointDiscoveryRevisions.get(scope.profileId) === revision) return saved
+    this.endpointDiscoveryRevisions.set(scope.profileId, revision)
+    let advertised: Awaited<ReturnType<AgentServerClient['connectionAddresses']>>
+    try { advertised = await scope.client.connectionAddresses() } catch { return saved }
+    if (!this.isCurrentScope(scope) || this.settings.connectionRevision(scope.profileId) !== revision) return saved
+    if (advertised.version !== 1 || advertised.server_identity?.trim() !== expectedIdentity) return saved
+    let discovered: string[]
+    try { discovered = mergeConnectionURLs(advertised.urls, [scope.serverUrl]) } catch { return saved }
+    if (discovered.length < 2) return saved
+    try {
+      this.settings.updateProfile(scope.profileId, { serverUrl: scope.serverUrl, serverUrls: discovered })
+    } catch { return saved }
+    appLog('connection', 'discovered server endpoint candidates', {
+      profileId: scope.profileId,
+      candidates: discovered.length
+    })
+    this.emitProfiles()
+    return this.settings.serverUrls(scope.profileId)
+  }
+
   private async failoverActiveProfileEndpoint(scope: ConnectionScope): Promise<ConnectionScope | null> {
     const alternatives = this.settings.serverUrls(scope.profileId).filter(serverUrl => serverUrl !== scope.serverUrl)
     return alternatives.length ? this.transitionActiveProfileEndpoint(scope, alternatives, 'failover') : null
@@ -2141,7 +2170,7 @@ export class AppService {
 
   private async performActiveProfileEndpointMonitor(): Promise<void> {
     const scope = this.captureScope()
-    const serverUrls = this.settings.serverUrls(scope.profileId)
+    const serverUrls = await this.discoverActiveProfileEndpointCandidates(scope)
     if (serverUrls.length < 2) return
     const preferredScope = await this.preferActiveProfileEndpoint(scope)
     if (preferredScope) {
