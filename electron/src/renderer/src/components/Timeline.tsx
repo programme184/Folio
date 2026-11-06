@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type WheelEven
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { ArrowDown, ArrowUp, LoaderCircle, Search, X } from 'lucide-react'
 import type { CodexThreadStatus, Event as ServerEvent, PinnedItem, SessionSnapshot, TimelineIndex, TimelineIndexLandmark, TimelinePage, TimelineSearchResult, ViewState, WorkspaceProfileScope } from '@shared/types'
-import { isAgentVisibleEvent, reconcileRenderTimelineItems, settleInactiveTimelineItems, type MessageItem, type RenderTimelineItem, type TimelineItem } from '../lib/timeline'
+import { coalescePromptRevisions, isAgentVisibleEvent, reconcileRenderTimelineItems, settleInactiveTimelineItems, type MessageItem, type RenderTimelineItem, type TimelineItem } from '../lib/timeline'
 import { pendingTurnSubmissionAccepted, snapshotNeedsAuthoritativeTail, useAppStore, type PendingTurnSubmission } from '../store/app-store'
 import { TimelineRowView } from './TimelineRows'
 import { TimelineMinimap, type TimelineMinimapHandle } from './TimelineMinimap'
@@ -336,9 +336,9 @@ function TimelineSession({ profileId, profileGeneration, serverIdentity, session
       && pendingSubmission
       && pendingSubmission.mode !== 'queue'
       && !pendingTurnSubmissionAccepted(pendingSubmission, sourceEvents)
-    const displayed = showPending
+    const displayed = coalescePromptRevisions(showPending
       ? [...canonical, pendingTurnMessageItem(sessionId, pendingSubmission)]
-      : canonical
+      : canonical)
     const next = reconcileRenderTimelineItems(previous, displayed)
     firstItemIndex.current = shiftedTimelineFirstItemIndex(
       firstItemIndex.current,

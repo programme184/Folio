@@ -1,4 +1,6 @@
 {
+  "app.crash.reload": "Reload",
+  "app.crash.title": "Something went wrong",
   "timeline.compact.completed": "Context compacted",
   "timeline.compact.output": "Command output",
   "composer.askOnly.active": "Ask mode is active",
@@ -1181,6 +1183,10 @@
   "timeline.ui.conversationStatusWasSynchronizedFromTheServer": "Conversation status was synchronized from the server.",
   "timeline.ui.conversationUnavailable": "Conversation unavailable",
   "timeline.ui.copyFullMessage": "Copy full message",
+  "timeline.ui.editPrompt": "Edit prompt",
+  "timeline.ui.editPromptUnavailable": "This prompt could not be opened in the composer.",
+  "timeline.ui.editPromptUploadPending": "Wait for the current attachment upload to finish, then edit this prompt again.",
+  "timeline.ui.replaceDraftConfirm": "Replace the current draft and its attachments with this earlier prompt?",
   "timeline.ui.couldNotCancelHandoff": "Could not cancel handoff:",
   "timeline.ui.couldNotEndTheConversation": "Could not end the conversation:",
   "timeline.ui.couldNotLoadFullMessage": "Could not load full message:",

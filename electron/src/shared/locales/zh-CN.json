@@ -1,4 +1,6 @@
 {
+  "app.crash.reload": "重新加载",
+  "app.crash.title": "出现了问题",
   "timeline.compact.completed": "上下文已压缩",
   "timeline.compact.output": "命令输出",
   "composer.askOnly.active": "Ask 模式已开启",
@@ -1181,6 +1183,10 @@
   "timeline.ui.conversationStatusWasSynchronizedFromTheServer": "会话状态已从服务端同步。",
   "timeline.ui.conversationUnavailable": "会话不可用",
   "timeline.ui.copyFullMessage": "复制完整消息",
+  "timeline.ui.editPrompt": "编辑 Prompt",
+  "timeline.ui.editPromptUnavailable": "无法在输入框中打开此 Prompt。",
+  "timeline.ui.editPromptUploadPending": "请等待当前附件上传完成，再重新编辑此 Prompt。",
+  "timeline.ui.replaceDraftConfirm": "要用这条历史 Prompt 替换当前草稿及附件吗？",
   "timeline.ui.couldNotCancelHandoff": "无法取消交接：",
   "timeline.ui.couldNotEndTheConversation": "无法结束会话：",
   "timeline.ui.couldNotLoadFullMessage": "无法加载完整消息：",

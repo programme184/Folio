@@ -13,7 +13,7 @@ import { loadTeamNetworkCore, loadTeamNetworkWorkspace, resetTeamNetworkSnapshot
 import { flushActiveWorkspace, useAppStore } from '../store/app-store'
 import { teamMessageLinkURL } from '../lib/team-message-links'
 import { projectTeamMessageComposer } from '../lib/team-message-composer'
-import { appendComposerDraft } from '../lib/composer-draft-append'
+import { appendComposerDraft, replaceComposerDraft } from '../lib/composer-draft-append'
 import { loadComposerHistory, recordComposerHistory } from '../lib/composer-history'
 import { profileSessionKey } from '../lib/profile-scope'
 import { Composer, TeamMentionPalette } from './Composer'
@@ -370,6 +370,82 @@ describe('Composer', () => {
     await waitFor(() => expect(send).toHaveBeenCalledOnce())
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'chat-1', prompt: edited, fileIds: ['file-1'] }))
     expect(send.mock.calls[0][0]).not.toHaveProperty('source_user_instruction')
+  })
+
+  it('replaces the live draft and attachments with a previous prompt after confirmation', () => {
+    const currentFile = { id: 'current-file', filename: 'current.txt' } as AgentFile
+    const previousFile = { id: 'previous-file', filename: 'previous.png', content_type: 'image/png' } as AgentFile
+    window.agentsDock.files = { mediaURL: vi.fn().mockReturnValue('data:image/png;base64,') } as unknown as AgentsDockAPI['files']
+    useAppStore.setState({ uploadsBySession: { 'chat-1': [currentFile] } })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<section data-chat-pane="primary"><button>Previous prompt</button><Composer /></section>)
+    const editor = screen.getByPlaceholderText('Message') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: 'Unsaved current draft' } })
+
+    act(() => {
+      expect(replaceComposerDraft(
+        screen.getByRole('button', { name: 'Previous prompt' }),
+        { profileId: 'profile-a', profileGeneration: 0, serverIdentity: null },
+        'chat-1', 'Revise this earlier prompt', [previousFile], [], [], 'original-prompt'
+      )).toBe('applied')
+    })
+
+    expect(confirm).toHaveBeenCalledOnce()
+    expect(editor).toHaveValue('Revise this earlier prompt')
+    expect(editor).toHaveFocus()
+    expect(editor.selectionStart).toBe(editor.value.length)
+    expect(useAppStore.getState().drafts['chat-1']).toBe('Revise this earlier prompt')
+    expect(useAppStore.getState().uploadsBySession['chat-1']).toEqual([previousFile])
+    confirm.mockRestore()
+  })
+
+  it('overwrites an edited prompt without sending or staging a provider turn', async () => {
+    const send = vi.fn()
+    const revise = vi.fn().mockResolvedValue({
+      seq: 4, id: 'revision-1', session_id: 'chat-1', type: 'prompt_revised',
+      ts: '2026-11-06T00:00:00Z', replaces_prompt_event_id: 'original-prompt', prompt: 'Updated prompt'
+    })
+    window.agentsDock.turns = { send, revise } as unknown as AgentsDockAPI['turns']
+    useAppStore.setState({
+      health: { ok: true, capabilities: { prompt_revision_v2: { available: true, version: 2 } } }
+    })
+    render(<section data-chat-pane="primary"><button>Previous prompt</button><Composer /></section>)
+    act(() => {
+      expect(replaceComposerDraft(
+        screen.getByRole('button', { name: 'Previous prompt' }),
+        { profileId: 'profile-a', profileGeneration: 0, serverIdentity: null },
+        'chat-1', 'Original prompt', [], [], [], 'original-prompt'
+      )).toBe('applied')
+    })
+    const editor = screen.getByPlaceholderText('Message')
+    fireEvent.change(editor, { target: { value: 'Updated prompt' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(revise).toHaveBeenCalledWith({
+      sessionId: 'chat-1', eventId: 'original-prompt', prompt: 'Updated prompt',
+      fileIds: [], chatReferences: [], teamReferences: []
+    }))
+    expect(send).not.toHaveBeenCalled()
+    expect(useAppStore.getState().pendingTurnSubmissions).toEqual({})
+    expect(editor).toHaveValue('')
+  })
+
+  it('keeps the current draft when replacing a prompt is cancelled', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<section data-chat-pane="primary"><button>Previous prompt</button><Composer /></section>)
+    const editor = screen.getByPlaceholderText('Message') as HTMLTextAreaElement
+    fireEvent.change(editor, { target: { value: 'Keep this draft' } })
+
+    act(() => {
+      expect(replaceComposerDraft(
+        screen.getByRole('button', { name: 'Previous prompt' }),
+        { profileId: 'profile-a', profileGeneration: 0, serverIdentity: null },
+        'chat-1', 'Earlier prompt', [], [], [], 'original-prompt'
+      )).toBe('cancelled')
+    })
+
+    expect(editor).toHaveValue('Keep this draft')
+    confirm.mockRestore()
   })
 
   it('targets only the originating composer pane and rejects stale server identities', () => {

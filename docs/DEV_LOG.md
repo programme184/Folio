@@ -1,5 +1,182 @@
 # Public development log
 
+## 2026-11-06 — Recover from a stale renderer bundle instead of a blank window
+
+- A window left open across a renderer rebuild kept referencing hashed lazy
+  chunks that no longer existed. Opening a file then failed to load the editor
+  chunk; with no error boundary React unmounted the whole tree and only the
+  app background remained.
+- The renderer now has a root error boundary, and a Vite preload failure or a
+  chunk-load error reloads the page once (guarded against reload loops). The
+  main process previously blocked every `will-navigate`, which also swallowed
+  `location.reload()`; it now allows only navigation to the current URL.
+
+```text
+Change and expected user behavior: a missing lazy chunk reloads the window once
+and returns to the app; any other render failure shows a message with a reload
+button instead of a blank page.
+Source commit / app build / server version: uncommitted desktop source;
+electron-vite dev and production renderer build; unchanged AgentsServer.
+Test surface: renderer recovery helpers, root error boundary, locale catalogs.
+Actions exercised and observed outcomes: in the running desktop app with an
+isolated profile, the editor chunk request was blocked and a text file opened:
+the page reloaded once, stored the loop guard and re-rendered the full UI.
+Before the main-process change `location.reload()` did nothing in this window;
+after it, both a plain reload and the preload-error handler reloaded the page.
+Real boundaries exercised; any mocked/stubbed boundaries: real Electron window
+and renderer bundle over the debugging protocol; the missing chunk was
+simulated by request blocking, not by deleting build output.
+Focused regression / typecheck / production build: full vitest run (326 files)
+and electron tsc --noEmit passed; electron-vite build completed.
+Remaining limitations or blocked acceptance: the error-boundary fallback was
+verified in tests only, not forced inside the live window.
+Availability: source only; not installed, packaged, published or deployed.
+```
+
+## 2026-11-06 — Keep xterm glyph measurements out of the terminal
+
+- The xterm 6 DOM renderer measures a glyph by repeating it 32 times in hidden
+  helper nodes. If its vendor hiding rule is temporarily absent or stale, those
+  private measurements become visible as rows of repeated dots mixed with real
+  shell output.
+- The terminal host now keeps both xterm measurement node variants off-screen
+  with an application-owned rule. They remain laid out so character widths are
+  still measured correctly; ordinary periods and all PTY output remain unchanged.
+
+```text
+Change and expected user behavior: terminal output no longer contains rows of
+measurement dots; real shell output and glyph sizing are unchanged.
+Source commit / app build / server version: uncommitted desktop source;
+electron-vite production build; unchanged AgentsServer.
+Test surface: terminal renderer/style regressions and compiled renderer CSS.
+Actions exercised and observed outcomes: xterm's width-cache container and
+character measurement node are forced hidden and off-screen without display:none;
+the production bundle retains both safeguards.
+Real boundaries exercised; any mocked/stubbed boundaries: the production CSS
+bundle is real. No controllable native app or browser surface was available in
+this environment, so live terminal input/resize/theme interaction is pending.
+Focused regression / typecheck / production build: 16 focused terminal tests
+passed; electron tsc --noEmit and the verified electron-vite build passed.
+Remaining limitations or blocked acceptance: actual-app light/dark, resize,
+reconnect and repeated-output inspection could not be completed here.
+Availability: source only; not installed, packaged, published or deployed.
+```
+
+## 2026-11-06 — Open Folio from the Linux menu
+
+- The Folio application menu entry was starting the raw Electron binary with
+  `--no-sandbox` and no app directory. Electron then showed its own welcome
+  window. Electron 43 reports that default-app launch as packaged, so the
+  generated menu command omitted the app directory.
+- The menu command now keeps the app directory whenever Electron was started
+  as the default app. A packaged Folio executable still launches itself
+  without that extra path.
+- GNOME can keep the previous menu command, which runs the Electron binary
+  with only `--no-sandbox`. The launcher in front of that binary now adds
+  the Folio directory when the command has none.
+- The welcome window's command is `electron.real` with no app directory.
+  That path is now a launcher too. The real binary is `electron.bin`.
+
+```text
+Change and expected user behavior: the Folio menu item opens Folio. The
+previous command opened Electron's welcome window.
+Source commit / app build / server version: uncommitted desktop source;
+electron-vite production build; unchanged AgentsServer.
+Test surface: isolated native app
+Actions exercised and observed outcomes: launching `electron.real` with no
+arguments now receives the Folio directory and reaches application ready.
+It no longer prints Electron's welcome banner.
+Real boundaries exercised; any mocked/stubbed boundaries: launcher decision
+was unit tested. The live check used an isolated profile and the production
+main process. The user's existing Folio profile was not switched.
+Focused regression / typecheck / production build: folio launcher tests
+passed (7). electron tsc --noEmit passed. electron-vite build and the
+compile-output check succeeded.
+Remaining limitations or blocked acceptance: none for the menu launch. The
+open Electron welcome windows were closed after the launcher was corrected.
+Availability: source only
+```
+
+## 2026-11-06 — Rename and delete files in server project roots
+
+- Desktop project folders shown through AgentsServer multi-root browsing can
+  now rename and permanently delete files and folders when connected to a
+  workspace-files capability v11 server.
+- These operations use native authenticated routes, opaque entry revisions,
+  atomic no-overwrite rename, descriptor-relative traversal, symlink refusal
+  and same-filesystem recursive deletion. Older servers keep the actions
+  disabled.
+
+```text
+Change and expected user behavior: Rename and Delete Permanently are enabled
+for entries in configured server project roots and refresh the same explorer.
+Source commit / app build / server version: commits 6f21a1fe and 17f86c2e;
+verified electron-vite production build and AgentsServer capability v11 source.
+Test surface: server absolute/SSH mutation fixtures, native desktop transport,
+multi-root renderer workflow and live Synria SSH filesystem boundary.
+Actions exercised and observed outcomes: revision-checked absolute rename and
+delete preserve full paths; the capability v11 UI sends only the native
+absolute operations while older capability versions remain gated.
+Real boundaries exercised; any mocked/stubbed boundaries: local filesystem,
+native HTTP transport and SSH execution on Synria are real; renderer server
+responses are fixture-backed. The live test used and removed only an isolated
+temporary directory under the configured Synria project root.
+Focused regression / typecheck / production build: 894 desktop transport/UI
+tests and all 76 workspace server tests pass; the production Electron build and
+output verification pass. Full TypeScript checking remains blocked by unrelated
+in-progress Composer/Timeline changes in the shared worktree.
+Remaining limitations or blocked acceptance: the rebuilt desktop is running,
+but the local AgentsServer activation is waiting for two unrelated active agent
+turns to become idle before its guarded restart loads workspace capability v11.
+Availability: committed source and locally rebuilt desktop; no release package
+was published.
+```
+
+## 2026-11-06 — Edit an earlier prompt in place
+
+- Authored user messages now include an **Edit prompt** action. It
+  restores the exact prompt and its attachments to the matching chat composer,
+  focuses the editor, and keeps the revised prompt at its original timeline
+  position instead of rendering a second user bubble.
+- An existing draft or attachment selection requires confirmation before it is
+  replaced. A pending attachment upload blocks replacement with retry guidance.
+  Pending messages and shared-chat collaborator messages do not expose the
+  action. English and Simplified Chinese labels are included. The matching
+  server validates and persists the exact revision target as a presentation-only
+  event; it does not start, queue or interrupt a provider turn and does not
+  generate another reply. Older servers hide
+  the action instead of silently falling back to duplicate rendering.
+
+```text
+Change and expected user behavior: reopen an earlier authored prompt in the
+composer and overwrite it without losing attachments, silently overwriting a
+current draft, displaying a duplicate prompt or submitting another model turn.
+Source commit / app build / server version: desktop and server source remain
+uncommitted; verified electron-vite production build; prompt revision v2 is
+source-only and requires a matching AgentsServer update.
+Test surface: Composer, production Timeline projection and native transport
+regressions, plus server validation and capability tests.
+Actions exercised and observed outcomes: prompt text and attachment restoration,
+confirmed replacement, cancelled replacement and exact timeline action payload
+passed. The revised text replaces the earlier prompt presentation while the
+existing assistant response remains unchanged; no new provider turn is created.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer event,
+store, IPC/HTTP payload and server event boundaries are exercised; provider
+execution is intentionally not invoked. Native offscreen UI input was unavailable
+in this environment. The source health contract advertises prompt_revision_v2
+version 2, and invalid targets are rejected before event persistence or provider
+launch.
+Focused regression / typecheck / production build: 811 focused desktop tests
+and 4 server tests pass; TypeScript checking and the verified Electron production
+build pass. A concurrent full desktop run had 20 unrelated timeout/environment
+failures among 6,133 tests; the full server run was stopped after unrelated
+isolation failures, so neither full suite is claimed as passing.
+Remaining limitations or blocked acceptance: native app click-through, light/
+dark visual inspection and a real in-app edit are not certified by this run.
+Availability: source and local production build only; not installed, published
+or deployed.
+```
+
 ## 2026-11-06 — Discover LAN routes for existing server profiles
 
 - Existing verified profiles created before multi-address support now read the
@@ -12043,5 +12220,36 @@ Focused regression / typecheck / production build: all 169 WorkspaceEditor
 tests pass; TypeScript checking and production build/output verification pass.
 Remaining limitations or blocked acceptance: native click-through remains
 pending; the active app and server were not restarted or disturbed.
+Availability: source only; not installed, published or deployed.
+```
+
+## 2026-11-06 — Keep explicit chat switching on the conversation
+
+- Clicking a chat in the sidebar or opening it from history now activates the
+  conversation instead of restoring that chat's previously active file split.
+  Open file tabs remain available and can be selected again normally.
+- Navigation is scoped to the selected profile, server generation and chat, so
+  a delayed switch cannot change another server or conversation.
+
+```text
+Change and expected user behavior: switch from one chat to another whose last
+active surface was a file; the selected chat opens on its conversation without
+showing the stale file split, while its file tab remains available.
+Source commit / app build / server version: uncommitted source; production
+Electron compile; no server change required.
+Test surface: renderer interaction fixtures and production compile.
+Actions exercised and observed outcomes: selected a chat while its persisted
+workspace state was still hydrating; after hydration the conversation remained
+active, the split stayed closed, and the restored file tab could be reopened.
+Also verified navigation dispatch only after successful chat selection.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer state,
+workspace preference and animation-frame boundaries use the test bridge. Native
+click-through was not run because no isolated app profile/server was available;
+the active user app and chats were not disturbed.
+Focused regression / typecheck / production build: all 181 focused navigation
+and WorkspaceEditor tests pass; TypeScript checking and production build/output
+verification pass.
+Remaining limitations or blocked acceptance: native app click-through remains
+pending on an isolated profile. No package or server update was produced.
 Availability: source only; not installed, published or deployed.
 ```

@@ -7,6 +7,8 @@ import { initializeAppearance } from './lib/appearance'
 import { initializeLanguage, useLocale } from './lib/i18n'
 import { chatSwitcherShortcutPlatform, installChatSwitcherShortcut } from './lib/chat-switcher-shortcut'
 import { handleMenuCommand, useAppStore } from './store/app-store'
+import { RootErrorBoundary } from './components/RootErrorBoundary'
+import { installStaleBundleRecovery } from './lib/renderer-recovery'
 import './styles.css'
 import '@xterm/xterm/css/xterm.css'
 import 'highlight.js/styles/github-dark.css'
@@ -30,12 +32,16 @@ function LocalizedApp() {
   return <App />
 }
 
+installStaleBundleRecovery()
+
 void initializeLanguage().then(() => ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider delayDuration={350}>
-        <LocalizedApp />
-      </TooltipProvider>
-    </QueryClientProvider>
+    <RootErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <TooltipProvider delayDuration={350}>
+          <LocalizedApp />
+        </TooltipProvider>
+      </QueryClientProvider>
+    </RootErrorBoundary>
   </React.StrictMode>
 ))

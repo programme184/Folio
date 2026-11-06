@@ -73,6 +73,7 @@ import {
   writeEditorAppearance
 } from '../lib/editor-appearance'
 import { trackEvent, trackOperation } from '../lib/analytics'
+import { REVEAL_CHAT_SURFACE_EVENT } from '../lib/session-history-search'
 import { getWorkspacePreference, setWorkspacePreference } from '../lib/workspace-preferences'
 import {
   workspacePathForAgentFile,
@@ -980,6 +981,24 @@ export function WorkspaceEditor({
     setPendingClosePath(null)
     onReturnToChat?.()
   }
+
+  useEffect(() => {
+    const revealChat = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string | null
+        profileId?: string
+        profileGeneration?: number
+        serverIdentity?: string | null
+      }>).detail
+      if (!acceptsWorkspaceRequest(detail)) return
+      // Explicit chat navigation wins over the file tab restored for that
+      // conversation. Wait for hydration so it cannot reopen the file after
+      // the user has selected the chat; the tabs themselves remain available.
+      afterPaneRestoration(showChat)
+    }
+    window.addEventListener(REVEAL_CHAT_SURFACE_EVENT, revealChat)
+    return () => window.removeEventListener(REVEAL_CHAT_SURFACE_EVENT, revealChat)
+  })
 
   const showChanges = (): void => {
     if (paletteOpenRef.current) cancelPalette()

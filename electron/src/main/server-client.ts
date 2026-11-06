@@ -1384,6 +1384,26 @@ export class AgentServerClient {
     return response.event ? { ...response, event: compactTimelineEvent(response.event) } : response
   }
 
+  async revisePrompt(
+    sessionId: string,
+    eventId: string,
+    prompt: string,
+    fileIds: string[],
+    chatReferences: ChatReference[] = [],
+    teamReferences: TeamReference[] = []
+  ): Promise<Event> {
+    const response = await this.patch<{ event: Event }>(
+      `/api/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(eventId)}`,
+      {
+        prompt,
+        file_ids: fileIds,
+        chat_references: chatReferences,
+        team_references: teamReferences
+      }
+    )
+    return compactTimelineEvent(response.event)
+  }
+
   async stopTurn(sessionId: string): Promise<TurnStopResult> {
     const response = await this.post<Partial<TurnStopResult>>(`/api/sessions/${encodeURIComponent(sessionId)}/stop`, {})
     return {

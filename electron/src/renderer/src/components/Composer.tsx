@@ -601,6 +601,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const pendingSelectionRef = useRef<{ start: number; end: number; direction: 'forward' | 'backward' | 'none' } | null>(null)
   const nativeEditSelectionRef = useRef<ComposerNativeEditSelection | null>(null)
   const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
+  const promptRevisionRef = useRef<string | null>(null)
   const providerCommandRequestRef = useRef(0)
   const providerCommandPaletteOpenRef = useRef(false)
   const providerCommandsKeyRef = useRef(providerCommandsKey)
@@ -931,6 +932,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }, [])
 
   useEffect(() => { draftRef.current = draft }, [draft])
+  useEffect(() => { promptRevisionRef.current = null }, [activeProfileId, profileGeneration, selectedId, serverIdentity, workspaceKey])
   useEffect(() => {
     const focus = (event: Event) => {
       const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
@@ -1363,7 +1365,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       if (!consent) return
       steerConsent = consent
     }
-    const runtimeError = sessionRuntimeAdmissionError(liveSession, liveState.health, liveState.runtimeCatalog)
+    const runtimeError = promptRevisionRef.current
+      ? null
+      : sessionRuntimeAdmissionError(liveSession, liveState.health, liveState.runtimeCatalog)
     if (runtimeError) {
       liveState.setError(runtimeError)
       return
@@ -1401,6 +1405,64 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     const outgoingTeamReferences = canonicalOutgoing.teamReferences
     if (consumeComposer && uploadPaths.length > 0) return
     if (!outgoing.trim() && (!consumeComposer || uploads.length === 0)) return
+    if (!liveSession) return
+    const promptRevisionTarget = consumeComposer ? promptRevisionRef.current : null
+    if (promptRevisionTarget) {
+      const leadingWhitespace = outgoing.length - outgoing.trimStart().length
+      const prompt = outgoing.trim()
+      const revised = await useAppStore.getState().revisePromptForSession(
+        liveSession.id,
+        promptRevisionTarget,
+        prompt,
+        uploads.map(file => file.id),
+        outgoingReferences.map(reference => ({
+          ...reference,
+          source_text_start: reference.source_text_start - leadingWhitespace,
+          source_text_end: reference.source_text_end - leadingWhitespace
+        })),
+        outgoingTeamReferences.map(reference => ({
+          ...reference,
+          source_text_start: reference.source_text_start - leadingWhitespace,
+          source_text_end: reference.source_text_end - leadingWhitespace
+        }))
+      )
+      if (!revised) {
+        const message = useAppStore.getState().error
+        if (message && composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, liveSession.id, draftContextRef, mountedRef)) {
+          setSendFailure({ context: sendContext, message })
+        }
+        return
+      }
+      if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, liveSession.id, draftContextRef, mountedRef)) return
+      promptRevisionRef.current = null
+      providerCommandBindingRef.current = null
+      draftRef.current = ''
+      draftDirtyRef.current = true
+      referencesRef.current = []
+      referencesDirtyRef.current = false
+      teamReferencesRef.current = []
+      teamReferencesDirtyRef.current = false
+      setDraft('')
+      setReferences([])
+      setTeamReferences([])
+      setMention(null)
+      setMentionCandidates([])
+      setTeamMention(null)
+      setTeamMentionCandidates([])
+      useAppStore.setState(state => ({
+        drafts: { ...state.drafts, [liveSession.id]: '' },
+        chatReferencesBySession: { ...state.chatReferencesBySession, [liveSession.id]: [] },
+        teamReferencesBySession: { ...state.teamReferencesBySession, [liveSession.id]: [] },
+        uploadsBySession: { ...state.uploadsBySession, [liveSession.id]: [] },
+        uploadPathsBySession: { ...state.uploadPathsBySession, [liveSession.id]: [] }
+      }))
+      void Promise.all([
+        setWorkspacePreference(draftPreferenceScope(draftContextRef.current), `draft:${liveSession.id}`, ''),
+        setWorkspacePreference(draftPreferenceScope(draftContextRef.current), chatReferencesPreferenceKey(liveSession.id), []),
+        setWorkspacePreference(draftPreferenceScope(draftContextRef.current), teamReferencesPreferenceKey(liveSession.id), [])
+      ]).catch(() => undefined)
+      return
+    }
     if (consumeComposer && outgoing.trim().split(/\s/, 1)[0] === '/mail') {
       const capability = health?.capabilities?.agent_team_mail_v1
       if (
@@ -1586,6 +1648,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         if (message) setSendFailure({ context: sendContext, message })
       }
       if (sent) {
+        promptRevisionRef.current = null
         if (consumeComposer && promptOverride === undefined && workspaceKey) {
           // This closure owns the submitting workspace, even after navigation.
           recordComposerHistory(workspaceKey, rawOutgoing.trim())
@@ -1815,7 +1878,49 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         || detail.scope.profileId !== activeProfileId || detail.scope.profileGeneration !== profileGeneration
         || detail.scope.serverIdentity !== serverIdentity || current.activeProfileId !== activeProfileId
         || current.profileGeneration !== profileGeneration || activeIdentity(current) !== serverIdentity
-        || current.switchingProfileId || typeof detail.text !== 'string' || !detail.text.trim()) return
+        || current.switchingProfileId || typeof detail.text !== 'string'
+        || (!detail.text.trim() && !(detail.mode === 'replace' && (detail.files?.length ?? 0) > 0))) return
+      if (detail.mode === 'replace') {
+        event.preventDefault()
+        const state = useAppStore.getState()
+        if ((state.uploadPathsBySession[selectedId] ?? []).length > 0) {
+          state.setError(t('timeline.ui.editPromptUploadPending'))
+          detail.result = 'cancelled'
+          return
+        }
+        const hasCurrentDraft = Boolean(draftRef.current.trim())
+          || (state.uploadsBySession[selectedId] ?? []).length > 0
+        if (hasCurrentDraft && !window.confirm(t('timeline.ui.replaceDraftConfirm'))) {
+          detail.result = 'cancelled'
+          return
+        }
+        const nextText = detail.text
+        const nextReferences = validComposerReferences(
+          nextText,
+          detail.chatReferences ?? [],
+          detail.teamReferences ?? [],
+          (text, candidates) => validChatReferences(text, candidates, selectedId)
+        )
+        draftRef.current = nextText
+        draftDirtyRef.current = true
+        referencesRef.current = nextReferences.chatReferences
+        referencesDirtyRef.current = true
+        teamReferencesRef.current = nextReferences.teamReferences
+        teamReferencesDirtyRef.current = true
+        promptRevisionRef.current = detail.replacesPromptEventId?.trim() || null
+        pendingCaretRef.current = nextText.length
+        setDraft(nextText)
+        setReferences(nextReferences.chatReferences)
+        setTeamReferences(nextReferences.teamReferences)
+        useAppStore.setState(currentState => ({
+          drafts: { ...currentState.drafts, [selectedId]: nextText },
+          chatReferencesBySession: { ...currentState.chatReferencesBySession, [selectedId]: nextReferences.chatReferences },
+          teamReferencesBySession: { ...currentState.teamReferencesBySession, [selectedId]: nextReferences.teamReferences },
+          uploadsBySession: { ...currentState.uploadsBySession, [selectedId]: detail.files?.map(file => ({ ...file })) ?? [] }
+        }))
+        detail.result = 'applied'
+        return
+      }
       event.preventDefault()
       appendDraftRef.current(detail.text)
     }

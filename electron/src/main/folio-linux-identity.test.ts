@@ -68,6 +68,14 @@ describe('Folio linux launcher', () => {
     })
     expect(packaged).toBe('"/opt/Folio/folio"')
     expect(packaged).not.toContain('--no-sandbox')
+    const electron43Dev = folioLinuxDesktopCommand({
+      packaged: true,
+      defaultApp: true,
+      execPath: '/opt/electron',
+      appPath: '/work/electron',
+      noSandbox: true
+    })
+    expect(electron43Dev).toBe('"/opt/electron" --no-sandbox "/work/electron"')
     expect(folioLinuxDesktopEntry(blocked, '/opt/folio-icon.png')).toContain(`Exec=${blocked}`)
     expect(folioLinuxDesktopEntry(blocked, 'folio')).toContain('Icon=folio')
   })
@@ -91,9 +99,23 @@ describe('Folio linux launcher', () => {
     const binary = join(dir, 'electron')
     writeFileSync(binary, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from('binary')]))
     expect(installElectronLaunchShim(binary)).toBe(binary)
-    expect(readFileSync(binary, 'utf8')).toContain('electron.real" --no-sandbox')
-    expect(readFileSync(join(dir, 'electron.real')).subarray(0, 4)).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
-    expect(installElectronLaunchShim(binary)).toBe(binary)
+    expect(readFileSync(binary, 'utf8')).toContain('electron.bin" --no-sandbox')
+    expect(readFileSync(join(dir, 'electron.real'), 'utf8')).toContain('electron.bin" --no-sandbox')
+    expect(readFileSync(join(dir, 'electron.bin')).subarray(0, 4)).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
+    expect(installElectronLaunchShim(join(dir, 'electron.bin'))).toBe(binary)
     expect(installElectronLaunchShim(join(dir, 'electron.real'))).toBe(binary)
+  })
+
+  it('fills in the app directory when the saved menu command launches electron.real', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'folio-shim-app-'))
+    const moved = join(dir, 'electron.real')
+    writeFileSync(moved, Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from('binary')]))
+    expect(installElectronLaunchShim(moved, '/work/electron')).toBe(join(dir, 'electron'))
+    expect(readFileSync(join(dir, 'electron'), 'utf8')).toContain("app_dir='/work/electron'")
+    expect(readFileSync(moved, 'utf8')).toContain("app_dir='/work/electron'")
+    expect(readFileSync(moved, 'utf8')).toContain('electron.bin" --no-sandbox')
+    expect(installElectronLaunchShim(join(dir, 'electron.bin'), "/work/o'electron")).toBe(join(dir, 'electron'))
+    expect(readFileSync(moved, 'utf8')).toContain(`app_dir='/work/o'\\''electron'`)
+    expect(readFileSync(join(dir, 'electron.bin')).subarray(0, 4)).toEqual(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))
   })
 })

@@ -724,6 +724,13 @@ html[data-platform="darwin"] .chat-header.empty { height: 52px; padding: 18px 12
 .terminal-host .xterm { width: 100%; height: 100%; position: absolute; inset: 0; padding: 10px 10px 5px 12px; }
 .terminal-host .xterm-viewport { background: #111212; overscroll-behavior: contain; }
 .terminal-host .xterm-screen canvas { image-rendering: auto; }
+/* xterm's DOM renderer measures glyph widths by repeating each character 32
+ * times in private helper nodes. Keep those nodes measurable but unconditionally
+ * off-screen so a missing or temporarily stale vendor rule cannot expose rows
+ * of measurement dots in the terminal. Do not use display:none: that makes the
+ * width cache measure every glyph as zero. */
+.terminal-host .xterm-width-cache-measure-container { position: absolute !important; top: -50000px !important; left: 0 !important; visibility: hidden !important; pointer-events: none !important; }
+.terminal-host .xterm-char-measure-element { position: absolute !important; left: -9999em !important; visibility: hidden !important; pointer-events: none !important; }
 .terminal-search { position: absolute; z-index: 20; top: 47px; right: 14px; display: flex; align-items: center; gap: 4px; height: 35px; padding: 0 5px 0 9px; color: var(--muted); background: #292a2af5; border: 1px solid #454646; border-radius: 8px; box-shadow: 0 10px 30px #0008; }
 .terminal-search input { width: 220px; background: transparent; border: 0; outline: 0; }
 .terminal-search button { width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted); background: transparent; border-radius: 5px; }
@@ -3676,3 +3683,7 @@ button.tool-event-toggle:hover { background: #242424; }
 
 .chat-mention-file { min-height: 38px; }
 .composer-file-drop-active { outline: 2px dashed var(--accent, #4c8dff); outline-offset: 2px; border-radius: var(--radius-control); }
+.root-error { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 24px; text-align: center; color: var(--text); }
+.root-error h1 { margin: 0; font-size: 16px; }
+.root-error p { margin: 0; max-width: 520px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.root-error button { height: 30px; padding: 0 14px; border-radius: 7px; border: 1px solid var(--border, currentColor); background: transparent; color: inherit; }

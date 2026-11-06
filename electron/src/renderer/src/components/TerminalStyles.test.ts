@@ -31,4 +31,16 @@ describe('terminal appearance styles', () => {
       /:root\[data-theme="light"\] \.terminal-host \.xterm-viewport \{ background: var\(--surface\); \}/
     )
   })
+
+  it('keeps xterm DOM glyph measurement text off-screen without disabling measurement', () => {
+    expect(styles).toMatch(
+      /\.terminal-host \.xterm-width-cache-measure-container \{[^}]*position: absolute !important;[^}]*top: -50000px !important;[^}]*visibility: hidden !important;[^}]*\}/s
+    )
+    expect(styles).toMatch(
+      /\.terminal-host \.xterm-char-measure-element \{[^}]*position: absolute !important;[^}]*left: -9999em !important;[^}]*visibility: hidden !important;[^}]*\}/s
+    )
+    expect(styles).not.toMatch(
+      /\.terminal-host \.xterm-(?:width-cache-measure-container|char-measure-element) \{[^}]*display: none/s
+    )
+  })
 })

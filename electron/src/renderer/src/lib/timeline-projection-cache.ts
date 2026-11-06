@@ -3,6 +3,7 @@ import { crossChatSemanticKey } from '@shared/semantic-timeline'
 import { isChatMailboxEvent } from '@shared/chat-inbox'
 import {
   TimelineProjector,
+  materializePromptRevisions,
   reconcileRenderTimelineItems,
   renderTimelineItems,
   type RenderTimelineItem,
@@ -70,7 +71,7 @@ export function cachedTimelineProjection(
   if (cached && sameScope(cached.scope, scope) && isAppendOnly(cached, events)) {
     cached.projector.updateKnownFiles(files)
     const appended = events.slice(cached.eventCount)
-    if (cached.projector.append(appended)) {
+    if (!appended.some(event => event.type === 'prompt_revised') && cached.projector.append(appended)) {
       const semantic = cached.projector.items
       const incremental = renderAppendedTimeline(cached, semantic, appended)
       const next = projectionRecord(events, files, scope, cached.projector, semantic, incremental.rendered)
@@ -86,7 +87,7 @@ export function cachedTimelineProjection(
   }
 
   const projector = new TimelineProjector(files, scope)
-  if (!projector.append(events)) throw new Error('Timeline projection rebuild failed')
+  if (!projector.append(materializePromptRevisions(events))) throw new Error('Timeline projection rebuild failed')
   const semantic = projector.items
   const rendered = reconcileRenderTimelineItems(cached?.rendered ?? [], renderTimelineItems(semantic))
   const next = projectionRecord(events, files, scope, projector, semantic, rendered)

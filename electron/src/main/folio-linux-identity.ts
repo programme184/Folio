@@ -69,10 +69,15 @@ export function folioLinuxDesktopCommand(input: {
   execPath: string
   appPath: string
   noSandbox: boolean
+  /** True when this process was started by passing the app to the Electron binary. */
+  defaultApp?: boolean
 }): string {
   const parts = [quoteDesktopField(input.execPath)]
   if (input.noSandbox) parts.push('--no-sandbox')
-  if (!input.packaged) parts.push(quoteDesktopField(input.appPath))
+  // Electron 43 reports app.isPackaged for that default-app launch. The raw
+  // binary then opens its own welcome window unless the menu repeats the app
+  // directory. A packaged Folio executable already finds the app beside itself.
+  if (!input.packaged || input.defaultApp) parts.push(quoteDesktopField(input.appPath))
   return parts.join(' ')
 }
 
@@ -104,42 +109,81 @@ export function installFolioLinuxIcon(sourcePath: string, homePath: string): str
   return iconPath
 }
 
-/** Script placed in front of Electron so a menu that drops --no-sandbox still starts. */
-export function electronLaunchShimScript(realName: string): string {
+/**
+ * Script placed in front of Electron so a menu command still starts Folio.
+ * The menu can keep an old command that has --no-sandbox, or no arguments at
+ * all. Either one opens Electron's welcome window unless this script supplies
+ * the app directory.
+ */
+export function electronLaunchShimScript(realName: string, appPath?: string): string {
+  const fallback = appPath
+    ? `app_dir=${shellSingleQuote(appPath)}
+has_app=0
+for arg in "$@"; do
+  case "$arg" in
+    -*) ;;
+    *) has_app=1; break ;;
+  esac
+done
+if [ "$has_app" -eq 0 ]; then
+  set -- "$@" "$app_dir"
+fi
+`
+    : ''
   return `#!/bin/sh
 ${LAUNCH_SHIM_MARK}
-exec "$(dirname "$0")/${realName}" --no-sandbox "$@"
+${fallback}exec "$(dirname "$0")/${realName}" --no-sandbox "$@"
 `
 }
 
 /**
  * The application menu can keep an old command that runs the Electron binary
- * directly. That command aborts when the sandbox helper cannot run. A shim at
- * the same path adds --no-sandbox before the real binary starts.
+ * directly. After the first launcher starts, that command is often the
+ * `electron.real` path shown in Electron's welcome window. Both names need
+ * to add --no-sandbox and the Folio directory before the real binary runs.
  * Returns the path the menu should execute.
  */
-export function installElectronLaunchShim(execPath: string): string {
+export function installElectronLaunchShim(execPath: string, appPath?: string): string {
   const dir = dirname(execPath)
-  const base = basename(execPath)
-  if (base.endsWith('.real')) {
-    const shim = join(dir, base.slice(0, -'.real'.length))
-    if (!existsSync(shim)) writeLaunchShim(shim, base)
-    return existsSync(shim) ? shim : execPath
+  const elf = ensureElectronElf(dir, execPath)
+  if (!elf) return execPath
+  const realName = basename(elf)
+  for (const name of ['electron', 'electron.real']) {
+    if (name === realName) continue
+    writeLaunchShim(join(dir, name), realName, appPath)
   }
-  const header = readPrefix(execPath)
-  if (header.includes(LAUNCH_SHIM_MARK)) return execPath
-  if (!header.subarray(0, ELF_MAGIC.length).equals(ELF_MAGIC)) return execPath
-  const realName = `${base}.real`
-  const realPath = join(dir, realName)
-  if (!existsSync(realPath)) renameSync(execPath, realPath)
-  else return execPath
-  writeLaunchShim(execPath, realName)
-  return execPath
+  const menu = join(dir, 'electron')
+  return existsSync(menu) ? menu : execPath
 }
 
-function writeLaunchShim(shimPath: string, realName: string): void {
-  writeFileSync(shimPath, electronLaunchShimScript(realName), { mode: 0o755 })
+function ensureElectronElf(dir: string, execPath: string): string | null {
+  const bin = join(dir, 'electron.bin')
+  if (isElf(bin)) return bin
+  for (const candidate of [execPath, join(dir, 'electron.real'), join(dir, 'electron')]) {
+    if (candidate === bin || !isElf(candidate)) continue
+    renameSync(candidate, bin)
+    return bin
+  }
+  return null
+}
+
+function isElf(path: string): boolean {
+  return readPrefix(path).subarray(0, ELF_MAGIC.length).equals(ELF_MAGIC)
+}
+
+function writeLaunchShim(shimPath: string, realName: string, appPath?: string): void {
+  const script = electronLaunchShimScript(realName, appPath)
+  try {
+    if (readFileSync(shimPath, 'utf8') === script) return
+  } catch {
+    // The shim is not there yet.
+  }
+  writeFileSync(shimPath, script, { mode: 0o755 })
   chmodSync(shimPath, 0o755)
+}
+
+function shellSingleQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 function readPrefix(path: string): Buffer {

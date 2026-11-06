@@ -4,6 +4,7 @@ import { rendererProfileKey } from './profile-scope'
 import { useAppStore } from '../store/app-store'
 
 export const OPEN_HISTORY_RESULT_EVENT = 'agentsdock:open-history-result'
+export const REVEAL_CHAT_SURFACE_EVENT = 'agentsdock:reveal-chat-surface'
 const SEARCH_CACHE_TTL_MS = 30_000
 const SEARCH_CACHE_MAX_ENTRIES = 24
 const searchCache = new Map<string, { at: number; results: TimelineSearchResult[] }>()
@@ -85,7 +86,6 @@ export async function openSessionHistoryResult(sessionId: string, result?: Timel
   // its result must reveal the chat instead of leaving Team Network on top.
   // Do this only after successful selection, before a history jump is queued.
   window.dispatchEvent(new Event('agentsdock:close-teamspace'))
-  if (!result) return true
   const stillCurrent = () => {
     const current = useAppStore.getState()
     return !current.switchingProfileId
@@ -95,7 +95,16 @@ export async function openSessionHistoryResult(sessionId: string, result?: Timel
   }
   if (!stillCurrent()) return false
   window.requestAnimationFrame(() => {
-    if (stillCurrent()) window.dispatchEvent(new CustomEvent<TimelineSearchResult>(OPEN_HISTORY_RESULT_EVENT, { detail: result }))
+    if (!stillCurrent()) return
+    window.dispatchEvent(new CustomEvent(REVEAL_CHAT_SURFACE_EVENT, {
+      detail: {
+        sessionId,
+        profileId,
+        profileGeneration,
+        serverIdentity: selected.profiles.find(profile => profile.id === profileId)?.serverIdentity ?? null
+      }
+    }))
+    if (result) window.dispatchEvent(new CustomEvent<TimelineSearchResult>(OPEN_HISTORY_RESULT_EVENT, { detail: result }))
   })
   return true
 }

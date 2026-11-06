@@ -32,6 +32,16 @@ repository and its signed downloads remain available during the update migration
 Keep local chat state, uploaded files, tokens, compiled caches, private hostnames,
 and personal machine paths outside tracked source.
 
+## Prompt revision presentation
+
+`capabilities.prompt_revision_v2` version 2 allows native clients to send
+`PATCH /api/sessions/{session_id}/prompts/{event_id}` for an ordinary authored
+`turn_started` event in that chat. Provider-created, shared-collaborator and
+internal-purpose inputs are rejected. The server appends a durable
+`prompt_revised` presentation event containing the replacement text,
+attachments and structured references. It does not enter turn admission,
+start or queue a provider, interrupt current work, or generate a reply.
+
 ## What It Gives AgentsDock
 
 - Creates and resumes chat sessions for Claude and Codex CLI backends.

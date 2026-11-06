@@ -10,6 +10,7 @@ import { TimelineRowView as TimelineRowViewImpl } from './TimelineRows'
 import { setLocale } from '@shared/i18n'
 import { formatTime } from '../lib/format'
 import { setReasoningDisplay } from '../lib/reasoning-display'
+import { COMPOSER_DRAFT_APPEND_EVENT, type ComposerDraftAppendDetail } from '../lib/composer-draft-append'
 
 afterEach(cleanup)
 afterEach(() => setLocale('en'))
@@ -59,7 +60,7 @@ describe('timeline pin state', () => {
     useAppStore.setState({
       activeProfileId: 'profile-a', profileGeneration: 0, selectedSessionId: null,
       connected: true, connectionGeneration: 3,
-      health: { ok: true, server_instance_id: 'instance-a' },
+      health: { ok: true, server_instance_id: 'instance-a', capabilities: { prompt_revision_v2: { available: true, version: 2 } } },
       chatPanes: { primary: null, secondary: null }, focusedChatPane: 'primary',
       profiles: [], sessions: [], snapshots: {}, jobs: [], selectSession: originalSelectSession,
       acknowledgeEmergency: originalAcknowledgeEmergency
@@ -2277,6 +2278,37 @@ describe('timeline pin state', () => {
 
     expect(surface).not.toBeNull()
     expect(within(surface as HTMLElement).getByRole('img', { name: 'question.png' })).toHaveAttribute('src', 'agentsdock-media://file/input-image')
+  })
+
+  it('opens an authored user prompt and its attachments for in-place editing', () => {
+    const event: Event = {
+      id: 'event-edit-user', session_id: 'chat-1', seq: 1, type: 'turn_started',
+      ts: '2026-07-10T14:29:00Z', prompt: 'Improve this prompt', file_ids: ['input-image']
+    }
+    const file: AgentFile = { id: 'input-image', filename: 'reference.png', content_type: 'image/png' }
+    const item: MessageItem = {
+      kind: 'message', id: 'message-edit-user', key: 'message-edit-user', seq: 1,
+      event, events: [event], role: 'user', files: [file]
+    }
+    let detail: ComposerDraftAppendDetail | null = null
+    const accept = (received: globalThis.Event) => {
+      detail = (received as CustomEvent<ComposerDraftAppendDetail>).detail
+      detail.result = 'applied'
+      received.preventDefault()
+    }
+    window.addEventListener(COMPOSER_DRAFT_APPEND_EVENT, accept)
+    const { container } = render(<section data-chat-pane="primary">
+      <TimelineRowView item={item} sessionId="chat-1" onFindFile={() => {}} pinnedItemIds={new Set()} />
+    </section>)
+
+    fireEvent.click(within(container).getByTitle('Edit prompt'))
+
+    expect(detail).toMatchObject({
+      sessionId: 'chat-1', text: 'Improve this prompt', mode: 'replace', files: [file],
+      replacesPromptEventId: 'event-edit-user'
+    })
+    expect(useAppStore.getState().error).toBeNull()
+    window.removeEventListener(COMPOSER_DRAFT_APPEND_EVENT, accept)
   })
 
   it('shows the omission marker for an oversized tool result', () => {

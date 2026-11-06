@@ -247,6 +247,7 @@ const api: AgentsDockAPI = {
   },
   turns: {
     send: input => ipcRenderer.invoke('turns:send', input),
+    revise: input => ipcRenderer.invoke('turns:revise', input),
     stop: sessionId => ipcRenderer.invoke('turns:stop', sessionId)
   },
   providerConnections: {

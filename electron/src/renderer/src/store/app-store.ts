@@ -303,6 +303,7 @@ interface AppState {
   rollbackPendingTurnSubmission(sessionId: string, token: string): void
   sendPrompt(promptOverride?: string, steer?: boolean, options?: SendPromptOptions): Promise<boolean>
   sendPromptForSession(sessionId: string, promptOverride?: string, steer?: boolean, options?: SendPromptOptions): Promise<boolean>
+  revisePromptForSession(sessionId: string, eventId: string, prompt: string, fileIds: string[], chatReferences: ChatReference[], teamReferences: TeamReference[]): Promise<boolean>
   stopTurn(): Promise<void>
   stopTurnForSession(sessionId: string): Promise<void>
   attachPaths(files: NativeFileRef[]): Promise<void>
@@ -2321,6 +2322,46 @@ export const useAppStore = create<AppState>((set, get) => ({
       return false
     } finally {
       get().endTurnAdmission(sessionId, admissionToken)
+    }
+  },
+
+  async revisePromptForSession(sessionId, eventId, prompt, fileIds, chatReferences, teamReferences) {
+    const initial = get()
+    if (initial.switchingProfileId
+      || initial.health?.capabilities?.prompt_revision_v2?.available !== true
+      || !initial.sessions.some(session => session.id === sessionId && !session.archived)) return false
+    const scope = captureProfileScope(initial)
+    try {
+      const event = await window.agentsDock.turns.revise({
+        sessionId,
+        eventId,
+        prompt,
+        fileIds,
+        chatReferences,
+        teamReferences
+      })
+      if (!profileScopeMatches(scope, get())) return false
+      set(state => {
+        const snapshot = state.snapshots[sessionId]
+        if (!snapshot) return { error: null }
+        const events = upsertEvent(snapshot.events, event)
+        return {
+          error: null,
+          snapshots: cacheSnapshot(state.snapshots, sessionId, {
+            ...snapshot,
+            events,
+            generation: nextTimelineGeneration(
+              snapshot,
+              events,
+              events.length === snapshot.events.length + 1 && events.at(-1) === event
+            )
+          }, visibleChatSessionIds(currentChatPaneLayout(state).panes))
+        }
+      })
+      return true
+    } catch (error) {
+      if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
+      return false
     }
   },
 

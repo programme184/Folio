@@ -4,7 +4,7 @@ import { CopyErrorButton } from './CopyErrorButton'
 import { legacyOutgoingDeliveryStatus, outgoingDeliveryStatus } from '../lib/cross-chat-delivery-status'
 import { timelineCount, timelineEventLabel, timelineStatusLabel } from '../lib/timeline-labels'
 import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pin, Siren, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
+import { AlertTriangle, Check, ChevronRight, Clock3, Code2, Copy, FileText, History, LoaderCircle, MessageSquareShare, Pencil, Pin, Siren, Sparkles, TerminalSquare, Wrench } from 'lucide-react'
 import { compactToolOutputPreview } from '@shared/event-compaction'
 import { agentFileBelongsToSession } from '@shared/session-files'
 import { isImportedProviderInterruption } from '@shared/provider-origin'
@@ -27,6 +27,7 @@ import { CrossChatPeerLink } from './CrossChatPeerLink'
 import { chatMailboxAvailable } from '@shared/chat-inbox'
 import { isSharedChatCollaborator } from '@shared/chat-shares'
 import { paperCitation, paperQuotePreview } from '@shared/paper-passages'
+import { replaceComposerDraft } from '../lib/composer-draft-append'
 
 export const TimelineRowView = memo(function TimelineRowView({ item, sessionId, profileScope, onFindFile, pinnedItemIds, codexLifecycleActive = false }: { item: RenderTimelineItem; sessionId: string; profileScope: WorkspaceProfileScope | null; onFindFile: (fileId: string) => void; pinnedItemIds: ReadonlySet<string>; codexLifecycleActive?: boolean }) {
   useLocale()
@@ -48,6 +49,7 @@ function MediaRow({ item, sessionId, profileScope, onFindFile, pinnedItemIds }: 
 
 function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem; sessionId: string; profileScope: WorkspaceProfileScope | null; pinned: boolean }) {
   useLocale()
+  const promptRevisionAvailable = useAppStore(state => state.health?.capabilities?.prompt_revision_v2?.available === true)
   const role = item.role
   const events = item.events
   const event = item.event
@@ -85,6 +87,20 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
     window.dispatchEvent(new CustomEvent('agentsdock:pins-changed', { detail: sessionId }))
   }
   const copy = async () => { await window.agentsDock.native.writeClipboard(text); setCopied(true); window.setTimeout(() => setCopied(false), 1200) }
+  const editPrompt = (source: HTMLButtonElement) => {
+    if (!profileScope) return
+    const chatReferences = events.flatMap(part => part.chat_references ?? [])
+    const teamReferences = events.flatMap(part => part.team_references ?? [])
+    const result = replaceComposerDraft(
+      source, profileScope, sessionId, text, files, chatReferences, teamReferences,
+      primary.replaces_prompt_event_id?.trim() || primary.id
+    )
+    if (result === 'unavailable') {
+      useAppStore.getState().setError(t('timeline.ui.editPromptUnavailable'))
+      return
+    }
+    if (result === 'applied') window.dispatchEvent(new CustomEvent('agentsdock:focus-composer', { detail: { sessionId } }))
+  }
   return (
     <div
       className={`message-row ${role}${item.pending ? ' pending' : ''}${citation ? ' paper-cite-row' : ''}`}
@@ -99,6 +115,7 @@ function Message({ item, sessionId, profileScope, pinned }: { item: MessageItem;
             ? <span className="message-pending-status" role="status">{pendingBusy && <span className="activity-ring" aria-hidden="true" />}{t(item.pendingPhase === 'submitted' ? 'timeline.status.submitted' : 'timeline.status.submitting')}</span>
             : <time>{formatTime(event.ts)}</time>}
           {!item.pending && <button type="button" className={`pin-button ${pinned ? 'active' : ''}`} aria-pressed={pinned} title={pinned ? t('timeline.ui.unpinMessage') : t('timeline.ui.pinMessage')} onClick={() => runTimelineAction(togglePin())}><Pin size={12} fill={pinned ? 'currentColor' : 'none'} /></button>}
+          {role === 'user' && !collaborator && !item.pending && promptRevisionAvailable && <button type="button" title={t('timeline.ui.editPrompt')} onClick={event => editPrompt(event.currentTarget)}><Pencil size={12} /></button>}
           <button type="button" title={t('timeline.ui.copyFullMessage')} onClick={() => runTimelineAction(copy())}>{copied ? <Check size={12} /> : <Copy size={12} />}</button>
         </header>
         {citation

@@ -107,6 +107,13 @@ not reopen the old setup dialog. Before the first message, use the composer's
 Agent picker to switch agents or open My Agents. Credentials, native session
 identity, goals and delegated/job authorization are not copied.
 
+On a matching AgentsServer, an authored user message's pencil action restores
+that prompt, its attachments and structured references to the composer. Sending
+the edit overwrites the prompt at its original timeline position. It does not
+add a user bubble, submit a provider turn or generate another reply. The server
+persists the presentation-only revision so reopen and reconnect render the same
+timeline. Older servers do not expose the action.
+
 Clicking the sorting button beside the sidebar chat count cycles through
 **Folders → Latest → Name → Folders**. Enter/Space also cycle; hovering or
 pressing ArrowDown opens the checked selection menu for a direct choice.

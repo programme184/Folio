@@ -111,6 +111,7 @@ import type {
   ResumeSessionInput,
   RuntimeCatalog,
   SendTurnInput,
+  RevisePromptInput,
   ServerConnectionState,
   ServerForceRestartConfirmation,
   ServerRestartRequest,
@@ -4204,6 +4205,24 @@ export class AppService {
       this.applyEventToCaches(scope, response.event)
     }
     return response
+  }
+
+  async revisePrompt(input: RevisePromptInput): Promise<Event> {
+    assertLocalAgentChatReferences(input.chatReferences)
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const event = await scope.client.revisePrompt(
+      input.sessionId,
+      input.eventId,
+      input.prompt,
+      input.fileIds,
+      input.chatReferences ?? [],
+      input.teamReferences ?? []
+    )
+    this.assertCurrentScope(scope)
+    this.cache.putEvents(scope.namespace, input.sessionId, [event])
+    this.applyEventToCaches(scope, event)
+    return event
   }
 
   async providerCommands(sessionId: string, refresh = false): Promise<ProviderCommandsSnapshot> {

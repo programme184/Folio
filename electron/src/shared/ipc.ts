@@ -425,6 +425,7 @@ export interface AgentsDockAPI {
   }
   turns: {
     send(input: SendTurnInput): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }>
+    revise(input: import('./types').RevisePromptInput): Promise<Event>
     stop(sessionId: string): Promise<TurnStopResult>
   }
   providerConnections?: {

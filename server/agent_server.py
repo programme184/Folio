@@ -7449,6 +7449,21 @@ class TurnRequest(BaseModel):
         return self
 
 
+class PromptRevisionRequest(BaseModel):
+    """Presentation-only replacement for one persisted user prompt.
+
+    A revision never enters provider admission and therefore cannot start,
+    queue, steer, or interrupt a model turn.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    prompt: str
+    file_ids: list[str] = Field(default_factory=list)
+    chat_references: list[ChatReference] = Field(default_factory=list, max_length=16)
+    team_references: list[TeamReference] = Field(default_factory=list, max_length=16)
+
+
 class CrossChatHandoffRequest(BaseModel):
     target_session_id: str = Field(min_length=1, max_length=128)
     action: Literal["request_reply", "instruction"] = "instruction"
@@ -76201,6 +76216,26 @@ async def _start_turn_locked(session_id: str, req: TurnRequest, **kwargs: Any) -
             ready.set()
 
 
+def editable_prompt_revision_target(session_id: str, event_id: str) -> dict[str, Any] | None:
+    target = next((
+        event for event in reversed_jsonl_events(
+            events_path(session_id),
+            retained_fields=frozenset({
+                "id", "seq", "ts", "type", "run_id", "backend", "purpose",
+                "provider_generated", "shared_chat_id",
+            }),
+        )
+        if str(event.get("id") or "") == event_id
+    ), None)
+    return target if (
+        target is not None
+        and target.get("type") == "turn_started"
+        and target.get("purpose") is None
+        and target.get("provider_generated") is not True
+        and target.get("shared_chat_id") is None
+    ) else None
+
+
 async def _start_turn_admission_locked(
     session_id: str,
     req: TurnRequest,
@@ -85556,6 +85591,10 @@ async def health() -> dict[str, Any]:
                 "available": True,
                 "version": 1,
                 "supported_backends": [BACKEND_CLAUDE, BACKEND_CODEX],
+            },
+            "prompt_revision_v2": {
+                "available": True,
+                "version": 2,
             },
             "automatic_pairing_completion_v1": secure_peer_automatic_completion_capability(),
             "local_provider_commands_v1": {
@@ -95573,6 +95612,42 @@ async def post_turn(session_id: str, req: TurnRequest) -> Any:
     if req.client_request_id is not None:
         return await post_turn_with_receipt(session_id, req)
     return await post_turn_without_receipt(session_id, req)
+
+
+@app.patch("/api/sessions/{session_id}/prompts/{event_id}")
+async def revise_prompt(
+    session_id: str,
+    event_id: str,
+    req: PromptRevisionRequest,
+) -> dict[str, Any]:
+    """Replace a prompt's visible content without creating a provider turn."""
+
+    async with session_lifecycle_lock(session_id):
+        ensure_session_not_deleting(session_id)
+        session = STORE.sessions.get(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="session not found")
+        if session.get("archived"):
+            raise HTTPException(status_code=409, detail="archived chats cannot be edited")
+        target = editable_prompt_revision_target(session_id, event_id)
+        if not target:
+            raise HTTPException(
+                status_code=409,
+                detail="The prompt being edited is no longer an editable user message.",
+            )
+        file_ids = validate_session_file_ids(session_id, req.file_ids)
+        event = await append_durable_event(session_id, "prompt_revised", {
+            "replaces_prompt_event_id": event_id,
+            "replaces_prompt_event_seq": int(target.get("seq") or 0),
+            "replaces_prompt_event_ts": target.get("ts"),
+            "replaces_prompt_run_id": target.get("run_id"),
+            "replaces_prompt_backend": target.get("backend"),
+            "prompt": req.prompt,
+            "file_ids": file_ids,
+            "chat_references": chat_reference_dicts(req.chat_references),
+            "team_references": team_reference_dicts(req.team_references),
+        })
+    return {"event": client_safe_event(event)}
 
 
 async def post_turn_without_receipt(session_id: str, req: TurnRequest) -> dict[str, Any]:

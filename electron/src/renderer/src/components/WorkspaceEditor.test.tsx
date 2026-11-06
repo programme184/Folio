@@ -23,6 +23,7 @@ import { EDITOR_APPEARANCE_STORAGE_KEY } from '../lib/editor-appearance'
 import { resetTransientCloseStackForTests } from '../lib/transient-close'
 import { useAppStore } from '../store/app-store'
 import { SideChatController } from '../lib/side-chat'
+import { REVEAL_CHAT_SURFACE_EVENT } from '../lib/session-history-search'
 import { InspectorWorkspace } from './InspectorWorkspace'
 import {
   absoluteWorkspacePath,
@@ -315,6 +316,40 @@ describe('WorkspaceEditor', () => {
     expect(chat.closest('.workspace-editor-chat-panel')).not.toHaveAttribute('inert')
     fireEvent.click(screen.getByRole('tab', { name: 'App.tsx' }))
     expect(await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })).toHaveValue('unsaved edit')
+  })
+
+  it('returns to chat after explicit chat navigation without closing restored file tabs', async () => {
+    const hydration = deferred<unknown>()
+    vi.mocked(window.agentsDock.preferences.getScoped).mockReturnValueOnce(hydration.promise)
+    const props = {
+      workspaceKey: 'tabbed:explicit-chat-navigation',
+      session,
+      profileScope: { profileId: 'profile-a', profileGeneration: 1, serverIdentity: 'server-a' },
+      available: true,
+      capabilityVersion: 6,
+      tabbedPane: true,
+      chatContent: <p>Chat timeline</p>
+    }
+    const view = render(<WorkspaceEditor {...props} />)
+
+    act(() => window.dispatchEvent(new CustomEvent(REVEAL_CHAT_SURFACE_EVENT, {
+      detail: { sessionId: session.id, ...props.profileScope }
+    })))
+    await act(async () => hydration.resolve({
+      version: 5,
+      cwd: session.cwd,
+      activePath: 'src/App.tsx',
+      secondaryPath: null,
+      activeGroup: 'primary',
+      filePresentation: 'split',
+      tabs: [{ path: 'src/App.tsx' }]
+    }))
+
+    expect(screen.getByText('Chat timeline')).toBeVisible()
+    expect(view.container.querySelector('.workspace-editor-content-split')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'App.tsx' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: 'App.tsx' }))
+    expect(await screen.findByRole('textbox', { name: 'Contents of src/App.tsx' })).toBeVisible()
   })
 
   it('offers the existing rename dialog for the owning chat when its pane tab is double-clicked', () => {

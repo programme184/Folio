@@ -2,7 +2,13 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { TimelineSearchResult } from '@shared/types'
 import { useAppStore } from '../store/app-store'
-import { clearSessionHistorySearchCache, OPEN_HISTORY_RESULT_EVENT, openSessionHistoryResult, useSessionHistorySearch } from './session-history-search'
+import {
+  clearSessionHistorySearchCache,
+  OPEN_HISTORY_RESULT_EVENT,
+  openSessionHistoryResult,
+  REVEAL_CHAT_SURFACE_EVENT,
+  useSessionHistorySearch
+} from './session-history-search'
 
 function result(sessionId: string, snippet: string): TimelineSearchResult {
   return { session_id: sessionId, event_id: `${sessionId}-event`, seq: 1, role: 'assistant', snippet }
@@ -127,6 +133,40 @@ describe('whole-history session search', () => {
       expect(opened).not.toHaveBeenCalled()
     } finally {
       window.removeEventListener(OPEN_HISTORY_RESULT_EVENT, opened)
+    }
+  })
+
+  it('reveals the selected chat surface even without a history match', async () => {
+    let frame: FrameRequestCallback | null = null
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frame = callback; return 1 })
+    useAppStore.setState({
+      profiles: [{
+        id: 'profile-a',
+        name: 'A',
+        serverUrl: 'https://server-a',
+        serverIdentity: 'server-a',
+        hasAccessToken: true,
+        serverSetupComplete: true,
+        connectionState: 'online',
+        cachedUnreadCount: 0
+      }],
+      selectSession: vi.fn(async (sessionId: string) => { useAppStore.setState({ selectedSessionId: sessionId }) })
+    })
+    const revealed = vi.fn()
+    window.addEventListener(REVEAL_CHAT_SURFACE_EVENT, revealed)
+    try {
+      expect(await openSessionHistoryResult('shared')).toBe(true)
+      const scheduled = frame as FrameRequestCallback | null
+      scheduled?.(0)
+      expect(revealed).toHaveBeenCalledOnce()
+      expect((revealed.mock.calls[0][0] as CustomEvent).detail).toMatchObject({
+        sessionId: 'shared',
+        profileId: 'profile-a',
+        profileGeneration: 1,
+        serverIdentity: 'server-a'
+      })
+    } finally {
+      window.removeEventListener(REVEAL_CHAT_SURFACE_EVENT, revealed)
     }
   })
 

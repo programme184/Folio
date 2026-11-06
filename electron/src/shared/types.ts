@@ -682,6 +682,8 @@ export interface QueuedTurn extends SharedChatAttribution {
   effort?: string | null
   display_prompt?: string | null
   purpose?: string | null
+  /** Legacy/new presentation link to an earlier authored prompt in this chat. */
+  replaces_prompt_event_id?: string | null
   digest_job_id?: string | null
   /** Exact scheduled occurrence owned by this queue row, not the whole schedule. */
   job_id?: string | null
@@ -1054,6 +1056,12 @@ export interface Event extends SharedChatAttribution {
   superseded_by_queued_id?: string | null
   position?: number | null
   purpose?: string | null
+  /** Presentation-only replacement target for an earlier authored prompt. */
+  replaces_prompt_event_id?: string | null
+  replaces_prompt_event_seq?: number | null
+  replaces_prompt_event_ts?: string | null
+  replaces_prompt_run_id?: string | null
+  replaces_prompt_backend?: Backend | null
   /** Exact server-authored quiet mailbox wake; its provider input is not user text. */
   mailbox_wake_id?: string | null
   mailbox_wake_through_seq?: number | null
@@ -1772,6 +1780,7 @@ export interface SessionForkCompletedPrefixCapability {
 }
 
 export interface HealthCapabilities {
+  prompt_revision_v2?: { available: boolean; version: 2 }
   provider_usage?: { available: boolean; version: number; backends?: Backend[] }
   subagent_limit_v1?: { version: number; backends?: Backend[] }
   ask_only_v1?: ServerCapability & { version: 1; supported_backends: Backend[] }
@@ -2515,6 +2524,14 @@ export interface SendTurnInput {
   teamReferences?: TeamReference[]
   /** Opaque selection returned by the session-scoped provider command inventory. */
   skillSelection?: ProviderCommandSelection
+}
+export interface RevisePromptInput {
+  sessionId: string
+  eventId: string
+  prompt: string
+  fileIds: string[]
+  chatReferences?: ChatReference[]
+  teamReferences?: TeamReference[]
 }
 export interface CreateJobInput {
   session_id: string

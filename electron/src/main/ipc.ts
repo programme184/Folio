@@ -354,6 +354,7 @@ export function registerIpc(
   handle('diffs:get', (sessionId, runId) => service.codeDiff(sessionId, runId))
 
   handle('turns:send', input => service.sendTurn(input))
+  handle('turns:revise', input => service.revisePrompt(input))
   handle('turns:stop', sessionId => service.stopTurn(sessionId))
 
   handle('codex:server-goals:get', () => service.codexServerGoals())

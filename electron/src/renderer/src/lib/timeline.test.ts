@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createHash } from 'node:crypto'
 import type { AgentFile, Event } from '@shared/types'
-import { extractStructuredToolDiff, extractUnifiedDiff, importedCrossChatDelivery, isAgentVisibleEvent, isTimelineError, jobDisplayEvents, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, parseReviewableDiff, parseUnifiedDiff, projectTimeline, reconcileRenderTimelineItems, reconcileTimelineItems, renderTimelineItems, reviewTargetBelongsToSession, sameCodeReviewTarget, settleInactiveTimelineItems, summarizeStructuredToolDiff, TimelineProjector, type RenderTimelineItem, type TimelineItem } from './timeline'
+import { extractStructuredToolDiff, extractUnifiedDiff, importedCrossChatDelivery, isAgentVisibleEvent, isTimelineError, jobDisplayEvents, jobDisplaySelection, jobResultPresentation, messageItemText, messageText, parseReviewableDiff, parseUnifiedDiff, projectTimeline, reconcileRenderTimelineItems, reconcileTimelineItems, renderTimelineItems, reviewTargetBelongsToSession, sameCodeReviewTarget, settleInactiveTimelineItems, summarizeStructuredToolDiff, TimelineProjector, type MessageItem, type RenderTimelineItem, type TimelineItem } from './timeline'
 import { cachedTimelineProjection, clearTimelineProjectionCache } from './timeline-projection-cache'
 
 const event = (seq: number, type: string, patch: Partial<Event> = {}): Event => ({
@@ -4010,5 +4010,70 @@ describe('sameCodeReviewTarget', () => {
       { sessionId: 'chat-1', source: 'diff --git a/a b/a' },
       { sessionId: 'chat-2', source: 'diff --git a/a b/a' }
     )).toBe(false)
+  })
+})
+
+describe('prompt revisions', () => {
+  it('overwrites the original prompt without creating another turn or answer', () => {
+    const rows = renderTimelineItems(projectTimeline([
+      event(1, 'turn_started', { run_id: 'run-1', prompt: 'Original prompt' }),
+      event(2, 'assistant_text', { run_id: 'run-1', text: 'Original answer' }),
+      event(3, 'turn_finished', { run_id: 'run-1', exit_code: 0 }),
+      event(4, 'prompt_revised', { prompt: 'Revised prompt', replaces_prompt_event_id: 'event-1' })
+    ], []))
+    const prompts = rows.filter((row): row is MessageItem => (
+      row.kind === 'message' && row.role === 'user'
+    ))
+    const answers = rows.filter((row): row is MessageItem => (
+      row.kind === 'message' && row.role === 'assistant'
+    ))
+
+    expect(prompts).toHaveLength(1)
+    expect(messageItemText(prompts[0])).toBe('Revised prompt')
+    expect(prompts[0].key).toContain('event-1')
+    expect(prompts[0].seq).toBe(1)
+    expect(answers).toHaveLength(1)
+    expect(messageItemText(answers[0])).toBe('Original answer')
+  })
+
+  it('keeps only the latest overwrite and never renders revision events as rows', () => {
+    const rows = renderTimelineItems(projectTimeline([
+      event(1, 'turn_started', { run_id: 'run-1', prompt: 'Original prompt' }),
+      event(2, 'prompt_revised', { prompt: 'First edit', replaces_prompt_event_id: 'event-1' }),
+      event(3, 'prompt_revised', { prompt: 'Final edit', replaces_prompt_event_id: 'event-1' })
+    ], []))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].kind === 'message' ? messageItemText(rows[0]) : '').toBe('Final edit')
+  })
+
+  it('rebuilds an incremental cached timeline when a revision arrives live', () => {
+    clearTimelineProjectionCache()
+    const original = [
+      event(1, 'turn_started', { run_id: 'run-1', prompt: 'Original prompt' }),
+      event(2, 'assistant_text', { run_id: 'run-1', text: 'Original answer' })
+    ]
+    cachedTimelineProjection('prompt-edit-live', original, [])
+    const result = cachedTimelineProjection('prompt-edit-live', [
+      ...original,
+      event(3, 'prompt_revised', { prompt: 'Edited in place', replaces_prompt_event_id: 'event-1' })
+    ], [])
+
+    expect(result.strategy).toBe('rebuild')
+    expect(result.rendered.filter(row => row.kind === 'message' && row.role === 'user')).toHaveLength(1)
+    expect(result.rendered[0].kind === 'message' ? messageItemText(result.rendered[0]) : '').toBe('Edited in place')
+  })
+
+  it('reconstructs the edited prompt after reopen when its old turn is outside the semantic page', () => {
+    const rows = renderTimelineItems(projectTimeline([
+      event(40, 'prompt_revised', {
+        prompt: 'Persisted edit', replaces_prompt_event_id: 'old-prompt',
+        replaces_prompt_event_seq: 2, replaces_prompt_event_ts: '2026-07-09T09:00:00Z',
+        replaces_prompt_run_id: 'old-run', replaces_prompt_backend: 'codex'
+      })
+    ], []))
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ kind: 'message', role: 'user', seq: 2 })
+    expect(rows[0].kind === 'message' ? messageItemText(rows[0]) : '').toBe('Persisted edit')
   })
 })

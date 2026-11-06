@@ -1591,8 +1591,51 @@ export function projectTimeline(
   scope: TimelineProjectionScope = {}
 ): TimelineItem[] {
   const projector = new TimelineProjector(knownFiles, scope)
-  if (!projector.append(events)) throw new Error('Initial timeline projection could not be constructed')
+  if (!projector.append(materializePromptRevisions(events))) throw new Error('Initial timeline projection could not be constructed')
   return projector.items
+}
+
+/** Apply durable presentation-only prompt edits without creating a new turn. */
+export function materializePromptRevisions(events: Event[]): Event[] {
+  const latestByTarget = new Map<string, Event>()
+  const presentIds = new Set(events.map(event => event.id))
+  for (const event of events) {
+    const target = event.type === 'prompt_revised' ? event.replaces_prompt_event_id?.trim() : ''
+    if (target) latestByTarget.set(target, event)
+  }
+  if (!latestByTarget.size) return events
+  const materialized = events.flatMap(event => {
+    if (event.type === 'prompt_revised') return []
+    const legacyTarget = event.replaces_prompt_event_id?.trim()
+    const revision = latestByTarget.get(event.id) || (legacyTarget ? latestByTarget.get(legacyTarget) : undefined)
+    if (!revision) return [event]
+    return [{
+      ...event,
+      prompt: revision.prompt ?? '',
+      file_ids: revision.file_ids ?? [],
+      chat_references: revision.chat_references ?? [],
+      team_references: revision.team_references ?? []
+    }]
+  })
+  for (const [target, revision] of latestByTarget) {
+    if (presentIds.has(target) || !revision.replaces_prompt_event_seq || !revision.replaces_prompt_event_ts) continue
+    materialized.push({
+      id: target,
+      seq: revision.replaces_prompt_event_seq,
+      session_id: revision.session_id,
+      type: 'turn_started',
+      ts: revision.replaces_prompt_event_ts,
+      run_id: revision.replaces_prompt_run_id,
+      backend: revision.replaces_prompt_backend,
+      provider_user_authored: true,
+      prompt: revision.prompt ?? '',
+      file_ids: revision.file_ids ?? [],
+      chat_references: revision.chat_references ?? [],
+      team_references: revision.team_references ?? []
+    })
+  }
+  materialized.sort((left, right) => left.seq - right.seq)
+  return materialized
 }
 
 function zonedTimestamp(value: unknown): number | null {
@@ -1767,7 +1810,7 @@ export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[]
     }
   }
   const chronologicalRows = rows.filter(isCompactionRow)
-  if (!chronologicalRows.length) return interleaveChronologicalSystemRows(rows)
+  if (!chronologicalRows.length) return coalescePromptRevisions(interleaveChronologicalSystemRows(rows))
   const embeddedKeys = new Set<string>()
   const canonical = rows.map(row => {
     if (row.kind !== 'progress') return row
@@ -1777,9 +1820,28 @@ export function renderTimelineItems(items: TimelineItem[]): RenderTimelineItem[]
     for (const lifecycle of progress.lifecycle ?? []) embeddedKeys.add(lifecycle.key)
     return progress
   })
-  return interleaveChronologicalSystemRows(
+  return coalescePromptRevisions(interleaveChronologicalSystemRows(
     canonical.filter(row => !embeddedKeys.has(row.key))
-  )
+  ))
+}
+
+/** Keep an edited prompt at its original visual position instead of rendering a duplicate user row. */
+export function coalescePromptRevisions(rows: RenderTimelineItem[]): RenderTimelineItem[] {
+  const userRows = rows.filter((row): row is MessageItem => row.kind === 'message' && row.role === 'user')
+  const originalIds = new Set(userRows.flatMap(row => row.events.map(event => event.id)))
+  const latestByOriginal = new Map<string, MessageItem>()
+  for (const row of userRows) {
+    const originalId = row.event.replaces_prompt_event_id?.trim()
+    if (originalId && originalIds.has(originalId)) latestByOriginal.set(originalId, row)
+  }
+  if (!latestByOriginal.size) return rows
+  return rows.flatMap(row => {
+    if (row.kind !== 'message' || row.role !== 'user') return [row]
+    const originalId = row.event.replaces_prompt_event_id?.trim()
+    if (originalId && latestByOriginal.has(originalId)) return []
+    const replacement = latestByOriginal.get(row.event.id)
+    return replacement ? [{ ...replacement, id: row.id, key: row.key, seq: row.seq }] : [row]
+  })
 }
 
 /**

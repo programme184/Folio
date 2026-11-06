@@ -306,12 +306,13 @@ function installFolioLinuxIdentity(iconPath: string | undefined): void {
       readSysctl('/proc/sys/kernel/unprivileged_userns_clone')
     )
     const noSandbox = folioDesktopNeedsNoSandbox(chromeSandboxHelperReady(process.execPath), namespaces)
-    const execPath = noSandbox ? installElectronLaunchShim(process.execPath) : process.execPath
+    const execPath = noSandbox ? installElectronLaunchShim(process.execPath, app.getAppPath()) : process.execPath
     const command = folioLinuxDesktopCommand({
       packaged: app.isPackaged,
       execPath,
       appPath: app.getAppPath(),
-      noSandbox
+      noSandbox,
+      defaultApp: process.defaultApp === true
     })
     installFolioLinuxIcon(iconPath, app.getPath('home'))
     writeFileSync(join(applications, 'folio.desktop'), folioLinuxDesktopEntry(command, 'folio'))
@@ -477,7 +478,11 @@ function createWindow(): BrowserWindow {
     void openExternalURL(url)
     return { action: 'deny' }
   })
-  window.webContents.on('will-navigate', event => event.preventDefault())
+  // Block navigation away from the app, but let the page reload itself so the
+  // renderer can recover from a stale bundle or a failed lazy chunk.
+  window.webContents.on('will-navigate', (event, url) => {
+    if (url !== window.webContents.getURL()) event.preventDefault()
+  })
   installWindowCloseFlush(window, {
     onTimeout: requestId => appLog('persistence', 'renderer close flush timed out', { requestId })
   })

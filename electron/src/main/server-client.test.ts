@@ -32,6 +32,22 @@ describe('AgentServerClient network diagnostics', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('revises a prompt through the presentation-only endpoint', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      event: { seq: 4, id: 'revision', session_id: 'chat', type: 'prompt_revised', ts: '2026-11-06T00:00:00Z' }
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new AgentServerClient('http://example.test:7850', 'test-token')
+
+    await client.revisePrompt('chat', 'event-original', 'revised', [], [], [])
+
+    expect(fetchMock.mock.calls[0][0]).toBe('http://example.test:7850/api/sessions/chat/prompts/event-original')
+    expect(fetchMock.mock.calls[0][1].method).toBe('PATCH')
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      prompt: 'revised', file_ids: [], chat_references: [], team_references: []
+    })
+  })
+
   it('records nested socket codes without secrets after the configured retry budget is exhausted', async () => {
     const socket = Object.assign(new Error('secret token and request body'), { code: 'ECONNRESET', syscall: 'read' })
     const cause = Object.assign(new AggregateError([socket], 'private query'), { code: 'UND_ERR_SOCKET' })
