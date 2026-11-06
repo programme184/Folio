@@ -197,6 +197,37 @@ describe('profile endpoint failover', () => {
     expect(advertised).toHaveBeenCalledTimes(1)
   })
 
+  it('discovers and prefers LAN immediately when switching to a legacy profile', async () => {
+    const { settings } = profileSettings()
+    settings.updateProfile('b', {
+      serverUrl: tailscale,
+      serverIdentity: 'server-synria',
+      serverSetupComplete: true
+    })
+    const cache = new LocalCache(':memory:')
+    const advertised = vi.fn(async () => ({
+      version: 1,
+      server_identity: 'server-synria',
+      urls: [tailscale, lan]
+    }))
+    const service = new AppService({
+      settings,
+      cache,
+      clientFactory: serverUrl => fakeClient({
+        health: async () => ({ ok: true, server_identity: serverUrl.includes('a.test') ? 'server-a' : 'server-synria' }),
+        ...(serverUrl === tailscale ? { connectionAddresses: advertised } : {})
+      }) as unknown as AgentServerClient
+    })
+    cleanup.push(() => { service.stop(); cache.close() })
+    service.start()
+
+    await service.switchServer('b')
+
+    await vi.waitFor(() => expect(settings.serverUrl('b')).toBe(lan))
+    expect(settings.serverUrls('b')).toEqual([lan, tailscale])
+    expect(advertised).toHaveBeenCalledTimes(1)
+  })
+
   it('does not trust discovered routes for a different server identity', async () => {
     const { settings } = profileSettings()
     settings.updateProfile('b', {

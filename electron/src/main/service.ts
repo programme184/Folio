@@ -2232,6 +2232,7 @@ export class AppService {
         `The server identity was reset, but some retired local data could not be removed: ${cleanupError}`
       )
     }
+    this.monitorActiveProfileEndpoints()
     return this.loadCachedBootstrap(scope)
   }
 
