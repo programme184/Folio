@@ -12,21 +12,24 @@
   LAN without asking the user to recreate the profile.
 
 ```text
-Source commit / app build / server version: `5b676412`; electron-vite production
-build; unchanged AgentsServer 1.0.11.
-Test surface: active-route service regressions, complete Electron suite, current
-network routing and the authenticated Synria connection-address endpoint.
+Source commits / app build / server version: `5b676412`, `b81db3e0`;
+electron-vite production build; unchanged AgentsServer 1.0.11.
+Test surface: active-route service regressions, complete Electron suite, running
+source desktop, current network routing and the authenticated Synria endpoint.
 Actions exercised and observed outcomes: the LAN endpoint accepted TCP and
 returned the expected authenticated-service response; Synria advertised the LAN
-and Tailscale URLs for the saved durable identity. Legacy-profile discovery,
-LAN preference and identity-mismatch rejection pass in service fixtures.
-Focused regression / typecheck / production build: 577 focused tests and all
-6,114 Electron tests pass (5 skipped), with 8 compile/license checks, TypeScript
-checking and production build/output verification.
-Remaining limitations or blocked acceptance: the connected server still had an
-active turn, so the running desktop was not restarted and live UI route switching
-remains pending to avoid interrupting that work.
-Availability: committed source only; not installed, published or deployed.
+and Tailscale URLs for the saved durable identity. The production preload/main
+IPC switched the running source app to that legacy profile, which saved both
+candidates, moved from Tailscale to LAN, opened live TCP connections to the LAN
+address and rendered Synria with the LAN endpoint after reload. The server turn
+that was active before the desktop restart remained active and later completed.
+Legacy discovery, immediate switch preference and identity-mismatch rejection
+also pass in service fixtures.
+Focused regression / typecheck / production build: 577 initial focused tests,
+521 switch-focused tests and all 6,114 Electron tests pass (5 skipped), with 8
+compile/license checks, TypeScript checking and production build verification.
+Remaining limitations or blocked acceptance: none for the reported route switch.
+Availability: running source desktop; not packaged, published or deployed.
 ```
 
 ## 2026-11-05 — Move a project's chats when its folders change
