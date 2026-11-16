@@ -7,12 +7,15 @@ export function workspaceFilesKey(scope: WorkspaceProfileScope | null, sessionId
 
 const WorkspaceFilesContext = createContext<{
   hosts: ReadonlyMap<string, HTMLElement>
+  actionHosts: ReadonlyMap<string, HTMLElement>
   register: (key: string, host: HTMLElement | null) => void
-}>({ hosts: new Map(), register: () => {} })
+  registerActions: (key: string, host: HTMLElement | null) => void
+}>({ hosts: new Map(), actionHosts: new Map(), register: () => {}, registerActions: () => {} })
 
 /** The editor owns file operations and dirty buffers; Files supplies their visual home. */
 export function WorkspaceFilesProvider({ children }: { children: ReactNode }) {
   const [hosts, setHosts] = useState<ReadonlyMap<string, HTMLElement>>(() => new Map())
+  const [actionHosts, setActionHosts] = useState<ReadonlyMap<string, HTMLElement>>(() => new Map())
   const register = useCallback((key: string, host: HTMLElement | null) => {
     setHosts(current => {
       if ((current.get(key) ?? null) === host) return current
@@ -22,7 +25,16 @@ export function WorkspaceFilesProvider({ children }: { children: ReactNode }) {
       return next
     })
   }, [])
-  const value = useMemo(() => ({ hosts, register }), [hosts, register])
+  const registerActions = useCallback((key: string, host: HTMLElement | null) => {
+    setActionHosts(current => {
+      if ((current.get(key) ?? null) === host) return current
+      const next = new Map(current)
+      if (host) next.set(key, host)
+      else next.delete(key)
+      return next
+    })
+  }, [])
+  const value = useMemo(() => ({ hosts, actionHosts, register, registerActions }), [hosts, actionHosts, register, registerActions])
   return <WorkspaceFilesContext.Provider value={value}>{children}</WorkspaceFilesContext.Provider>
 }
 
@@ -32,6 +44,16 @@ export function WorkspaceFilesHost({ owner }: { owner: string }) {
   return <div className="inspector-files" ref={ref} />
 }
 
+export function WorkspaceFilesActionsHost({ owner }: { owner: string }) {
+  const { registerActions } = useContext(WorkspaceFilesContext)
+  const ref = useCallback((host: HTMLDivElement | null) => { registerActions(owner, host) }, [owner, registerActions])
+  return <div className="inspector-files-actions" ref={ref} />
+}
+
 export function useWorkspaceFilesHost(owner: string): HTMLElement | null {
   return useContext(WorkspaceFilesContext).hosts.get(owner) ?? null
+}
+
+export function useWorkspaceFilesActionsHost(owner: string): HTMLElement | null {
+  return useContext(WorkspaceFilesContext).actionHosts.get(owner) ?? null
 }

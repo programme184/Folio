@@ -874,6 +874,40 @@ export class AgentServerClient {
       throw new Error('CURSOR_AUTH_CONNECTION')
     }
   }
+  private async claudeLoginRequest<T>(path: string, init: RequestInit, maxBytes: number): Promise<T> {
+    try {
+      return await this.privilegedNativeRequest<T>(path, init, 90_000, 200, maxBytes)
+    } catch (error) {
+      // Never forward a server or CLI message: it may contain account details.
+      if (error instanceof ServerError) {
+        const code = [401, 403].includes(error.status) ? 'ADMIN'
+          : [404, 405, 501].includes(error.status) ? 'UPDATE'
+            : error.status === 409 ? 'EXPIRED'
+              : error.status === 503 ? 'MISSING'
+                : [400, 413, 422].includes(error.status) ? 'REJECTED' : 'FAILED'
+        throw new Error(`CLAUDE_LOGIN_${code}`)
+      }
+      throw new Error('CLAUDE_LOGIN_CONNECTION')
+    }
+  }
+  async startClaudeLogin(): Promise<{ loginId: string; url: string }> {
+    const result = await this.claudeLoginRequest<{ login_id?: unknown; url?: unknown }>(
+      '/api/admin/claude/auth/login', { method: 'POST', body: '{}' }, 4096)
+    const url = typeof result?.url === 'string' ? safeClaudeLoginUrl(result.url) : null
+    if (typeof result?.login_id !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(result.login_id) || !url) throw new Error('CLAUDE_LOGIN_FAILED')
+    return { loginId: result.login_id, url }
+  }
+  async completeClaudeLogin(loginId: unknown, code: unknown): Promise<{ signedIn: true }> {
+    if (typeof loginId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(loginId)
+      || typeof code !== 'string' || !/^[A-Za-z0-9._~+/#=-]{8,512}$/.test(code.trim())) throw new Error('CLAUDE_LOGIN_REJECTED')
+    const result = await this.claudeLoginRequest<{ signed_in?: unknown }>(
+      '/api/admin/claude/auth/login/complete', { method: 'POST', body: JSON.stringify({ login_id: loginId, code: code.trim() }) }, 1024)
+    if (result?.signed_in !== true) throw new Error('CLAUDE_LOGIN_FAILED')
+    return { signedIn: true }
+  }
+  async cancelClaudeLogin(): Promise<void> {
+    await this.claudeLoginRequest('/api/admin/claude/auth/login', { method: 'DELETE' }, 1024)
+  }
   private async codexAuthRequest(path: string, init: RequestInit = {}): Promise<CodexAuthStatus> {
     try {
       return parseCodexAuthStatus(await this.privilegedNativeRequest(path, init, 30_000, 200, 8192))
@@ -3612,6 +3646,8 @@ function isPrivilegedNativeControlTarget(
   if (path === '/api/admin/codex/auth') return !target.search && method === 'GET'
   if (path === '/api/admin/codex/auth/import') return !target.search && method === 'POST'
   if (path === '/api/admin/cursor/auth/import') return !target.search && method === 'POST'
+  if (path === '/api/admin/claude/auth/login') return !target.search && ['POST', 'DELETE'].includes(method)
+  if (path === '/api/admin/claude/auth/login/complete') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/auth/reload') return !target.search && method === 'POST'
   if (path === '/api/admin/codex/provider') return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (path === '/api/admin/codex/provider/test') return !target.search && method === 'POST'
@@ -3975,4 +4011,14 @@ function formatServerDetail(detail: unknown, fallback: string): string {
     try { return JSON.stringify(detail) } catch { return fallback }
   }
   return fallback
+}
+
+const CLAUDE_LOGIN_HOSTS = new Set(['claude.com', 'claude.ai', 'platform.claude.com'])
+/** The desktop opens this link, so accept only Anthropic's HTTPS authorization page. */
+export function safeClaudeLoginUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password && CLAUDE_LOGIN_HOSTS.has(url.hostname) && url.pathname.endsWith('/authorize')
+      ? url.toString() : null
+  } catch { return null }
 }

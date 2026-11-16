@@ -155,6 +155,12 @@ opencode auth login
 cursor-agent login   # or: agent login
 ```
 
+Claude Code can also be signed in from Folio: **Settings → My Agents → Claude
+Code → Sign in with Claude account**. This uses your Claude subscription (the
+same browser sign-in as `claude auth login`), not an API key. Folio opens the
+Claude authorization page, you paste the code it shows, and the server's own
+`claude` CLI stores the login. Folio never reads or keeps the credential files.
+
 Gemini uses an API connection in **Settings → My Agents**, not Google/CLI
 sign-in. See [server docs for Gemini](server/docs/GEMINI_PROVIDER_PREVIEW.md)
 when your build includes it.

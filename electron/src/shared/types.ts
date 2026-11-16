@@ -1411,7 +1411,7 @@ export interface TerminalStateEvent {
   profileGeneration?: number
 }
 
-export type TerminalAction = 'new-window' | 'split-right' | 'split-down' | 'next-window' | 'previous-window' | 'select-window' | 'kill-window' | 'kill-pane' | 'toggle-mouse'
+export type TerminalAction = 'new-window' | 'split-right' | 'split-down' | 'next-window' | 'previous-window' | 'select-window' | 'select-pane' | 'toggle-pane-zoom' | 'kill-window' | 'kill-pane' | 'toggle-mouse'
 
 export interface TerminalWindow {
   id: string
@@ -1421,12 +1421,24 @@ export interface TerminalWindow {
   panes: number
 }
 
+export interface TerminalPane {
+  id: string
+  active: boolean
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
 export interface TerminalWindowsSnapshot {
   session_id: string
   name: string
   exists: boolean
   mouse_enabled?: boolean
+  pane_zoomed?: boolean
   windows: TerminalWindow[]
+  /** Geometry for the selected tmux window, in terminal cells. */
+  panes?: TerminalPane[]
 }
 
 export type ForwardedPortState = 'starting' | 'open' | 'error'

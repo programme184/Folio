@@ -448,6 +448,90 @@ class TerminalShellInitializationTests(unittest.TestCase):
         self.assertIs(raised.exception, failure)
 
 
+class TerminalPaneSelectionTests(unittest.TestCase):
+    session_id = "terminal-pane-selection-test"
+
+    def run_tmux(self, args: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        self.calls.append(args)
+        if args[:2] == ["display-message", "-p"]:
+            if args[-1] == "#{window_zoomed_flag}":
+                return subprocess.CompletedProcess(args, 0, stdout="1\n", stderr="")
+            return subprocess.CompletedProcess(args, 0, stdout="/workspace\n", stderr="")
+        if args[:2] == ["list-windows", "-t"]:
+            return subprocess.CompletedProcess(args, 0, stdout="@1\t0\tbash\t1\t2\n", stderr="")
+        if args[:2] == ["list-panes", "-t"] and args[-1] == "#{pane_id}":
+            return subprocess.CompletedProcess(args, 0, stdout="%1\n%2\n", stderr="")
+        if args[:2] == ["list-panes", "-t"]:
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                stdout="%1\t0\t0\t0\t39\t24\n%2\t1\t40\t0\t40\t24\n",
+                stderr="",
+            )
+        if args[:2] == ["show-options", "-qv"]:
+            return subprocess.CompletedProcess(args, 0, stdout="off\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    def test_snapshot_exposes_active_window_pane_geometry_and_click_target_can_be_selected(self) -> None:
+        self.calls: list[list[str]] = []
+        with (
+            patch.dict(
+                agent_server.STORE.sessions,
+                {self.session_id: {"id": self.session_id, "cwd": "/workspace", "archived": False}},
+            ),
+            patch.object(agent_server, "tmux_session_exists", return_value=True),
+            patch.object(agent_server, "existing_cwd", return_value="/workspace"),
+            patch.object(agent_server, "run_tmux", side_effect=self.run_tmux),
+        ):
+            snapshot = agent_server.terminal_action(self.session_id, "select-pane", "%1")
+
+        self.assertIn(["select-pane", "-t", "%1"], self.calls)
+        self.assertEqual(
+            snapshot["panes"],
+            [
+                {"id": "%1", "active": False, "left": 0, "top": 0, "width": 39, "height": 24},
+                {"id": "%2", "active": True, "left": 40, "top": 0, "width": 40, "height": 24},
+            ],
+        )
+        self.assertTrue(snapshot["pane_zoomed"])
+
+    def test_toggle_zoom_preserves_the_other_pane(self) -> None:
+        self.calls = []
+        with (
+            patch.dict(
+                agent_server.STORE.sessions,
+                {self.session_id: {"id": self.session_id, "cwd": "/workspace", "archived": False}},
+            ),
+            patch.object(agent_server, "tmux_session_exists", return_value=True),
+            patch.object(agent_server, "existing_cwd", return_value="/workspace"),
+            patch.object(agent_server, "run_tmux", side_effect=self.run_tmux),
+        ):
+            agent_server.terminal_action(self.session_id, "toggle-pane-zoom")
+
+        self.assertIn(
+            ["resize-pane", "-Z", "-t", agent_server.terminal_session_name(self.session_id)],
+            self.calls,
+        )
+        self.assertFalse(any(call[0] == "kill-pane" for call in self.calls))
+
+    def test_select_pane_rejects_a_valid_id_outside_the_active_window(self) -> None:
+        self.calls = []
+        with (
+            patch.dict(
+                agent_server.STORE.sessions,
+                {self.session_id: {"id": self.session_id, "cwd": "/workspace", "archived": False}},
+            ),
+            patch.object(agent_server, "tmux_session_exists", return_value=True),
+            patch.object(agent_server, "existing_cwd", return_value="/workspace"),
+            patch.object(agent_server, "run_tmux", side_effect=self.run_tmux),
+        ):
+            with self.assertRaises(agent_server.HTTPException) as raised:
+                agent_server.terminal_action(self.session_id, "select-pane", "%99")
+
+        self.assertEqual(raised.exception.status_code, 404)
+        self.assertNotIn(["select-pane", "-t", "%99"], self.calls)
+
+
 class TerminalHistoryScrollingTests(unittest.TestCase):
     session_id = "terminal-history-test"
 

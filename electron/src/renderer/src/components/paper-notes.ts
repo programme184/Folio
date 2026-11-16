@@ -30,22 +30,59 @@ export function shelfNoteFiles(path: string): PaperNoteFiles | null {
   }
 }
 
-/** Notes for a PDF in the chat workspace. `pdfPath` is the PDF's path relative to the workspace. */
-export function workspaceNoteFiles(sessionId: string, pdfPath: string): PaperNoteFiles {
-  const slash = pdfPath.lastIndexOf('/')
-  const folder = [pdfPath.slice(0, Math.max(slash, 0)), paperNoteFolderName(pdfPath.slice(slash + 1))]
+function noteFolderPath(pdfPath: string): string {
+  const slash = Math.max(pdfPath.lastIndexOf('/'), pdfPath.lastIndexOf('\\'))
+  const separator = pdfPath.includes('\\') && !pdfPath.includes('/') ? '\\' : '/'
+  return [pdfPath.slice(0, Math.max(slash, 0)), paperNoteFolderName(pdfPath.slice(slash + 1))]
     .filter(Boolean)
-    .join('/')
+    .join(separator)
+}
+
+/** Multi-root files are opened by absolute path. The relative workspace API rejects those paths. */
+function absoluteWorkspacePath(pdfPath: string): boolean {
+  return pdfPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(pdfPath)
+}
+
+function noteNames(entries: ReadonlyArray<{ kind: string; name: string }> | undefined): string[] {
+  return (entries ?? [])
+    .filter(entry => entry.kind === 'file' && isPaperNoteFileName(entry.name))
+    .map(entry => entry.name)
+    .sort((a, b) => a.localeCompare(b))
+}
+
+/** Notes for a PDF in the chat workspace. `pdfPath` may be workspace-relative or absolute. */
+export function workspaceNoteFiles(sessionId: string, pdfPath: string): PaperNoteFiles {
+  const folder = noteFolderPath(pdfPath)
   const api = window.agentsDock.workspace
-  const pathOf = (name: string) => `${folder}/${name}`
+  const separator = folder.includes('\\') && !folder.includes('/') ? '\\' : '/'
+  const pathOf = (name: string) => `${folder}${separator}${name}`
+  if (absoluteWorkspacePath(pdfPath)) {
+    return {
+      async list() {
+        const page = await api.absoluteEntries(sessionId, folder, 0, PAPER_NOTE_LIMIT).catch(() => null)
+        return noteNames(page?.entries)
+      },
+      async read(name) {
+        return (await api.readAbsolute(sessionId, pathOf(name))).content
+      },
+      async create(name) {
+        await api.createAbsolute(sessionId, folder, 'directory').catch(() => undefined)
+        await api.createAbsolute(sessionId, pathOf(name), 'file')
+      },
+      async write(name, body) {
+        await api.overwriteAbsolute(sessionId, pathOf(name), body)
+      },
+      async remove(name) {
+        const file = await api.readAbsolute(sessionId, pathOf(name))
+        await api.removeAbsolute(sessionId, pathOf(name), file.revision, false)
+      }
+    }
+  }
   return {
     async list() {
       // A PDF without notes has no folder yet; the server reports that as an error, which means no notes.
       const page = await api.entries(sessionId, folder, 0, PAPER_NOTE_LIMIT).catch(() => null)
-      return (page?.entries ?? [])
-        .filter(entry => entry.kind === 'file' && isPaperNoteFileName(entry.name))
-        .map(entry => entry.name)
-        .sort((a, b) => a.localeCompare(b))
+      return noteNames(page?.entries)
     },
     async read(name) {
       return (await api.read(sessionId, pathOf(name))).content

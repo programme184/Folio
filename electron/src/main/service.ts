@@ -2834,6 +2834,35 @@ export class AppService {
     return result
   }
 
+  async startClaudeLogin(expected: CodexServerSettingsScope): Promise<{ loginId: string; url: string }> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (typeof scope.client.startClaudeLogin !== 'function') throw new Error('CLAUDE_LOGIN_UPDATE')
+    const result = await scope.client.startClaudeLogin()
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async completeClaudeLogin(expected: CodexServerSettingsScope, loginId: unknown, code: unknown): Promise<{ signedIn: true }> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (typeof scope.client.completeClaudeLogin !== 'function') throw new Error('CLAUDE_LOGIN_UPDATE')
+    const result = await scope.client.completeClaudeLogin(loginId, code)
+    this.assertCurrentScope(scope)
+    try { await this.refreshRuntime(true, true, scope, true) } catch { /* The saved login is the result. */ }
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async cancelClaudeLogin(expected: CodexServerSettingsScope): Promise<void> {
+    const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)
+    await this.ensureValidatedScope(scope)
+    this.assertCurrentScope(scope)
+    if (typeof scope.client.cancelClaudeLogin === 'function') await scope.client.cancelClaudeLogin()
+  }
+
   async providerAccount(expected: CodexServerSettingsScope, backend: CLIAccountBackend) {
     const checked = cliAccountBackend(backend)
     const scope = this.requireProfileScope(expected?.profileId, expected?.profileGeneration)

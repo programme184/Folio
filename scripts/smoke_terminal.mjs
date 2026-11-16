@@ -137,6 +137,34 @@ try {
   if (split.windows.length !== 2 || !split.windows.some(window => window.active && window.panes === 2)) {
     throw new Error(`Unexpected tmux window state: ${JSON.stringify(split.windows)}`)
   }
+  if (!Array.isArray(split.panes) || split.panes.length !== 2) {
+    throw new Error(`Split terminal did not expose pane geometry: ${JSON.stringify(split.panes)}`)
+  }
+  const inactivePane = split.panes.find(pane => !pane.active)
+  if (!inactivePane || inactivePane.width < 1 || inactivePane.height < 1) {
+    throw new Error(`Split terminal returned invalid pane geometry: ${JSON.stringify(split.panes)}`)
+  }
+  const selectedPane = await request(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'select-pane', target: inactivePane.id })
+  })
+  if (!selectedPane.panes?.some(pane => pane.id === inactivePane.id && pane.active)) {
+    throw new Error(`Tmux pane did not receive focus: ${JSON.stringify(selectedPane.panes)}`)
+  }
+  const maximizedPane = await request(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'toggle-pane-zoom' })
+  })
+  if (maximizedPane.pane_zoomed !== true || maximizedPane.panes?.length !== 2) {
+    throw new Error(`Tmux pane did not maximize without closing its peer: ${JSON.stringify(maximizedPane)}`)
+  }
+  const restoredPanes = await request(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'toggle-pane-zoom' })
+  })
+  if (restoredPanes.pane_zoomed !== false || restoredPanes.panes?.length !== 2) {
+    throw new Error(`Tmux split did not restore: ${JSON.stringify(restoredPanes)}`)
+  }
   const activeWindow = split.windows.find(window => window.active)
   const afterClose = await request(`/api/sessions/${encodeURIComponent(sessionId)}/terminal/action`, {
     method: 'POST',
@@ -156,7 +184,7 @@ try {
   }
   if (!finalWindowProtected) throw new Error('The final tmux window was not protected')
 
-  console.log(`Terminal smoke passed at ${terminalColumns}x${terminalRows}: attach, persistent state, local selection, mouse toggle, reattach, window close, final-window guard, split pane`)
+  console.log(`Terminal smoke passed at ${terminalColumns}x${terminalRows}: attach, persistent state, local selection, mouse toggle, reattach, window close, final-window guard, split pane focus and zoom`)
 } finally {
   if (sessionId) {
     await request(`/api/sessions/${encodeURIComponent(sessionId)}/terminal`, { method: 'DELETE' }).catch(() => {})

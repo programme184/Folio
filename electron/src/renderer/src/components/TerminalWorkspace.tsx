@@ -1,7 +1,7 @@
 // Localized display strings use semantic catalog keys.
 import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { FitAddon } from '@xterm/addon-fit'
@@ -15,6 +15,8 @@ import {
   Columns2,
   Copy,
   LoaderCircle,
+  Maximize2,
+  Minimize2,
   MoreHorizontal,
   MousePointer2,
   Plus,
@@ -25,7 +27,7 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import type { ForwardedPort, Session, TerminalAction, TerminalConnectionState, TerminalWindow } from '../../../shared/types'
+import type { ForwardedPort, Session, TerminalAction, TerminalConnectionState, TerminalPane, TerminalWindow, TerminalWindowsSnapshot } from '../../../shared/types'
 import { ShortcutTooltip } from './ShortcutTooltip'
 import { PortsPanel } from './PortsPanel'
 import { accumulateTerminalWheel, containTerminalWheel, terminalClipboardShortcut } from '../lib/terminal-shortcuts'
@@ -63,6 +65,8 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
   const actionBusyRef = useRef(false)
   const onCloseRef = useRef(onClose)
   const mouseEnabledRef = useRef(false)
+  const panesRef = useRef<TerminalPane[]>([])
+  const panePointerRef = useRef<{ pointerId: number; x: number; y: number } | null>(null)
   const wheelRemainderRef = useRef(0)
   const requestFitRef = useRef<(reason: string) => void>(() => undefined)
   const activeSurfaceRef = useRef<'terminal' | 'ports'>('terminal')
@@ -79,7 +83,9 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
   const [connectionName, setConnectionName] = useState<string | null>(null)
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [windows, setWindows] = useState<TerminalWindow[]>([])
+  const [panes, setPanes] = useState<TerminalPane[]>([])
   const [mouseEnabled, setMouseEnabled] = useState(false)
+  const [paneZoomed, setPaneZoomed] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [confirmKill, setConfirmKill] = useState(false)
@@ -114,6 +120,7 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
 
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
   useEffect(() => { mouseEnabledRef.current = mouseEnabled }, [mouseEnabled])
+  useLayoutEffect(() => { panesRef.current = panes }, [panes])
   useLayoutEffect(() => { activeSurfaceRef.current = activeSurface }, [activeSurface])
 
   useLayoutEffect(() => {
@@ -130,6 +137,8 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
     setDetectedPorts([])
     setSuggestionBusy(null)
     setActiveSurface('terminal')
+    setPanes([])
+    setPaneZoomed(false)
   }, [profileGeneration, profileId, session.id])
 
   useEffect(() => {
@@ -224,18 +233,24 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
     }))
   }, [profileGeneration, profileId])
 
+  const applyTerminalSnapshot = useCallback((snapshot: TerminalWindowsSnapshot) => {
+    setWindows(current => terminalWindowsEqual(current, snapshot.windows) ? current : snapshot.windows)
+    setPanes(current => terminalPanesEqual(current, snapshot.panes ?? []) ? current : (snapshot.panes ?? []))
+    setMouseEnabled(Boolean(snapshot.mouse_enabled))
+    setPaneZoomed(Boolean(snapshot.pane_zoomed))
+    if (snapshot.name) setConnectionName(snapshot.name)
+  }, [])
+
   const refreshWindows = useCallback(async () => {
     if (!profileId || !terminalProfileIsActive(profileId, profileGeneration)) return
     try {
       const snapshot = await window.agentsDock.terminal.windows(profileId, profileGeneration, session.id)
       if (!terminalProfileIsActive(profileId, profileGeneration)) return
-      setWindows(current => terminalWindowsEqual(current, snapshot.windows) ? current : snapshot.windows)
-      setMouseEnabled(Boolean(snapshot.mouse_enabled))
-      if (snapshot.name) setConnectionName(snapshot.name)
+      applyTerminalSnapshot(snapshot)
     } catch (error) {
       if (terminalProfileIsActive(profileId, profileGeneration)) setConnectionError(errorText(error))
     }
-  }, [profileGeneration, profileId, session.id])
+  }, [applyTerminalSnapshot, profileGeneration, profileId, session.id])
 
   const runAction = useCallback(async (action: TerminalAction, target?: string) => {
     if (!profileId || actionBusyRef.current || !terminalProfileIsActive(profileId, profileGeneration)) return
@@ -244,8 +259,7 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
     try {
       const snapshot = await window.agentsDock.terminal.action(profileId, profileGeneration, session.id, action, target)
       if (!terminalProfileIsActive(profileId, profileGeneration)) return
-      setWindows(current => terminalWindowsEqual(current, snapshot.windows) ? current : snapshot.windows)
-      setMouseEnabled(Boolean(snapshot.mouse_enabled))
+      applyTerminalSnapshot(snapshot)
       setConnectionError(null)
       terminalRef.current?.focus()
     } catch (error) {
@@ -257,7 +271,34 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
       actionBusyRef.current = false
       if (terminalProfileIsActive(profileId, profileGeneration)) setActionBusy(false)
     }
-  }, [profileGeneration, profileId, session.id])
+  }, [applyTerminalSnapshot, profileGeneration, profileId, session.id])
+
+  const beginPanePointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || mouseEnabledRef.current || panesRef.current.length <= 1) return
+    panePointerRef.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY }
+  }
+  const finishPanePointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = panePointerRef.current
+    panePointerRef.current = null
+    if (!start || start.pointerId !== event.pointerId || mouseEnabledRef.current) return
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) return
+    const terminal = terminalRef.current
+    const host = hostRef.current
+    if (!terminal || !host) return
+    const screen = host.querySelector<HTMLElement>('.xterm-screen')
+    const bounds = (screen ?? host).getBoundingClientRect()
+    const pane = terminalPaneAtPoint(
+      panesRef.current,
+      terminal.cols,
+      terminal.rows,
+      event.clientX - bounds.left,
+      event.clientY - bounds.top,
+      bounds.width,
+      bounds.height
+    )
+    if (pane && !pane.active) void runAction('select-pane', pane.id)
+    else terminal.focus()
+  }
 
   const connect = useCallback(async () => {
     const terminal = terminalRef.current
@@ -664,6 +705,18 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
         <button type="button" className="icon-button" title={t("ui.TerminalWorkspace.TerminalWorkspace.next_tmux_window_5c5d5e4")} disabled={actionBusy} onClick={() => void runAction('next-window')}><ChevronRight size={15} /></button>
         <ShortcutTooltip shortcut="terminalSplitRight"><button type="button" className="icon-button" aria-label={t("ui.TerminalWorkspace.TerminalWorkspace.split_pane_right_fee3f9f")} disabled={actionBusy} onClick={() => void runAction('split-right')}><Columns2 size={15} /></button></ShortcutTooltip>
         <ShortcutTooltip shortcut="terminalSplitDown"><button type="button" className="icon-button" aria-label={t("ui.TerminalWorkspace.TerminalWorkspace.split_pane_down_cbaec7a")} disabled={actionBusy} onClick={() => void runAction('split-down')}><Rows2 size={15} /></button></ShortcutTooltip>
+        {activeTerminalWindow && activeTerminalWindow.panes > 1 && <button
+          type="button"
+          className="icon-button"
+          aria-label={paneZoomed
+            ? t("ui.TerminalWorkspace.TerminalWorkspace.restore_split_panes_1a9d38b")
+            : t("ui.TerminalWorkspace.TerminalWorkspace.maximize_active_pane_e684c2a")}
+          title={paneZoomed
+            ? t("ui.TerminalWorkspace.TerminalWorkspace.restore_split_panes_1a9d38b")
+            : t("ui.TerminalWorkspace.TerminalWorkspace.maximize_active_pane_e684c2a")}
+          disabled={actionBusy}
+          onClick={() => void runAction('toggle-pane-zoom')}
+        >{paneZoomed ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</button>}
         <ShortcutTooltip shortcut="terminalFind"><button type="button" className="icon-button" aria-label={t("ui.TerminalWorkspace.TerminalWorkspace.find_in_terminal_382564a")} onClick={() => setSearchOpen(value => !value)}><Search size={15} /></button></ShortcutTooltip>
         <button type="button" className="icon-button" title={t("ui.TerminalWorkspace.TerminalWorkspace.reconnect_terminal_fb9d408")} disabled={actionBusy || connectionState === 'connecting'} onClick={() => void connect()}><RefreshCw size={15} /></button>
         <DropdownMenu.Root><DropdownMenu.Trigger asChild><button type="button" className="icon-button" title={t("ui.TerminalWorkspace.TerminalWorkspace.terminal_actions_1a60801")}><MoreHorizontal size={16} /></button></DropdownMenu.Trigger><DropdownMenu.Portal><DropdownMenu.Content className="menu-content" align="end">
@@ -716,6 +769,9 @@ export const TerminalWorkspace = memo(function TerminalWorkspace({ session, layo
           aria-labelledby={activeTerminalTabId}
           aria-hidden={activeSurface !== 'terminal'}
           ref={hostRef}
+          onPointerDown={beginPanePointer}
+          onPointerUp={finishPanePointer}
+          onPointerCancel={() => { panePointerRef.current = null }}
         /></ContextMenu.Trigger>
         <ContextMenu.Portal><ContextMenu.Content className="menu-content terminal-context-menu">
           <ContextMenu.Item className="menu-item" onSelect={copy}><Copy size={14} />{" "}{t("ui.TerminalWorkspace.TerminalWorkspace.copy_e21f935")}</ContextMenu.Item>
@@ -745,6 +801,32 @@ function terminalWindowsEqual(left: TerminalWindow[], right: TerminalWindow[]): 
       && window.active === candidate.active
       && window.panes === candidate.panes
   })
+}
+
+function terminalPanesEqual(left: TerminalPane[], right: TerminalPane[]): boolean {
+  return left.length === right.length && left.every((pane, index) => {
+    const candidate = right[index]
+    return candidate != null
+      && pane.id === candidate.id
+      && pane.active === candidate.active
+      && pane.left === candidate.left
+      && pane.top === candidate.top
+      && pane.width === candidate.width
+      && pane.height === candidate.height
+  })
+}
+
+export function terminalPaneAtPoint(
+  panes: TerminalPane[], columns: number, rows: number,
+  x: number, y: number, width: number, height: number
+): TerminalPane | null {
+  if (columns <= 0 || rows <= 0 || width <= 0 || height <= 0 || x < 0 || y < 0 || x >= width || y >= height) return null
+  const column = Math.min(columns - 1, Math.floor(x / width * columns))
+  const row = Math.min(rows - 1, Math.floor(y / height * rows))
+  return panes.find(pane => (
+    column >= pane.left && column < pane.left + pane.width
+    && row >= pane.top && row < pane.top + pane.height
+  )) ?? null
 }
 
 function terminalTheme(): ITheme {

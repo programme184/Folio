@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setLocale } from '@shared/i18n'
 import { SideChatController } from '../lib/side-chat'
@@ -57,8 +57,17 @@ describe('Inspector workspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     expect(await screen.findByText('This folder is empty.')).toBeVisible()
     expect(window.agentsDock.workspace.entries).toHaveBeenCalledExactlyOnceWith('chat-a', '', 0, 500)
+    const header = screen.getByRole('tab', { name: 'Files' }).closest('.inspector-workspace-header')!
+    expect(header.querySelector('.inspector-files-actions')).not.toBeNull()
+    expect(within(header).getByRole('button', { name: 'New file' })).toBeVisible()
+    expect(within(header).getByRole('button', { name: 'Refresh file explorer' })).toBeVisible()
+    expect(within(header).getAllByRole('button', { name: 'Hide panel' })).toHaveLength(1)
+    expect(document.querySelector('.workspace-editor-explorer-header')).toBeNull()
+    fireEvent.click(within(header).getByRole('button', { name: 'Hide panel' }))
+    expect(hide).toHaveBeenCalledOnce()
     await act(async () => fireEvent.keyDown(screen.getByRole('tab', { name: 'Files' }), { key: 'Home' }))
     expect(screen.getByRole('tab', { name: 'Details' })).toHaveAttribute('aria-selected', 'true')
+    expect(document.querySelector('.inspector-files-actions')).toBeNull()
   })
 
   it('shows subagents and collapsible Media & files in one details inspector', async () => {

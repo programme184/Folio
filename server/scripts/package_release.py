@@ -66,6 +66,7 @@ FILES = (
     "codex_provider.py",
     "provider_connections.py",
     "cursor_api_key.py",
+    "claude_account_login.py",
     "cursor_desktop_login.py",
     "side_questions.py",
     "title_generation.py",

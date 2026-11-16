@@ -7,6 +7,7 @@ import { useLocale } from '../lib/i18n'
 import { SideChatController } from '../lib/side-chat'
 import { Inspector } from './Inspector'
 import { InspectorFiles } from './InspectorFiles'
+import { WorkspaceFilesActionsHost, workspaceFilesKey } from './WorkspaceFilesContext'
 import './SideQuestionPanel.css'
 
 export type InspectorWorkspaceTab = 'details' | 'files' | 'review'
@@ -18,6 +19,7 @@ export function InspectorWorkspace({ session, scope, controller, tab, onTabChang
   const id = useId()
   const selectedTab = tab === 'review' && !review ? 'details' : tab
   const tabs: InspectorWorkspaceTab[] = review ? ['details', 'files', 'review'] : ['details', 'files']
+  const filesActionsOwner = session ? workspaceFilesKey(scope, session.id, session.cwd ?? '') : null
   return <aside className="inspector inspector-workspace">
     <div className="inspector-drag-region" />
     <header className="inspector-workspace-header">
@@ -34,6 +36,7 @@ export function InspectorWorkspace({ session, scope, controller, tab, onTabChang
             document.getElementById(`${id}-${next}-tab`)?.focus()
           }}>{t(value === 'details' ? 'sideChat.details' : value === 'files' ? 'inspector.files' : 'sideChat.review')}</button>)}
       </div>
+      {selectedTab === 'files' && filesActionsOwner && <WorkspaceFilesActionsHost owner={filesActionsOwner} />}
       <button type="button" className="icon-button" aria-label={t('sideChat.hide')} title={t('sideChat.hide')} onClick={onHide}><X size={15} /></button>
     </header>
     {selectedTab === 'details' && <div className="inspector-workspace-content" role="tabpanel" id={`${id}-details-panel`} aria-labelledby={`${id}-details-tab`}>

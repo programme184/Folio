@@ -438,6 +438,11 @@ export interface AgentsDockAPI {
   cursor?: {
     importAuth(scope: CodexServerSettingsScope, authFile: string): Promise<{ imported: true }>
   }
+  claudeLogin?: {
+    start(scope: CodexServerSettingsScope): Promise<{ loginId: string; url: string }>
+    complete(scope: CodexServerSettingsScope, loginId: string, code: string): Promise<{ signedIn: true }>
+    cancel(scope: CodexServerSettingsScope): Promise<void>
+  }
   customModels?: {
     read(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, sessionId?: string): Promise<import('./custom-models').CustomModels>
     save(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, input: import('./custom-models').CustomModelInput): Promise<import('./custom-models').CustomModels>

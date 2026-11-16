@@ -259,6 +259,11 @@ const api: AgentsDockAPI = {
   cursor: {
     importAuth: (scope, authFile) => ipcRenderer.invoke('cursor:auth:import', scope, authFile)
   },
+  claudeLogin: {
+    start: scope => ipcRenderer.invoke('claude:login:start', scope),
+    complete: (scope, loginId, code) => ipcRenderer.invoke('claude:login:complete', scope, loginId, code),
+    cancel: scope => ipcRenderer.invoke('claude:login:cancel', scope)
+  },
   customModels: {
     read: (scope, backend, sessionId) => ipcRenderer.invoke('custom-models:read', scope, backend, sessionId),
     save: (scope, backend, input) => ipcRenderer.invoke('custom-models:save', scope, backend, input)

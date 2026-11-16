@@ -119,6 +119,107 @@ function CursorCliEditor() {
   </>
 }
 
+function claudeLoginFailure(reason: unknown): 'rejected' | 'expired' | 'admin' | 'update' | 'missing' | 'connection' | 'failed' {
+  const message = reason instanceof Error ? reason.message : String(reason ?? '')
+  const match = /CLAUDE_LOGIN_(REJECTED|EXPIRED|ADMIN|UPDATE|MISSING|CONNECTION)/.exec(message)
+  return match ? match[1].toLowerCase() as ReturnType<typeof claudeLoginFailure> : 'failed'
+}
+
+function ClaudeLoginEditor() {
+  const connected = useAppStore(state => state.connected)
+  const profileId = useAppStore(state => state.activeProfileId)
+  const profileGeneration = useAppStore(state => state.profileGeneration)
+  const fieldId = useId()
+  const codeRef = useRef<HTMLInputElement>(null)
+  const loginRef = useRef<{ id: string; scope: { profileId: string; profileGeneration: number } } | null>(null)
+  const [busy, setBusy] = useState<'start' | 'complete' | null>(null)
+  const [pending, setPending] = useState<string | null>(null)
+  const [hasCode, setHasCode] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState<ReturnType<typeof claudeLoginFailure> | null>(null)
+  const ready = connected && profileId != null && busy === null
+  const api = window.agentsDock.claudeLogin
+
+  // Leaving the page or switching server abandons the pending CLI process.
+  useEffect(() => () => {
+    const open = loginRef.current
+    loginRef.current = null
+    if (open) void api?.cancel(open.scope).catch(() => { /* Already expired. */ })
+  }, [api, profileId, profileGeneration])
+
+  async function start() {
+    if (!ready || !profileId) return
+    if (!api) { setError('update'); return }
+    setBusy('start'); setError(null); setDone(false)
+    try {
+      const scope = { profileId, profileGeneration }
+      const { loginId, url } = await api.start(scope)
+      loginRef.current = { id: loginId, scope }
+      setPending(url)
+      setHasCode(false)
+      void window.agentsDock.native.openExternal(url)
+    } catch (reason) {
+      setError(claudeLoginFailure(reason))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    const open = loginRef.current
+    const code = codeRef.current?.value ?? ''
+    if (!ready || !open || !api || !code.trim()) return
+    if (codeRef.current) codeRef.current.value = ''
+    setHasCode(false); setBusy('complete'); setError(null)
+    try {
+      await api.complete(open.scope, open.id, code)
+      loginRef.current = null
+      setPending(null)
+      setDone(true)
+    } catch (reason) {
+      const failure = claudeLoginFailure(reason)
+      if (failure === 'expired') { loginRef.current = null; setPending(null) }
+      setError(failure)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function cancel() {
+    const open = loginRef.current
+    loginRef.current = null
+    setPending(null); setHasCode(false); setError(null)
+    if (open) await api?.cancel(open.scope).catch(() => { /* Already expired. */ })
+  }
+
+  const message = { rejected: 'connections.claudeLoginRejected', expired: 'connections.claudeLoginExpired', admin: 'connections.cliAdmin',
+    update: 'connections.claudeLoginUpdate', missing: 'connections.claudeLoginMissing', connection: 'connections.cliConnection',
+    failed: 'connections.claudeLoginFailed' }
+  return <>
+    <div className="codex-auth-settings-actions">
+      <button type="button" className="primary-button" disabled={!ready} onClick={() => { void start() }}>
+        {busy === 'start' && <LoaderCircle className="spin" size={14} />}{t(pending ? 'connections.claudeLoginRestart' : 'connections.claudeLoginStart')}
+      </button>
+    </div>
+    {pending && <form className="codex-auth-settings-form" onSubmit={event => { void submit(event) }}>
+      <label htmlFor={fieldId}>{t('connections.claudeLoginHelp')}</label>
+      <input ref={codeRef} id={fieldId} type="password" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        maxLength={512} placeholder={t('connections.claudeLoginCode')} disabled={busy !== null}
+        onChange={event => setHasCode(Boolean(event.currentTarget.value.trim()))} />
+      <div className="codex-auth-settings-actions">
+        <button type="submit" className="primary-button" disabled={!hasCode || busy !== null}>
+          {busy === 'complete' && <LoaderCircle className="spin" size={14} />}{t(busy === 'complete' ? 'connections.cliSaving' : 'connections.claudeLoginSubmit')}
+        </button>
+        <button type="button" className="quiet-button" disabled={busy === 'complete'} onClick={() => { void window.agentsDock.native.openExternal(pending) }}>{t('connections.claudeLoginReopen')}</button>
+        <button type="button" className="quiet-button" disabled={busy === 'complete'} onClick={() => { void cancel() }}>{t('codexAuth.cancel')}</button>
+      </div>
+    </form>}
+    {done && <small role="status">{t('connections.claudeLoginDone')}</small>}
+    {error && <small className="codex-auth-settings-error" role="alert">{t(message[error])}</small>}
+  </>
+}
+
 function CLIAccountCard({ backend, status, open }: { backend: CLIAccountBackend; status: NativeProviderSignInStatus; open: boolean }) {
   const signedIn = status === 'signed-in'
   const hasProfile = status !== 'signed-out'
@@ -146,6 +247,7 @@ function CLIAccountCard({ backend, status, open }: { backend: CLIAccountBackend;
       {hasProfile && account?.plan_type && <small>{t('connections.plan')}: {account.plan_type}</small>}
       {hasProfile && account?.source === 'local_profile' && <small>{t('connections.cachedProfile')}</small>}
       {backend === 'cursor' && <CursorCliEditor />}
+      {backend === 'claude' && status !== 'signed-in' && <ClaudeLoginEditor />}
       {status === 'signed-out' && <NativeProviderSignIn backend={backend} disabled={!connected} />}
     </div>
   </section>

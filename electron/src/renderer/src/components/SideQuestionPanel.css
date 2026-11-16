@@ -1,8 +1,35 @@
 .inspector-workspace { color: var(--text); background: var(--surface); }
-.inspector-workspace-header { display: flex; align-items: center; min-height: 44px; gap: var(--space-1); padding: 0 var(--space-4); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.inspector-workspace-header {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  gap: var(--space-1);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+.inspector-workspace-header > .inspector-files-actions { margin-left: auto; }
+.inspector-workspace-header > .icon-button { flex-shrink: 0; app-region: no-drag; -webkit-app-region: no-drag; }
+.inspector-workspace-header > .inspector-files-actions + .icon-button { margin-left: 0; }
+.inspector-workspace-header:not(:has(.inspector-files-actions)) > .icon-button { margin-left: auto; }
 .inspector-workspace-title { flex: 1; padding: 0 var(--space-3); color: var(--muted); font-size: var(--text-size-label); }
-.inspector-workspace-tabs { display: flex; align-self: stretch; align-items: stretch; gap: var(--space-3); min-width: 0; flex: 1; }
-.inspector-workspace-tabs > button { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-3); color: var(--muted); background: transparent; border-radius: 0; border-bottom: 2px solid transparent; font-size: var(--text-size-label); white-space: nowrap; }
+.inspector-workspace-tabs { display: flex; align-self: stretch; align-items: stretch; gap: var(--space-3); min-width: 0; flex: 1; app-region: no-drag; -webkit-app-region: no-drag; }
+.inspector-workspace-tabs > button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  color: var(--muted);
+  background: transparent;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  font-size: var(--text-size-label);
+  white-space: nowrap;
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
 .inspector-workspace-tabs > button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
 .inspector-workspace-tabs > button:hover { background: var(--interaction-hover); }
 .inspector-workspace-tabs > button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }

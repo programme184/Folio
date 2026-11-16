@@ -101,6 +101,46 @@ it('edits the Cursor CLI login from an opened auth file', async () => {
   expect(cursor.textContent).not.toContain('synthetic-cursor-token')
 })
 
+it('signs in to Claude Code with an account code and never keeps the pasted code', async () => {
+  const api = bridge()
+  const start = vi.fn().mockResolvedValue({ loginId: 'login-fixture-0123456789', url: 'https://claude.com/cai/oauth/authorize?x=1' })
+  const complete = vi.fn().mockResolvedValue({ signedIn: true })
+  const cancel = vi.fn().mockResolvedValue(undefined)
+  const openExternal = vi.fn().mockResolvedValue(undefined)
+  Object.assign(api, { claudeLogin: { start, complete, cancel }, native: { openExternal } })
+  render(<AppSettingsDialog />)
+  fireEvent.click(screen.getByRole('button', { name: 'My Agents' }))
+  const group = screen.getByText('Claude Code', { selector: 'summary strong' }).closest('details')!
+  fireEvent.click(group.querySelector('summary')!)
+  fireEvent.click(within(group).getByRole('button', { name: 'Sign in with Claude account' }))
+  const field = await within(group).findByLabelText(/Approve access in the browser/)
+  expect(start).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 })
+  expect(openExternal).toHaveBeenCalledWith('https://claude.com/cai/oauth/authorize?x=1')
+  expect(within(group).getByRole('button', { name: 'Finish sign-in' })).toBeDisabled()
+  fireEvent.change(field, { target: { value: 'SyntheticCode123#state' } })
+  fireEvent.click(within(group).getByRole('button', { name: 'Finish sign-in' }))
+  await within(group).findByText('Signed in to Claude Code on this server.')
+  expect(complete).toHaveBeenCalledExactlyOnceWith({ profileId: 'studio', profileGeneration: 1 }, 'login-fixture-0123456789', 'SyntheticCode123#state')
+  expect(group.textContent).not.toContain('SyntheticCode123')
+})
+
+it('shows a fixed message when Claude rejects the code and lets the user retry', async () => {
+  const api = bridge()
+  const complete = vi.fn().mockRejectedValue(new Error('CLAUDE_LOGIN_REJECTED'))
+  Object.assign(api, { claudeLogin: {
+    start: vi.fn().mockResolvedValue({ loginId: 'login-fixture-0123456789', url: 'https://claude.com/cai/oauth/authorize' }),
+    complete, cancel: vi.fn().mockResolvedValue(undefined) }, native: { openExternal: vi.fn() } })
+  render(<AppSettingsDialog />)
+  fireEvent.click(screen.getByRole('button', { name: 'My Agents' }))
+  const group = screen.getByText('Claude Code', { selector: 'summary strong' }).closest('details')!
+  fireEvent.click(group.querySelector('summary')!)
+  fireEvent.click(within(group).getByRole('button', { name: 'Sign in with Claude account' }))
+  fireEvent.change(await within(group).findByLabelText(/Approve access in the browser/), { target: { value: 'WrongCode123456#x' } })
+  fireEvent.click(within(group).getByRole('button', { name: 'Finish sign-in' }))
+  expect(await within(group).findByText(/Claude did not accept that code/)).toHaveAttribute('role', 'alert')
+  expect(within(group).getByLabelText(/Approve access in the browser/)).toHaveValue('')
+})
+
 it('keeps legacy Server navigation and moves account/runtime controls only', async () => {
   const api = bridge()
   useAppStore.setState(state => ({ modals: { ...state.modals, settings: true, appSettings: false } }))

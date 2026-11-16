@@ -1009,6 +1009,26 @@ the last native authentication result and its original timestamp rather than
 claiming to have checked the account again. A successful request clears the
 previous authentication error. After an external `claude auth login`, retry the
 message; rechecking the installation alone does not prove a successful login.
+
+### Claude account sign-in (browser code flow)
+
+Native admin routes drive the CLI's own `claude auth login --claudeai`
+(subscription login, never API billing). They follow the same authorization as
+the other credential controls, including the loopback no-token exception, and
+reject browser-origin requests.
+
+- `POST /api/admin/claude/auth/login` starts one pending login (a new start
+  cancels the previous one) and returns `{login_id, url}`. The URL must be an
+  HTTPS Anthropic `/authorize` page or the request fails.
+- `POST /api/admin/claude/auth/login/complete` takes `{login_id, code}`, feeds
+  the code to the waiting CLI and returns `{signed_in: true}` after it exits
+  successfully; a rejected code is `422`, an expired or unknown login `409`.
+  Success records a native Claude success so Settings shows the account as
+  signed in.
+- `DELETE /api/admin/claude/auth/login` cancels a pending login. Pending logins
+  expire after ten minutes.
+
+CLI output and credential files are never returned or logged.
 The former `AGENTSDOCK_CLAUDE_AUTH_PROBE_TIMEOUT_SECONDS` setting is no longer used.
 
 This removes standalone authentication monitoring, not every native Claude

@@ -23,7 +23,7 @@ import {
 import { setWorkspaceDragData } from '../lib/workspace-file-mentions'
 import { createPortal } from 'react-dom'
 import { requestNativeFileOpen } from '../lib/file-actions'
-import { useWorkspaceFilesHost, workspaceFilesKey } from './WorkspaceFilesContext'
+import { useWorkspaceFilesActionsHost, useWorkspaceFilesHost, workspaceFilesKey } from './WorkspaceFilesContext'
 import * as ContextMenu from '@radix-ui/react-context-menu'
 import {
   ChevronRight,
@@ -379,11 +379,14 @@ export function WorkspaceEditor({
       ? window.agentsDock.workspace.readAbsolute(session.id, path, true)
       : window.agentsDock.workspace.readAbsolute(session.id, path)
   )
-  const registeredFilesHost = useWorkspaceFilesHost(workspaceFilesKey(profileScope, session.id, cwd))
+  const filesOwnerKey = workspaceFilesKey(profileScope, session.id, cwd)
+  const registeredFilesHost = useWorkspaceFilesHost(filesOwnerKey)
+  const registeredFilesActionsHost = useWorkspaceFilesActionsHost(filesOwnerKey)
   // The host key already binds the explorer to one server, session, and cwd.
   // Do not additionally gate its portal on pane focus: focus and the inspector
   // host can update in separate React commits when switching split panes.
   const filesHost = !tabbedPane || paneActive ? registeredFilesHost : null
+  const filesActionsHost = !tabbedPane || paneActive ? registeredFilesActionsHost : null
   const filesHostRef = useRef(filesHost)
   filesHostRef.current = filesHost
   const maxEditableFileBytes = resolvedWorkspaceFileByteLimit(maxTextFileBytes)
@@ -4237,6 +4240,7 @@ export function WorkspaceEditor({
           onToggle={toggleDirectory}
           onLoadMore={path => void loadDirectory(path, true)}
           onRefresh={refreshExplorer}
+          actionsHost={filesActionsHost}
           onRequestCreate={(kind, target) => {
             if (kind === 'file' && !multiRootExplorer) requestNewWorkspaceFile(target, true)
             else requestCreateWorkspaceEntry(kind, target)
@@ -4517,6 +4521,7 @@ const Explorer = memo(function Explorer({
   onToggle,
   onLoadMore,
   onRefresh,
+  actionsHost = null,
   onRequestCreate,
   onCreateCommit,
   onCreateErrorClear,
@@ -4543,6 +4548,7 @@ const Explorer = memo(function Explorer({
   onToggle: (path: string) => void
   onLoadMore: (path: string) => void
   onRefresh: () => void
+  actionsHost?: HTMLElement | null
   onRequestCreate: (kind: WorkspaceCreateKind, target?: WorkspaceEntry | null) => void
   onCreateCommit: (name: string) => void
   onCreateErrorClear: () => void
@@ -4580,15 +4586,18 @@ const Explorer = memo(function Explorer({
     lastScrolledPathRef.current = activePath
   }, [activePath, directories, expanded])
   const creationUnavailableTitle = t('editor.updateAgentsserverToCreateWorkspaceFilesAndFolders')
-  return <aside className="workspace-editor-explorer" aria-label={t('editor.fileExplorer')}>
-    <header className="workspace-editor-explorer-header">
-      <strong>{t('inspector.files')}</strong>
-      <div className="workspace-editor-explorer-actions">
-        <button type="button" aria-label={t('editor.newFile')} title={creationAvailable ? t('editor.newFileN') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('file', null)}><FilePlus2 size={13} /></button>
-        <button type="button" aria-label={t('editor.newFolder')} title={creationAvailable ? t('editor.newFolder115') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('directory', null)}><FolderPlus size={13} /></button>
-        <button type="button" aria-label={t('editor.refreshFileExplorer')} title={t('editor.refreshExplorer')} onClick={onRefresh}><RefreshCw size={12} /></button>
-      </div>
-    </header>
+  const explorerActions = <div className="workspace-editor-explorer-actions">
+    <button type="button" aria-label={t('editor.newFile')} title={creationAvailable ? t('editor.newFileN') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('file', null)}><FilePlus2 size={13} /></button>
+    <button type="button" aria-label={t('editor.newFolder')} title={creationAvailable ? t('editor.newFolder115') : creationUnavailableTitle} disabled={!creationAvailable} onClick={() => onRequestCreate('directory', null)}><FolderPlus size={13} /></button>
+    <button type="button" aria-label={t('editor.refreshFileExplorer')} title={t('editor.refreshExplorer')} onClick={onRefresh}><RefreshCw size={12} /></button>
+  </div>
+  return <aside className={`workspace-editor-explorer${actionsHost ? ' workspace-editor-explorer-embedded' : ''}`} aria-label={t('editor.fileExplorer')}>
+    {actionsHost
+      ? createPortal(explorerActions, actionsHost)
+      : <header className="workspace-editor-explorer-header">
+        <strong>{t('inspector.files')}</strong>
+        {explorerActions}
+      </header>}
     <ContextMenu.Root onOpenChange={open => { if (!open) setContextEntryPath(null) }}>
       <ContextMenu.Trigger asChild>
         <div className="workspace-editor-tree" onContextMenuCapture={(event: ReactMouseEvent<HTMLDivElement>) => {

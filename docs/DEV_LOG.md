@@ -1,5 +1,98 @@
 # Public development log
 
+## 2026-11-16 — Close Files panel from the explorer toolbar
+
+- Files actions (new/folder/refresh) share one header row with Details/Files
+  tabs and a single Hide panel control.
+- On Linux, the inspector clears window chrome with padding instead of a drag
+  hit-target, and header tabs/actions are explicitly no-drag so clicks work.
+
+```text
+Change and expected user behavior: open the Files tab; use either Hide panel
+X (tab header or explorer toolbar after Refresh); the right panel closes.
+Source commit / app build / server version: rebuilt electron/out from current
+uncommitted source; matching AgentsServer not required.
+Test surface: InspectorFiles/AppStyles vitest; live Electron CDP on rebuilt
+out/; user profile app relaunched from that out/.
+Actions exercised and observed outcomes: CDP saw two Hide panel buttons with
+non-zero geometry after selecting Files; drag region height 40px on Linux;
+production renderer bundle includes workspace-editor-explorer-close.
+Real boundaries exercised; any mocked/stubbed boundaries: live renderer DOM
+and screenshot via CDP; unit tests still mock workspace listing.
+Focused regression / typecheck / production build: focused vitest passed;
+electron-vite production out/ rebuilt successfully.
+Remaining limitations or blocked acceptance: packaged AppImage install not
+updated; click the rebuilt source-tree app, not an older AppImage.
+Availability: local rebuilt electron/out and relaunched source-tree app.
+```
+
+## 2026-11-09 — Click to focus persistent terminal panes
+
+- Split terminal panes can now be focused with an ordinary click while tmux
+  mouse capture is off. Dragging still selects local terminal text instead of
+  changing panes.
+- A visible maximize control expands the active pane to the full terminal and
+  restores the previous split without stopping either pane's process.
+- AgentsServer returns the selected window's bounded pane geometry and accepts
+  a pane selection only when that pane belongs to the active chat window.
+
+```text
+Change and expected user behavior: click either side of a split terminal and
+type into that pane; maximize it to use the full terminal, restore the split,
+or drag across output to keep selecting text locally.
+Source commit / app build / server version: uncommitted source on top of
+39792db0; Electron production build; matching AgentsServer source required.
+Test surface: isolated real AgentsServer with a real tmux PTY; renderer pointer
+event regression; Electron main/client/service tests.
+Actions exercised and observed outcomes: opened an 80x24 terminal through the
+real WebSocket, split it into two panes, received both geometries over HTTP,
+selected the inactive pane, maximized it to the full 80x24 terminal, restored
+the split and observed both panes remain. Renderer tests clicked an inactive
+pane and dragged across it; only the click issued pane selection.
+Real boundaries exercised; any mocked/stubbed boundaries: server HTTP,
+WebSocket, PTY and tmux were real. Renderer IPC was mocked because the native
+GUI control surface was unavailable, so an actual desktop click remains pending.
+Focused regression / typecheck / production build: 740 Electron tests, 70
+terminal/server tests (one Darwin-only skip), TypeScript check and Electron
+production build passed.
+Remaining limitations or blocked acceptance: native desktop pointer interaction
+could not be exercised in this environment; packaged and remote-server checks
+were not run.
+Availability: source only; not installed, published or deployed.
+```
+
+## 2026-11-06 — Sign in to Claude Code with a Claude account from Folio
+
+- Settings → My Agents → Claude Code now has **Sign in with Claude account**.
+  It runs the server's native `claude auth login --claudeai` (subscription
+  login, not an API key): Folio opens the Anthropic authorization page, the
+  user pastes the code, and the CLI stores its own credentials. Previously the
+  login had to be run by hand in a terminal on the server.
+- AgentsServer gained `/api/admin/claude/auth/login`, `.../login/complete` and
+  a cancel route behind the existing native-admin guard. Links are limited to
+  HTTPS Anthropic authorization pages, codes are validated and never kept, and
+  CLI output is never returned.
+
+```text
+Change and expected user behavior: a signed-out Claude Code card offers an
+in-app browser sign-in; a wrong code shows a fixed message and can be retried.
+Source commit / app build / server version: uncommitted source on top of
+39792db0; AgentsServer 1.0.7-beta.11 source.
+Test surface: isolated real AgentsServer (temporary HOME, loopback) with the
+real Claude Code CLI; component and client tests.
+Actions exercised and observed outcomes: start returned a real Anthropic
+authorization link; a wrong code was rejected with 422 and no CLI output;
+restart then cancel left no CLI process; a browser-style request got 403.
+Real boundaries exercised; any mocked/stubbed boundaries: server routes and
+the real CLI were exercised over HTTP. The desktop UI used mocked IPC.
+Focused regression / typecheck / production build: server login and release
+manifest tests, electron typecheck, AIProviderSettings/server-client/ipc tests.
+Remaining limitations or blocked acceptance: a successful sign-in with a real
+Claude account, and the click-through in the running desktop app, were not
+exercised; they need the account owner to authorize in a browser.
+Availability: source only
+```
+
 ## 2026-11-06 — Recover from a stale renderer bundle instead of a blank window
 
 - A window left open across a renderer rebuild kept referencing hashed lazy

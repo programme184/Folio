@@ -1,10 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Profiler } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ForwardedPort, Session, TerminalWindow } from '@shared/types'
+import type { ForwardedPort, Session, TerminalPane, TerminalWindow } from '@shared/types'
 import { setLocale } from '@shared/i18n'
 import { useAppStore } from '../store/app-store'
-import { TerminalWorkspace } from './TerminalWorkspace'
+import { TerminalWorkspace, terminalPaneAtPoint } from './TerminalWorkspace'
 
 const xtermHarness = vi.hoisted(() => ({ instances: [] as Array<Record<string, unknown>> }))
 
@@ -66,14 +66,22 @@ const ports = {
   open: vi.fn(async () => undefined)
 }
 
+type TerminalTestSnapshot = {
+  windows: TerminalWindow[]
+  panes?: TerminalPane[]
+  mouse_enabled: boolean
+  pane_zoomed?: boolean
+  name: string | null
+}
+
 const terminal = {
   connect: vi.fn(async () => undefined),
   disconnect: vi.fn(async () => undefined),
   write: vi.fn(),
   resize: vi.fn(),
   scroll: vi.fn(),
-  windows: vi.fn(async (): Promise<{ windows: TerminalWindow[]; mouse_enabled: boolean; name: string | null }> => ({ windows: [], mouse_enabled: false, name: null })),
-  action: vi.fn(async (): Promise<{ windows: TerminalWindow[]; mouse_enabled: boolean; name: string | null }> => ({ windows: [], mouse_enabled: false, name: null })),
+  windows: vi.fn(async (): Promise<TerminalTestSnapshot> => ({ windows: [], mouse_enabled: false, name: null })),
+  action: vi.fn(async (): Promise<TerminalTestSnapshot> => ({ windows: [], mouse_enabled: false, name: null })),
   kill: vi.fn(async () => undefined)
 }
 
@@ -451,6 +459,58 @@ describe('TerminalWorkspace ports surface', () => {
     expect(terminalTab).toHaveAttribute('aria-selected', 'true')
   })
 
+  it('focuses an inactive tmux pane on click while preserving drag selection', async () => {
+    terminal.action.mockResolvedValue({
+      name: 'Chat',
+      windows: [{ id: 'window-0', index: 0, name: 'main', active: true, panes: 2 }],
+      panes: [
+        { id: '%1', active: false, left: 0, top: 0, width: 39, height: 24 },
+        { id: '%2', active: true, left: 40, top: 0, width: 40, height: 24 }
+      ],
+      mouse_enabled: false
+    })
+    const view = render(<TerminalWorkspace session={session} layoutHeight={360} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New tmux window' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /main/ })).toBeInTheDocument())
+    terminal.action.mockClear()
+
+    const host = view.container.querySelector('.terminal-host') as HTMLDivElement
+    vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 240, width: 800, height: 240,
+      toJSON: () => ({})
+    })
+    fireEvent.pointerDown(host, { button: 0, pointerId: 7, clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(host, { button: 0, pointerId: 7, clientX: 200, clientY: 100 })
+    await waitFor(() => expect(terminal.action).toHaveBeenCalledWith('profile-a', 4, session.id, 'select-pane', '%1'))
+
+    terminal.action.mockClear()
+    fireEvent.pointerDown(host, { button: 0, pointerId: 8, clientX: 200, clientY: 100 })
+    fireEvent.pointerUp(host, { button: 0, pointerId: 8, clientX: 260, clientY: 100 })
+    expect(terminal.action).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Maximize active pane' }))
+    await waitFor(() => expect(terminal.action).toHaveBeenCalledWith('profile-a', 4, session.id, 'toggle-pane-zoom', undefined))
+  })
+
+  it('offers restoring the split after the active pane is maximized', async () => {
+    terminal.action.mockResolvedValue({
+      name: 'Chat',
+      windows: [{ id: 'window-0', index: 0, name: 'main', active: true, panes: 2 }],
+      panes: [
+        { id: '%1', active: false, left: 0, top: 0, width: 39, height: 24 },
+        { id: '%2', active: true, left: 40, top: 0, width: 40, height: 24 }
+      ],
+      mouse_enabled: false,
+      pane_zoomed: true
+    })
+    render(<TerminalWorkspace session={session} layoutHeight={360} />)
+    fireEvent.click(screen.getByRole('button', { name: 'New tmux window' }))
+
+    const restore = await screen.findByRole('button', { name: 'Restore split panes' })
+    fireEvent.click(restore)
+    await waitFor(() => expect(terminal.action).toHaveBeenLastCalledWith('profile-a', 4, session.id, 'toggle-pane-zoom', undefined))
+  })
+
   it('ignores a delayed detected-port start after forwarding becomes unavailable', async () => {
     const delayedStart = deferred<ForwardedPort>()
     ports.start.mockImplementationOnce(() => delayedStart.promise)
@@ -558,6 +618,19 @@ describe('TerminalWorkspace ports surface', () => {
     for (const port of emittedPorts.slice(-16)) {
       expect(screen.getByText(`http://localhost:${port}`)).toBeInTheDocument()
     }
+  })
+})
+
+describe('terminalPaneAtPoint', () => {
+  const panes = [
+    { id: '%1', active: false, left: 0, top: 0, width: 39, height: 24 },
+    { id: '%2', active: true, left: 40, top: 0, width: 40, height: 24 }
+  ]
+
+  it('maps terminal cells to panes without treating the tmux divider as a pane', () => {
+    expect(terminalPaneAtPoint(panes, 80, 24, 200, 100, 800, 240)?.id).toBe('%1')
+    expect(terminalPaneAtPoint(panes, 80, 24, 600, 100, 800, 240)?.id).toBe('%2')
+    expect(terminalPaneAtPoint(panes, 80, 24, 395, 100, 800, 240)).toBeNull()
   })
 })
 

@@ -6,6 +6,10 @@ const styles = readFileSync(
   resolve(process.cwd(), 'src/renderer/src/styles.css'),
   'utf8'
 )
+const sidePanel = readFileSync(
+  resolve(process.cwd(), 'src/renderer/src/components/SideQuestionPanel.css'),
+  'utf8'
+)
 const app = readFileSync(
   resolve(process.cwd(), 'src/renderer/src/App.tsx'),
   'utf8'
@@ -45,6 +49,15 @@ describe('app overlay interaction styles', () => {
     )
     expect(styles).toMatch(
       /html:not\(\[data-platform="darwin"\]\) \.inspector-drag-region \{[^}]*width:\s*calc\(100% - var\(--window-controls-inset\)\);/s
+    )
+    expect(styles).toMatch(
+      /html:not\(\[data-platform="darwin"\]\) \.inspector\.inspector-workspace \{[^}]*padding-top:\s*40px;/s
+    )
+    expect(sidePanel).toMatch(
+      /\.inspector-workspace-header \{[^}]*-webkit-app-region:\s*no-drag;/s
+    )
+    expect(sidePanel).toMatch(
+      /\.inspector-workspace-tabs > button \{[^}]*-webkit-app-region:\s*no-drag;/s
     )
   })
 

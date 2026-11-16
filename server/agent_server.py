@@ -6539,7 +6539,11 @@ def loopback_unauthenticated_credential_admin(path: str, method: str) -> bool:
     if method == "POST" and path in {
         "/api/admin/codex/auth/import",
         "/api/admin/cursor/auth/import",
+        "/api/admin/claude/auth/login",
+        "/api/admin/claude/auth/login/complete",
     }:
+        return True
+    if method == "DELETE" and path == "/api/admin/claude/auth/login":
         return True
     if path.startswith("/api/admin/provider-connections/"):
         return True
@@ -30155,7 +30159,15 @@ def terminal_windows_snapshot(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="session not found")
     name = terminal_session_name(session_id)
     if not tmux_session_exists(name):
-        return {"session_id": session_id, "name": name, "exists": False, "mouse_enabled": False, "windows": []}
+        return {
+            "session_id": session_id,
+            "name": name,
+            "exists": False,
+            "mouse_enabled": False,
+            "pane_zoomed": False,
+            "windows": [],
+            "panes": [],
+        }
     result = run_tmux([
         "list-windows",
         "-t",
@@ -30175,13 +30187,42 @@ def terminal_windows_snapshot(session_id: str) -> dict[str, Any]:
             "active": parts[3] == "1",
             "panes": int(parts[4]) if parts[4].isdigit() else 1,
         })
+    pane_result = run_tmux([
+        "list-panes",
+        "-t",
+        name,
+        "-F",
+        "#{pane_id}\t#{pane_active}\t#{pane_left}\t#{pane_top}\t#{pane_width}\t#{pane_height}",
+    ])
+    panes: list[dict[str, Any]] = []
+    for line in pane_result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 6 or not re.fullmatch(r"%\d+", parts[0]):
+            continue
+        geometry = parts[2:6]
+        if not all(value.isdigit() for value in geometry):
+            continue
+        panes.append({
+            "id": parts[0],
+            "active": parts[1] == "1",
+            "left": int(parts[2]),
+            "top": int(parts[3]),
+            "width": int(parts[4]),
+            "height": int(parts[5]),
+        })
     mouse = run_tmux(["show-options", "-qv", "-t", name, "mouse"], check=False).stdout.strip()
+    pane_zoomed = run_tmux(
+        ["display-message", "-p", "-t", name, "#{window_zoomed_flag}"],
+        check=False,
+    ).stdout.strip() == "1"
     return {
         "session_id": session_id,
         "name": name,
         "exists": True,
         "mouse_enabled": mouse == "on",
+        "pane_zoomed": pane_zoomed,
         "windows": windows,
+        "panes": panes,
     }
 
 
@@ -30208,6 +30249,23 @@ def _terminal_action_locked(session_id: str, action: str, target: str | None = N
         if not re.fullmatch(r"\d+", clean_target):
             raise HTTPException(status_code=400, detail="invalid tmux window")
         run_tmux(["select-window", "-t", f"{name}:{clean_target}"])
+    elif clean_action == "select-pane":
+        clean_target = str(target or "").strip()
+        if not re.fullmatch(r"%\d+", clean_target):
+            raise HTTPException(status_code=400, detail="invalid tmux pane")
+        panes = run_tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).stdout.splitlines()
+        if clean_target not in panes:
+            raise HTTPException(status_code=404, detail="tmux pane not found")
+        run_tmux(["select-pane", "-t", clean_target])
+    elif clean_action == "toggle-pane-zoom":
+        clean_target = str(target or "").strip()
+        if clean_target:
+            if not re.fullmatch(r"%\d+", clean_target):
+                raise HTTPException(status_code=400, detail="invalid tmux pane")
+            panes = run_tmux(["list-panes", "-t", name, "-F", "#{pane_id}"]).stdout.splitlines()
+            if clean_target not in panes:
+                raise HTTPException(status_code=404, detail="tmux pane not found")
+        run_tmux(["resize-pane", "-Z", "-t", clean_target or name])
     elif clean_action == "kill-window":
         clean_target = str(target or "").strip()
         if not re.fullmatch(r"\d+", clean_target):
@@ -82834,6 +82892,7 @@ async def require_agent_token(request: Request, call_next):
         "/api/admin/codex/goals", "/api/admin/codex/subagents",
         "/api/admin/codex/auth", "/api/admin/codex/auth/api-key",
         "/api/admin/codex/auth/import", "/api/admin/cursor/auth/import",
+        "/api/admin/claude/auth/login", "/api/admin/claude/auth/login/complete",
         "/api/admin/codex/auth/reload",
         "/api/admin/codex/provider", "/api/admin/codex/provider/test",
         "/api/admin/codex/provider/models",
@@ -83035,6 +83094,22 @@ async def require_agent_token(request: Request, call_next):
             body_error = await prebuffer_bounded_request_body(
                 request,
                 max_body_bytes=update_body_limit,
+                declared_size=declared_size,
+            )
+            if body_error is not None:
+                status_code, detail = body_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+        elif request.url.path in {"/api/admin/claude/auth/login", "/api/admin/claude/auth/login/complete"} and request.method.upper() == "POST":
+            from claude_account_login import MAX_BODY_BYTES as claude_login_limit
+            declared_size, transport_error = privileged_native_json_transport(
+                request, max_body_bytes=claude_login_limit,
+                label="Claude Code sign-in", require_content_length=True,
+            )
+            if transport_error is not None:
+                status_code, detail = transport_error
+                return JSONResponse({"detail": detail}, status_code=status_code)
+            body_error = await prebuffer_bounded_request_body(
+                request, max_body_bytes=claude_login_limit,
                 declared_size=declared_size,
             )
             if body_error is not None:
@@ -86954,6 +87029,14 @@ app.include_router(codex_auth.create_router(
 ))
 import cursor_desktop_login as cursor_cli_login
 app.include_router(cursor_cli_login.create_import_router(authorize=require_native_admin_control))
+import claude_account_login
+CLAUDE_LOGIN = claude_account_login.ClaudeLoginManager(
+    executable=lambda: runtime_executable(BACKEND_CLAUDE), environment=runner_env)
+app.include_router(claude_account_login.create_router(
+    authorize=require_native_admin_control,
+    manager=CLAUDE_LOGIN,
+    on_signed_in=lambda: record_runtime_success(BACKEND_CLAUDE),
+))
 
 
 CODEX_PROVIDER_SETTINGS_LOCK = asyncio.Lock()
