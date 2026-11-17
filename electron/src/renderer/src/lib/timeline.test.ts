@@ -4036,6 +4036,24 @@ describe('prompt revisions', () => {
     expect(messageItemText(answers[0])).toBe('Original answer')
   })
 
+  it('shows the new reply after an in-place edit without a second user message', () => {
+    const rows = renderTimelineItems(projectTimeline([
+      event(1, 'turn_started', { run_id: 'run-1', prompt: 'Original prompt' }),
+      event(2, 'assistant_text', { run_id: 'run-1', text: 'Original answer' }),
+      event(3, 'turn_finished', { run_id: 'run-1', exit_code: 0 }),
+      event(4, 'prompt_revised', { prompt: 'Reply to me again', replaces_prompt_event_id: 'event-1' }),
+      event(5, 'turn_started', { run_id: 'run-2', prompt: '', purpose: 'prompt_revision_reply' }),
+      event(6, 'assistant_text', { run_id: 'run-2', text: 'New answer' }),
+      event(7, 'turn_finished', { run_id: 'run-2', exit_code: 0 })
+    ], []))
+    const prompts = rows.filter((row): row is MessageItem => row.kind === 'message' && row.role === 'user')
+    const answers = rows.filter((row): row is MessageItem => row.kind === 'message' && row.role === 'assistant')
+
+    expect(prompts).toHaveLength(1)
+    expect(messageItemText(prompts[0])).toBe('Reply to me again')
+    expect(answers.map(messageItemText)).toEqual(['Original answer', 'New answer'])
+  })
+
   it('keeps only the latest overwrite and never renders revision events as rows', () => {
     const rows = renderTimelineItems(projectTimeline([
       event(1, 'turn_started', { run_id: 'run-1', prompt: 'Original prompt' }),

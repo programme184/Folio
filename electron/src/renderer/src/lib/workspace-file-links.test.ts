@@ -65,7 +65,11 @@ describe('workspace code references', () => {
     expect(parseWorkspaceFileReference('./outputs/model.npz')).toEqual({
       path: 'outputs/model.npz'
     })
-    expect(parseWorkspaceFileReference('../outside/model.npz')).toBeNull()
+    expect(parseWorkspaceFileReference('../outside/model.npz')).toEqual({
+      path: '../outside/model.npz'
+    })
+    expect(parseWorkspaceFileReference('../')).toBeNull()
+    expect(parseWorkspaceFileReference('outputs/../')).toBeNull()
     expect(parseWorkspaceCodeReference('closed_loop_trajectories.png')).toBeNull()
   })
 

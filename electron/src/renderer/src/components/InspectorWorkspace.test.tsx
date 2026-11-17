@@ -57,7 +57,7 @@ describe('Inspector workspace', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     expect(await screen.findByText('This folder is empty.')).toBeVisible()
     expect(window.agentsDock.workspace.entries).toHaveBeenCalledExactlyOnceWith('chat-a', '', 0, 500)
-    const header = screen.getByRole('tab', { name: 'Files' }).closest('.inspector-workspace-header')!
+    const header = screen.getByRole('tab', { name: 'Files' }).closest<HTMLElement>('.inspector-workspace-header')!
     expect(header.querySelector('.inspector-files-actions')).not.toBeNull()
     expect(within(header).getByRole('button', { name: 'New file' })).toBeVisible()
     expect(within(header).getByRole('button', { name: 'Refresh file explorer' })).toBeVisible()

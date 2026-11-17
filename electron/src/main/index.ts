@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, powerMonitor, protocol, session, shell, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, powerMonitor, protocol, session, shell, type MenuItemConstructorOptions, type WebContents } from 'electron'
 import { join } from 'node:path'
 import { writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -70,12 +70,79 @@ if (!app.requestSingleInstanceLock()) {
   let language: LanguageSettings | null = null
   let coordinatedUpdates: CoordinatedUpdateManager | null = null
   const embeddedPaneServices = new Map<number, EmbeddedPaneRuntime>()
+  const appWindows = new Set<BrowserWindow>()
   const securePeerDeepLinks = new SecurePeerDeepLinkRouter()
+  let deepLinkWindow: BrowserWindow | null = null
+  let openAdditionalWindow: (() => BrowserWindow) | null = null
+  let pendingNewWindows = 0
+  const focusedAppWindow = (): BrowserWindow | null => {
+    const focused = BrowserWindow.getFocusedWindow()
+    if (focused && appWindows.has(focused) && !focused.isDestroyed()) return focused
+    if (mainWindow && appWindows.has(mainWindow) && !mainWindow.isDestroyed()) return mainWindow
+    return [...appWindows].find(window => !window.isDestroyed()) ?? null
+  }
+  const isAppWebContents = (webContents: WebContents | null): boolean => (
+    [...appWindows].some(window => !window.isDestroyed() && window.webContents === webContents)
+  )
+  const revealWindow = (window: BrowserWindow | null): void => {
+    if (!window || window.isDestroyed()) return
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+  }
   const showMainWindow = (): void => {
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
+    const invited = deepLinkWindow && !deepLinkWindow.isDestroyed() ? deepLinkWindow : null
+    revealWindow(invited ?? focusedAppWindow())
+  }
+  const deliverSecurePeerInvite = (payload: { invite: string }): boolean => {
+    const target = deepLinkWindow && !deepLinkWindow.isDestroyed() ? deepLinkWindow : focusedAppWindow()
+    if (!target || target.isDestroyed() || target.webContents.isDestroyed() || target.webContents.isLoadingMainFrame()) return false
+    target.webContents.send(SECURE_PEER_INVITE_EVENT, payload)
+    revealWindow(target)
+    return true
+  }
+  const acceptSecurePeerInvites = (window: BrowserWindow): boolean => {
+    if (window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isLoadingMainFrame()) return false
+    securePeerDeepLinks.rendererReady(deliverSecurePeerInvite)
+    return true
+  }
+  const bindDeepLinks = (window: BrowserWindow): void => {
+    if (deepLinkWindow && !deepLinkWindow.isDestroyed()) return
+    deepLinkWindow = window
+    securePeerDeepLinks.rendererUnavailable()
+    window.webContents.on('did-start-loading', () => {
+      if (deepLinkWindow === window) securePeerDeepLinks.rendererUnavailable()
+    })
+    window.on('closed', () => {
+      if (deepLinkWindow !== window) return
+      deepLinkWindow = null
+      securePeerDeepLinks.rendererUnavailable()
+      const next = [...appWindows].find(candidate => candidate !== window && !candidate.isDestroyed())
+      if (!next) return
+      bindDeepLinks(next)
+      acceptSecurePeerInvites(next)
+    })
+  }
+  const attachAppWindow = (window: BrowserWindow): void => {
+    appWindows.add(window)
+    window.on('focus', () => { mainWindow = window })
+    window.on('closed', () => {
+      appWindows.delete(window)
+      if (mainWindow === window) mainWindow = focusedAppWindow()
+    })
+    mainWindow = window
+    if (service) installEmbeddedPaneHost(window, service, embeddedPaneServices)
+    bindDeepLinks(window)
+    service?.addWindow(window)
+  }
+  const openAppWindow = (): BrowserWindow => {
+    const window = createWindow(appWindows.size * 28)
+    attachAppWindow(window)
+    return window
+  }
+  const requestNewWindow = (): void => {
+    if (openAdditionalWindow) openAdditionalWindow()
+    else pendingNewWindows += 1
   }
   const protocolRegistered = installSecurePeerDeepLinkLifecycle({
     packaged: app.isPackaged,
@@ -85,6 +152,7 @@ if (!app.requestSingleInstanceLock()) {
     argv: process.argv,
     router: securePeerDeepLinks,
     showMainWindow,
+    openNewWindow: requestNewWindow,
     registerOpenURL: listener => { app.on('open-url', listener) },
     registerSecondInstance: listener => { app.on('second-instance', (_event, commandLine) => listener(commandLine)) },
     setDefaultProtocolClient: (scheme, executable, args) => executable
@@ -108,7 +176,7 @@ if (!app.requestSingleInstanceLock()) {
     try {
       const canvasPreviews = new CanvasPreviewStore()
       language = new LanguageSettings(app.getPath('userData'), () => app.getPreferredSystemLanguages()[0] || app.getLocale(), snapshot => {
-        createMenu(() => mainWindow)
+        createMenu(() => focusedAppWindow())
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send('app:language', snapshot)
         }
@@ -166,23 +234,15 @@ if (!app.requestSingleInstanceLock()) {
         language,
         canvasPreviews,
         serviceForSender: senderId => embeddedPaneServices.get(senderId)?.service,
-        notificationReady: () => appService.rendererReadyForNotificationRoutes(mainWindow),
+        notificationReady: () => appService.rendererReadyForNotificationRoutes(focusedAppWindow()),
         securePeerInviteReady: () => {
-          const window = mainWindow
-          if (!window || window.isDestroyed() || window.webContents.isDestroyed() || window.webContents.isLoadingMainFrame()) return false
-          securePeerDeepLinks.rendererReady(payload => {
-            const target = mainWindow
-            if (!target || target.isDestroyed() || target.webContents.isDestroyed() || target.webContents.isLoadingMainFrame()) return false
-            target.webContents.send(SECURE_PEER_INVITE_EVENT, payload)
-            showMainWindow()
-            return true
-          })
-          return true
+          const window = deepLinkWindow && !deepLinkWindow.isDestroyed() ? deepLinkWindow : focusedAppWindow()
+          return window ? acceptSecurePeerInvites(window) : false
         }
       })
       appLog('main', 'IPC registered')
-      session.defaultSession.setPermissionCheckHandler((webContents, permission) => permissionAllowed(permission, webContents === mainWindow?.webContents))
-      session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => callback(permissionAllowed(permission, webContents === mainWindow?.webContents)))
+      session.defaultSession.setPermissionCheckHandler((webContents, permission) => permissionAllowed(permission, isAppWebContents(webContents)))
+      session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => callback(permissionAllowed(permission, isAppWebContents(webContents))))
       session.defaultSession.protocol.handle('agentsdock-canvas', request => canvasPreviews.response(request.url))
       session.defaultSession.protocol.handle('agentsdock-media', async request => {
         const resource = parseMediaURL(request.url)
@@ -215,11 +275,13 @@ if (!app.requestSingleInstanceLock()) {
           return mediaNotFoundResponse()
         }
       })
-      createMenu(() => mainWindow)
-      mainWindow = createWindow()
-      installEmbeddedPaneHost(mainWindow, appService, embeddedPaneServices)
-      installSecurePeerDeepLinkWindow(mainWindow, securePeerDeepLinks)
-      service.addWindow(mainWindow)
+      createMenu(() => focusedAppWindow())
+      openAdditionalWindow = openAppWindow
+      openAppWindow()
+      while (pendingNewWindows > 0) {
+        pendingNewWindows -= 1
+        openAppWindow()
+      }
       service.start()
       updater.start()
       // The new app is already running. Reconcile its bundled server release
@@ -253,14 +315,8 @@ if (!app.requestSingleInstanceLock()) {
 
     app.on('activate', () => {
       language?.refreshSystemLocale()
-      if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = createWindow()
-        if (service) installEmbeddedPaneHost(mainWindow, service, embeddedPaneServices)
-        installSecurePeerDeepLinkWindow(mainWindow, securePeerDeepLinks)
-        service?.addWindow(mainWindow)
-      } else {
-        mainWindow?.show()
-      }
+      if (BrowserWindow.getAllWindows().length === 0) openAppWindow()
+      else revealWindow(focusedAppWindow())
     })
     powerMonitor.on('resume', () => {
       language?.refreshSystemLocale()
@@ -280,12 +336,6 @@ if (!app.requestSingleInstanceLock()) {
     teamHub?.stop()
   })
   app.on('window-all-closed', () => app.quit())
-}
-
-function installSecurePeerDeepLinkWindow(window: BrowserWindow, router: SecurePeerDeepLinkRouter): void {
-  router.rendererUnavailable()
-  window.webContents.on('did-start-loading', () => router.rendererUnavailable())
-  window.on('closed', () => router.rendererUnavailable())
 }
 
 function errorDetails(error: unknown): { message: string; stack?: string } {
@@ -408,7 +458,7 @@ function installEmbeddedPaneHost(
   })
 }
 
-function createWindow(): BrowserWindow {
+function createWindow(cascade = 0): BrowserWindow {
   const platformWindowOptions = process.platform === 'darwin'
     ? {
         titleBarStyle: 'hiddenInset' as const,
@@ -458,6 +508,10 @@ function createWindow(): BrowserWindow {
   if (windowIcon) window.setIcon(windowIcon)
   window.once('ready-to-show', () => {
     if (windowIcon) window.setIcon(windowIcon)
+    if (cascade > 0) {
+      const [x, y] = window.getPosition()
+      window.setPosition(x + cascade, y + cascade)
+    }
     window.show()
   })
   window.webContents.on('preload-error', (_event, path, error) => appLog('preload', 'failed to load', { path, error: error.stack || error.message }))

@@ -1623,6 +1623,26 @@ time.sleep(5)
         started = next(event for event in events if event["type"] == "tool_started")
         finished = next(event for event in events if event["type"] == "tool_finished")
         self.assertEqual(started["tool"]["id"], finished["tool_id"])
+
+    async def test_envelope_tool_id_recovers_empty_top_level_id(self) -> None:
+        call_id = ("call-00000000-0000-4000-8000-000000000001-0\n"
+                   "fc_00000000-0000-4000-8000-000000000002_0")
+        events = await self._run_script(_event_script([
+            _init_event(),
+            {"type": "tool_call", "subtype": "started", "call_id": "",
+             "session_id": "cursor-sess-test", "tool_call": {
+                 "toolCallId": call_id,
+                 "readToolCall": {"args": {"path": "hello.txt"}}}},
+            {"type": "tool_call", "subtype": "completed", "call_id": "",
+             "session_id": "cursor-sess-test", "tool_call": {
+                 "toolCallId": call_id,
+                 "readToolCall": {"args": {"path": "hello.txt"},
+                                  "result": {"success": {"content": "fixture"}}}}},
+            _result_event(),
+        ]))
+        started = next(event for event in events if event["type"] == "tool_started")
+        finished = next(event for event in events if event["type"] == "tool_finished")
+        self.assertEqual(started["tool"]["id"], finished["tool_id"])
         self.assertNotIn("\n", finished["tool_id"])
         self.assertFalse(any(event["type"] == "error" for event in events))
         terminal = next(event for event in events if event["type"] == "turn_finished")
@@ -2013,6 +2033,76 @@ time.sleep(5)
         self.assertIn("bounded fork memory sentinel", captured_prompts[1])
         self.assertNotIn("[AgentsDock provider instructions]", captured_prompts[2])
         self.assertNotIn("bounded fork memory sentinel", captured_prompts[2])
+
+    async def test_in_place_prompt_edit_runs_a_cursor_reply_for_the_new_text(self) -> None:
+        seen_prompt = Path(self.tempdir.name) / "seen-prompt.txt"
+        script = _write_fake_cli(Path(self.tempdir.name), f'''#!/usr/bin/env python3
+import json, sys
+open({str(seen_prompt)!r}, "w", encoding="utf-8").write(sys.stdin.read())
+session_id = "cursor-revised"
+print(json.dumps({{"type": "system", "subtype": "init", "cwd": ".", "session_id": session_id, "model": "Auto"}}), flush=True)
+print(json.dumps({{"type": "assistant", "message": {{"role": "assistant", "content": [{{"type": "text", "text": "hello"}}]}}, "session_id": session_id}}), flush=True)
+print(json.dumps({{"type": "result", "subtype": "success", "duration_ms": 5, "is_error": False, "result": "hello", "session_id": session_id}}), flush=True)
+sys.exit(0)
+''')
+        original = await agent_server.append_event(self.session_id, "turn_started", {
+            "run_id": "run-original",
+            "backend": agent_server.BACKEND_CURSOR,
+            "prompt": "hi",
+        })
+        await agent_server.append_event(self.session_id, "assistant_text", {
+            "run_id": "run-original",
+            "backend": agent_server.BACKEND_CURSOR,
+            "text": "hi",
+        })
+        await agent_server.append_event(self.session_id, "turn_finished", {
+            "run_id": "run-original",
+            "backend": agent_server.BACKEND_CURSOR,
+            "exit_code": 0,
+        })
+        agent_server.BUSY_SESSIONS.discard(self.session_id)
+        agent_server.CURRENT_TURNS.pop(self.session_id, None)
+        with patch.object(
+            agent_server,
+            "ensure_runtime_available",
+            new=AsyncMock(return_value={"status": "ready", "_executable": str(script)}),
+        ), patch.object(
+            agent_server,
+            "scrub_tmux_global_secret_environment",
+        ):
+            await agent_server.revise_prompt(
+                self.session_id,
+                original["id"],
+                agent_server.PromptRevisionRequest(prompt="hi, reply hello to me also"),
+            )
+            for _ in range(500):
+                if seen_prompt.exists() and self.session_id not in agent_server.BUSY_SESSIONS:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                self.fail("edited prompt did not reach the Cursor runner")
+
+        provider_prompt = seen_prompt.read_text(encoding="utf-8")
+        self.assertIn("hi, reply hello to me also", provider_prompt)
+        events = self._read_events()
+        revised = next(event for event in events if event["type"] == "prompt_revised")
+        self.assertEqual(revised["prompt"], "hi, reply hello to me also")
+        self.assertEqual(revised["replaces_prompt_event_id"], original["id"])
+        reply = next(event for event in events if event.get("prompt_revision_reply") is True)
+        self.assertEqual(reply["type"], "turn_started")
+        self.assertEqual(reply["prompt"], "")
+        self.assertNotEqual(reply["run_id"], "run-original")
+        answer = next(
+            event for event in events
+            if event["type"] == "assistant_text" and event.get("run_id") == reply["run_id"]
+        )
+        self.assertEqual(answer["text"], "hello")
+        user_prompts = [
+            event.get("prompt")
+            for event in events
+            if event["type"] == "turn_started" and event.get("prompt")
+        ]
+        self.assertEqual(user_prompts, ["hi"])
 
 
 class CursorFileDeliveryInstructionTests(unittest.TestCase):

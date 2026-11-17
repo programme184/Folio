@@ -5,6 +5,7 @@ import {
   canonicalSecurePeerInvite,
   installSecurePeerDeepLinkLifecycle,
   newestSecurePeerInviteFromArgv,
+  secondInstanceRequestsNewWindow,
   securePeerProtocolRegistration,
   SecurePeerDeepLinkRouter
 } from './secure-peer-deep-link'
@@ -114,5 +115,38 @@ describe('secure peer deep-link boundary', () => {
     secondInstance(['AgentsDock', first])
     expect(router.pending()).toBe(first)
     expect(show).toHaveBeenCalledTimes(2)
+  })
+
+  it('treats a desktop New Window relaunch as a new window and keeps invite launches on the current window', () => {
+    expect(secondInstanceRequestsNewWindow(['Folio', '--no-sandbox', '/work/electron'])).toBe(true)
+    expect(secondInstanceRequestsNewWindow(['Folio', first])).toBe(false)
+
+    const router = new SecurePeerDeepLinkRouter()
+    let secondInstance!: (commandLine: readonly string[]) => void
+    const show = vi.fn()
+    const openNewWindow = vi.fn()
+    installSecurePeerDeepLinkLifecycle({
+      packaged: true,
+      platform: 'linux',
+      defaultApp: false,
+      execPath: '/opt/Folio/folio',
+      argv: ['folio'],
+      router,
+      showMainWindow: show,
+      openNewWindow,
+      registerOpenURL: () => undefined,
+      registerSecondInstance: listener => { secondInstance = listener },
+      setDefaultProtocolClient: () => true
+    })
+
+    secondInstance(['folio', '--no-sandbox', '/opt/Folio'])
+    expect(openNewWindow).toHaveBeenCalledOnce()
+    expect(show).not.toHaveBeenCalled()
+    expect(router.pending()).toBeNull()
+
+    secondInstance(['folio', first])
+    expect(openNewWindow).toHaveBeenCalledOnce()
+    expect(show).toHaveBeenCalledOnce()
+    expect(router.pending()).toBe(first)
   })
 })

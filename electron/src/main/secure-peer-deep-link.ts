@@ -16,6 +16,8 @@ export interface SecurePeerDeepLinkLifecycleOptions {
   argv: readonly string[]
   router: SecurePeerDeepLinkRouter
   showMainWindow: () => void
+  /** A desktop New Window launch has no invite. Create another window instead of focusing the current one. */
+  openNewWindow?: () => void
   registerOpenURL: (listener: (event: { preventDefault(): void }, url: string) => void) => void
   registerSecondInstance: (listener: (commandLine: readonly string[]) => void) => void
   setDefaultProtocolClient: (scheme: string, executable?: string, args?: string[]) => boolean
@@ -84,6 +86,11 @@ export function newestSecurePeerInviteFromArgv(argv: readonly string[]): string 
   return newest
 }
 
+/** Dock and desktop “New Window” relaunch the app with no invite URL. */
+export function secondInstanceRequestsNewWindow(commandLine: readonly string[]): boolean {
+  return newestSecurePeerInviteFromArgv(commandLine) === null
+}
+
 export function securePeerProtocolRegistration(
   packaged: boolean,
   platform: NodeJS.Platform,
@@ -119,6 +126,11 @@ export function installSecurePeerDeepLinkLifecycle(options: SecurePeerDeepLinkLi
     if (options.router.offer(url)) options.showMainWindow()
   })
   options.registerSecondInstance(commandLine => {
+    if (secondInstanceRequestsNewWindow(commandLine)) {
+      if (options.openNewWindow) options.openNewWindow()
+      else options.showMainWindow()
+      return
+    }
     options.router.offerArgv(commandLine)
     options.showMainWindow()
   })

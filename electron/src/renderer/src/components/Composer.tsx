@@ -601,7 +601,6 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   const pendingSelectionRef = useRef<{ start: number; end: number; direction: 'forward' | 'backward' | 'none' } | null>(null)
   const nativeEditSelectionRef = useRef<ComposerNativeEditSelection | null>(null)
   const providerCommandBindingRef = useRef<BoundProviderCommand | null>(null)
-  const promptRevisionRef = useRef<string | null>(null)
   const providerCommandRequestRef = useRef(0)
   const providerCommandPaletteOpenRef = useRef(false)
   const providerCommandsKeyRef = useRef(providerCommandsKey)
@@ -932,7 +931,22 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
   }, [])
 
   useEffect(() => { draftRef.current = draft }, [draft])
-  useEffect(() => { promptRevisionRef.current = null }, [activeProfileId, profileGeneration, selectedId, serverIdentity, workspaceKey])
+  useEffect(() => {
+    if (!selectedId || !activeProfileId) return
+    const key = promptRevisionStorageKey(activeProfileId, profileGeneration, serverIdentity, selectedId)
+    if (promptRevisionTargets.has(key)) return
+    let cancelled = false
+    void getWorkspacePreference(
+      { profileId: activeProfileId, profileGeneration, serverIdentity },
+      promptRevisionPreferenceKey(selectedId),
+      ''
+    ).then(stored => {
+      if (cancelled || promptRevisionTargets.has(key)) return
+      const eventId = typeof stored === 'string' ? stored.trim() : ''
+      promptRevisionTargets.set(key, eventId || null)
+    }).catch(() => undefined)
+    return () => { cancelled = true }
+  }, [activeProfileId, profileGeneration, selectedId, serverIdentity])
   useEffect(() => {
     const focus = (event: Event) => {
       const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId
@@ -1365,7 +1379,10 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
       if (!consent) return
       steerConsent = consent
     }
-    const runtimeError = promptRevisionRef.current
+    const promptRevisionTarget = consumeComposer && liveSession
+      ? promptRevisionTargetFor(activeProfileId, profileGeneration, serverIdentity, liveSession.id)
+      : null
+    const runtimeError = promptRevisionTarget
       ? null
       : sessionRuntimeAdmissionError(liveSession, liveState.health, liveState.runtimeCatalog)
     if (runtimeError) {
@@ -1406,8 +1423,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
     if (consumeComposer && uploadPaths.length > 0) return
     if (!outgoing.trim() && (!consumeComposer || uploads.length === 0)) return
     if (!liveSession) return
-    const promptRevisionTarget = consumeComposer ? promptRevisionRef.current : null
-    if (promptRevisionTarget) {
+    if (promptRevisionTarget && liveSession) {
       const leadingWhitespace = outgoing.length - outgoing.trimStart().length
       const prompt = outgoing.trim()
       const revised = await useAppStore.getState().revisePromptForSession(
@@ -1434,7 +1450,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         return
       }
       if (!composerSessionIsCurrent(activeProfileId, profileGeneration, serverIdentity, liveSession.id, draftContextRef, mountedRef)) return
-      promptRevisionRef.current = null
+      forgetPromptRevision(activeProfileId, profileGeneration, serverIdentity, liveSession.id)
       providerCommandBindingRef.current = null
       draftRef.current = ''
       draftDirtyRef.current = true
@@ -1648,7 +1664,7 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         if (message) setSendFailure({ context: sendContext, message })
       }
       if (sent) {
-        promptRevisionRef.current = null
+        forgetPromptRevision(activeProfileId, profileGeneration, serverIdentity, session.id)
         if (consumeComposer && promptOverride === undefined && workspaceKey) {
           // This closure owns the submitting workspace, even after navigation.
           recordComposerHistory(workspaceKey, rawOutgoing.trim())
@@ -1907,7 +1923,9 @@ export const Composer = memo(function Composer({ dropActive = false, sessionId, 
         referencesDirtyRef.current = true
         teamReferencesRef.current = nextReferences.teamReferences
         teamReferencesDirtyRef.current = true
-        promptRevisionRef.current = detail.replacesPromptEventId?.trim() || null
+        const revisionEventId = detail.replacesPromptEventId?.trim() || ''
+        if (revisionEventId) rememberPromptRevision(activeProfileId, profileGeneration, serverIdentity, selectedId, revisionEventId)
+        else forgetPromptRevision(activeProfileId, profileGeneration, serverIdentity, selectedId)
         pendingCaretRef.current = nextText.length
         setDraft(nextText)
         setReferences(nextReferences.chatReferences)
@@ -4985,6 +5003,74 @@ function draftPreferenceScope(context: DraftContext) {
     profileGeneration: context.profileGeneration,
     serverIdentity: context.serverIdentity
   } : null
+}
+
+/** Survives chat switches. Null means this draft is an ordinary new message. */
+const promptRevisionTargets = new Map<string, string | null>()
+
+export function clearPromptRevisionTargetsForTests(): void {
+  promptRevisionTargets.clear()
+}
+
+function promptRevisionStorageKey(
+  profileId: string | null,
+  profileGeneration: number,
+  serverIdentity: string | null,
+  sessionId: string
+): string {
+  return `${profileId ?? ''}\0${profileGeneration}\0${serverIdentity ?? ''}\0${sessionId}`
+}
+
+function promptRevisionPreferenceKey(sessionId: string): string {
+  return `draft-prompt-revision:${sessionId}`
+}
+
+function promptRevisionTargetFor(
+  profileId: string | null,
+  profileGeneration: number,
+  serverIdentity: string | null,
+  sessionId: string
+): string | null {
+  return promptRevisionTargets.get(promptRevisionStorageKey(profileId, profileGeneration, serverIdentity, sessionId)) || null
+}
+
+function persistPromptRevision(
+  profileId: string | null,
+  profileGeneration: number,
+  serverIdentity: string | null,
+  sessionId: string,
+  eventId: string
+): void {
+  if (!profileId) return
+  void setWorkspacePreference(
+    { profileId, profileGeneration, serverIdentity },
+    promptRevisionPreferenceKey(sessionId),
+    eventId
+  ).catch(() => undefined)
+}
+
+function rememberPromptRevision(
+  profileId: string | null,
+  profileGeneration: number,
+  serverIdentity: string | null,
+  sessionId: string | null,
+  eventId: string
+): void {
+  const id = eventId.trim()
+  if (!sessionId || !id) return
+  promptRevisionTargets.set(promptRevisionStorageKey(profileId, profileGeneration, serverIdentity, sessionId), id)
+  persistPromptRevision(profileId, profileGeneration, serverIdentity, sessionId, id)
+}
+
+function forgetPromptRevision(
+  profileId: string | null,
+  profileGeneration: number,
+  serverIdentity: string | null,
+  sessionId: string | null
+): void {
+  if (!sessionId) return
+  promptRevisionTargets.set(promptRevisionStorageKey(profileId, profileGeneration, serverIdentity, sessionId), null)
+  persistPromptRevision(profileId, profileGeneration, serverIdentity, sessionId, '')
 }
 
 function chatReferencesPreferenceKey(sessionId: string): string {

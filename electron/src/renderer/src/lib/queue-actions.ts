@@ -108,7 +108,9 @@ export function isUserQueuedTurn(turn: QueuedTurn): boolean {
 
 /** All pending provider work belongs in the same composer queue. */
 export function isVisibleQueuedTurn(turn: QueuedTurn): boolean {
-  return isUserQueuedTurn(turn) || isImmutableQueuedTurn(turn)
+  return turn.purpose !== 'prompt_revision_reply'
+    && !turn.prompt_revision_reply
+    && (isUserQueuedTurn(turn) || isImmutableQueuedTurn(turn))
 }
 
 /** Incoming deliveries keep their authenticated content. */

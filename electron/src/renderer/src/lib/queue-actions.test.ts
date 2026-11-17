@@ -153,6 +153,10 @@ describe('queue row visibility', () => {
     expect(isUserQueuedTurn(turn())).toBe(true)
   })
 
+  it('hides a queued reply to an in-place prompt edit', () => {
+    expect(isVisibleQueuedTurn({ ...turn(), prompt_revision_reply: true })).toBe(false)
+  })
+
   it('shows scheduled occurrences without allowing user edits or moves across them', () => {
     const job = { ...turn('scheduled_job'), position: 2, job_id: 'job-1', job_title: 'Check', job_scheduled_run_at: 1_789_000_000 }
     const before = { ...turn(), queued_id: 'before', position: 1 }

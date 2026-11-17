@@ -129,28 +129,32 @@ def canonical_cursor_call_id(value: Any) -> str:
 
 def _cursor_tool_call_id(
     event: dict[str, Any],
+    tool_call: dict[str, Any],
     body: dict[str, Any],
 ) -> str:
-    """Return Cursor's tool correlation key with one narrow compatibility fallback.
+    """Return Cursor's tool correlation key with narrow compatibility fallbacks.
 
     Cursor documents the correlation key at the top-level ``call_id`` field,
-    but current tool payloads also repeat it as ``args.toolCallId``. Some CLI
-    events have emitted an invalid top-level value while retaining the valid
-    nested copy. Prefer the documented field and consult only that exact
-    nested location when top-level validation fails; all candidates still use
-    the same bounded, control-free validation.
+    but current tool payloads can also repeat it as ``tool_call.toolCallId``
+    or ``args.toolCallId``. Some CLI events emit an empty top-level field
+    while retaining that envelope copy. Prefer the documented field and
+    consult only those exact copies when top-level validation fails; all
+    candidates still use the same bounded, control-free validation.
     """
 
     try:
         return canonical_cursor_call_id(event.get("call_id"))
     except CursorEventParseError as top_level_error:
+        candidates = [tool_call.get("toolCallId")]
         args = body.get("args")
-        if not isinstance(args, dict) or "toolCallId" not in args:
-            raise
-        try:
-            return canonical_cursor_call_id(args.get("toolCallId"))
-        except CursorEventParseError:
-            raise top_level_error from None
+        if isinstance(args, dict):
+            candidates.append(args.get("toolCallId"))
+        for candidate in candidates:
+            try:
+                return canonical_cursor_call_id(candidate)
+            except CursorEventParseError:
+                pass
+        raise top_level_error from None
 
 
 def _cursor_lifecycle_session_id(event: dict[str, Any], event_name: str) -> str:
@@ -381,7 +385,7 @@ def normalize_cursor_stream_event(raw_line: str) -> dict[str, Any] | None:
         if not isinstance(tool_call, dict):
             raise CursorEventParseError("tool_call event missing tool_call payload")
         name, body = _tool_call_name_and_body(tool_call)
-        call_id = _cursor_tool_call_id(event, body)
+        call_id = _cursor_tool_call_id(event, tool_call, body)
         if subtype == "started":
             return {
                 "kind": "tool_started",

@@ -510,6 +510,7 @@ export function registerIpc(
   handle('workspace:overwrite', (sessionId, path, content) => service.overwriteWorkspaceFile(sessionId, path, content))
   handle('workspace:rename', (sessionId, path, newName, expectedRevision) => service.renameWorkspaceEntry(sessionId, path, newName, expectedRevision))
   handle('workspace:remove', (sessionId, path, expectedRevision, recursive) => service.removeWorkspaceEntry(sessionId, path, expectedRevision, recursive))
+  handle('workspace:remove-absolute', (sessionId, path, expectedRevision, recursive) => service.removeAbsoluteWorkspaceEntry(sessionId, path, expectedRevision, recursive))
   handle('working-directories:complete', (path, limit) => service.completeWorkingDirectory(path, limit))
 
   handle('digest:preview', input => service.previewDigest(input))

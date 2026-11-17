@@ -1,5 +1,192 @@
 # Public development log
 
+## 2026-11-17 — Open parent-relative file links from chat
+
+- A markdown link such as `../other-repo/result.yaml` was rejected before the
+  workspace editor saw it, so the click looked for a chat attachment and
+  reported that the file was not attached.
+- Those links now resolve against the chat working directory. A path that
+  stays inside the workspace opens there. A path that lands in a sibling
+  directory opens through the existing absolute-file reader.
+
+```text
+Change and expected user behavior: click a parent-relative file link in a
+chat; the file opens in the workspace editor instead of an attachment error.
+Source commit / app build / server version: uncommitted desktop source,
+built with electron-vite and installed over the local Folio app.asar.
+A rollback copy is app.asar.before-parent-relative-link.
+Test surface: workspace path resolution, markdown link clicks, and file
+reference parsing.
+Actions exercised and observed outcomes: focused Vitest, 221 tests passed.
+The local Folio process was restarted on the replaced package and stayed up
+with a renderer. The parent-relative click was not clicked in the window.
+Real boundaries exercised; any mocked/stubbed boundaries: renderer unit
+tests cover the click and path resolution. The live window click was not
+repeated after relaunch.
+Focused regression / typecheck / production build: Vitest for
+workspace-file-links, MarkdownContent, and WorkspaceEditor passed.
+Remaining limitations or blocked acceptance: the relaunched window was not
+clicked through to the yaml file.
+Availability: installed locally; not published.
+```
+
+## 2026-11-17 — Recover Cursor tool events with an empty top-level ID
+
+- Cursor tool events now fall back to the validated `tool_call.toolCallId`
+  copy when the CLI supplies an empty or malformed top-level `call_id`.
+  Started and completed tool events remain correlated; arbitrary IDs and
+  control characters remain rejected.
+
+```text
+Change and expected user behavior: a Cursor CLI turn with a malformed
+top-level tool call ID continues when its matching envelope ID is valid;
+the tool activity and final reply appear normally.
+Source commit / app build / server version: uncommitted AgentsServer source;
+no desktop or server package built.
+Test surface: Cursor stream parser and isolated Cursor subprocess runner.
+Actions exercised and observed outcomes: empty top-level IDs with Cursor's
+compound envelope ID produced one correlated tool-start/tool-finished pair and
+a successful finished turn.
+Real boundaries exercised; any mocked/stubbed boundaries: the runner consumed
+the protocol through real OS pipes; its CLI fixture was scripted. A live
+authenticated Cursor CLI turn and desktop click-through were not available in
+this source-only check.
+Focused regression / typecheck / production build: 123 focused Cursor tests
+passed; Python compile check passed.
+Remaining limitations or blocked acceptance: install/restart and live-provider
+acceptance require a separately authorized server update.
+Availability: source only; not published or deployed.
+```
+
+## 2026-11-17 — Restore prompt edit and apply without resending
+
+- Folio already had the Edit prompt control, but the connected AgentsServer
+  `1.0.7-beta.11` package did not advertise `prompt_revision_v2`, so the pencil
+  stayed hidden.
+- The live server package now carries the in-tree prompt revision contract:
+  edit stays on the original user bubble, and the server starts a hidden
+  follow-up turn for the new text so the agent applies it without a second
+  visible user message.
+
+```text
+Change and expected user behavior: open an authored user message, use Edit
+prompt, change the text, send; the same bubble updates and a new assistant
+reply starts without another user bubble.
+Source commit / app build / server version: uncommitted source applied onto
+local AgentsServer 1.0.7-beta.11 (agent_server.py, codex_auth.py,
+agentsdock_chats.py, claude_account_login.py). Folio desktop package unchanged.
+Test surface: isolated AgentsServer from source on a disposable Cursor chat;
+prompt revision and Cursor reply unit tests; focused Vitest for Composer,
+timeline, queue visibility, and TimelineRows.
+Actions exercised and observed outcomes: health advertised
+prompt_revision_v2; revising "hi" to ask for "pong" kept one visible user
+prompt, set reply_started, and the Cursor runner answered "pong" on a hidden
+prompt_revision_reply turn.
+Real boundaries exercised; any mocked/stubbed boundaries: real isolated
+AgentsServer worker and real Cursor CLI. Live Folio click-through waits on the
+server restart/reconnect. Unit tests cover presentation and queue hiding.
+Focused regression / typecheck / production build: prompt revision tests (5)
+and Cursor in-place edit test passed; Vitest focused suites 656 passed;
+electron-vite production build succeeded.
+Remaining limitations or blocked acceptance: live Folio pencil visibility
+requires the restarted server health refresh; packaged dock relaunch was not
+clicked in this turn before service restart.
+Availability: local AgentsServer install updated; not published.
+```
+
+## 2026-11-16 — Reply again after an in-place prompt edit
+
+- Editing an earlier prompt still changes that user message in place. It does
+  not add a second user message.
+- A current server starts the provider reply itself. A server that only saves
+  the edit still receives a follow-up turn from the desktop. That turn carries
+  the edited text to the provider and is marked so the timeline does not show
+  it as another user message. The previous answer stays, and the new answer
+  appears after it. A busy chat queues that reply instead of interrupting the
+  current turn.
+
+```text
+Change and expected user behavior: edit an earlier prompt and send; the same
+user bubble shows the new text, and a new assistant reply starts. Switching
+chats and coming back still revises that bubble rather than sending another
+user message.
+Source commit / app build / server version: uncommitted source. The open
+desktop window was started at 16:11 and the AgentsServer process at 10:01,
+so neither is running this change until the desktop is reopened.
+Test surface: Cursor subprocess admission on a temporary chat, prompt
+revision tests, timeline projection, queue visibility, and Composer.
+Actions exercised and observed outcomes: the 16:19 edit in Simple Hello
+Greeting only stored prompt_revised and did not start a turn. A temporary
+Cursor chat then edited "hi" to "hi, reply hello to me also"; the runner
+received that text and wrote the assistant reply "hello" on a hidden turn.
+Real boundaries exercised; any mocked/stubbed boundaries: the Cursor
+executable was a local script speaking the real stream protocol. The open
+desktop window was not clicked, and the live server process was not restarted.
+Focused regression / typecheck / production build: prompt revision tests (6)
+and the Cursor reply admission test passed. Timeline, queue, and Composer
+edit regressions passed (8). electron-vite build and the compile-output
+check succeeded. Typecheck was not run.
+Remaining limitations or blocked acceptance: the open desktop window still
+has the previous bundle. Provider history is not rewound, so the previous
+answer stays and the new answer follows it. A queued reply stays hidden
+until it starts.
+Availability: source; desktop bundle after the production build
+```
+
+## 2026-11-16 — Open another Folio window from the desktop menu
+
+- Right-click New Window on the Folio desktop icon now opens another window.
+  A relaunch with no invite no longer only focuses the window that is already open.
+- An `agentsdock://` invite still opens in the current window.
+
+```text
+Change and expected user behavior: with Folio already open, use the desktop
+or dock New Window action; a second window appears offset from the first.
+An invite link still focuses the existing window.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: secure-peer second-instance lifecycle test.
+Actions exercised and observed outcomes: with Folio already open, a second
+launch opened another window 28px down and to the right. An invite URL launch
+left the window count unchanged.
+Real boundaries exercised; any mocked/stubbed boundaries: real Electron process
+and a second OS launch. The desktop menu itself was not clicked.
+Focused regression / typecheck / production build: secure-peer lifecycle tests
+passed, main typecheck was clean, and the production bundle was rebuilt.
+Remaining limitations or blocked acceptance: a packaged dock click was not
+exercised in this session.
+Availability: source and local production bundle
+```
+
+## 2026-11-16 — Keep an edited prompt with its earlier reply
+
+- An edited prompt stays on its original turn in history, search, and the
+  timeline navigator, including after that turn has finished.
+- Leaving the chat and coming back still saves that edit in place. It does
+  not send the draft as another user message.
+
+```text
+Change and expected user behavior: edit an earlier prompt, switch chats, and
+send; the original bubble changes. History pages keep that edit with the
+reply that already belonged to the turn.
+Source commit / app build / server version: uncommitted source; matching
+AgentsServer required for the timeline page.
+Test surface: prompt revision and semantic timeline paging tests; Composer
+regression.
+Actions exercised and observed outcomes: a finished turn's revision stays on
+that landmark, the later turn's page does not absorb it, and the compact page
+still contains the original answer. The composer still calls revise after a
+chat switch.
+Real boundaries exercised; any mocked/stubbed boundaries: server paging uses
+the real index over a temporary event log. The composer test mocks IPC.
+Focused regression / typecheck / production build: prompt revision tests and
+the semantic-page regression passed. The Composer edit regressions passed.
+Typecheck and production build were not run.
+Remaining limitations or blocked acceptance: native click-through in the
+desktop app was not run in this session. A new reply is covered by the later
+2026-11-16 entry.
+Availability: source only
+```
+
 ## 2026-11-16 — Close Files panel from the explorer toolbar
 
 - Files actions (new/folder/refresh) share one header row with Details/Files

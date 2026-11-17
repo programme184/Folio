@@ -16,7 +16,7 @@ import { projectTeamMessageComposer } from '../lib/team-message-composer'
 import { appendComposerDraft, replaceComposerDraft } from '../lib/composer-draft-append'
 import { loadComposerHistory, recordComposerHistory } from '../lib/composer-history'
 import { profileSessionKey } from '../lib/profile-scope'
-import { Composer, TeamMentionPalette } from './Composer'
+import { clearPromptRevisionTargetsForTests, Composer, TeamMentionPalette } from './Composer'
 import { ClaudeRuntimeProvider } from './ClaudeRuntimeContext'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { CodexStatusButton } from './CodexControls'
@@ -159,6 +159,7 @@ describe('Composer', () => {
   })
 
   beforeEach(() => {
+    clearPromptRevisionTargetsForTests()
     resetTeamNetworkSnapshotCacheForTests()
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
@@ -399,8 +400,8 @@ describe('Composer', () => {
     confirm.mockRestore()
   })
 
-  it('overwrites an edited prompt without sending or staging a provider turn', async () => {
-    const send = vi.fn()
+  it('overwrites an edited prompt and asks the provider to reply without a second user message', async () => {
+    const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
     const revise = vi.fn().mockResolvedValue({
       seq: 4, id: 'revision-1', session_id: 'chat-1', type: 'prompt_revised',
       ts: '2026-11-06T00:00:00Z', replaces_prompt_event_id: 'original-prompt', prompt: 'Updated prompt'
@@ -423,11 +424,54 @@ describe('Composer', () => {
 
     await waitFor(() => expect(revise).toHaveBeenCalledWith({
       sessionId: 'chat-1', eventId: 'original-prompt', prompt: 'Updated prompt',
-      fileIds: [], chatReferences: [], teamReferences: []
+      fileIds: [], chatReferences: [], teamReferences: [],
+      clientCapabilities: ['codex_interactive_v1', 'codex_goal_steer_v1']
     }))
-    expect(send).not.toHaveBeenCalled()
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'chat-1', prompt: 'Updated prompt', displayPrompt: '',
+      promptRevisionReply: true, fileIds: []
+    })))
     expect(useAppStore.getState().pendingTurnSubmissions).toEqual({})
     expect(editor).toHaveValue('')
+  })
+
+  it('keeps an in-place prompt edit from being sent as a new turn after switching chats', async () => {
+    const send = vi.fn().mockResolvedValue({ session: { id: 'chat-1', title: 'Chat', backend: 'codex' }, queued: false })
+    const revise = vi.fn().mockResolvedValue({
+      seq: 4, id: 'revision-1', session_id: 'chat-1', type: 'prompt_revised',
+      ts: '2026-11-06T00:00:00Z', replaces_prompt_event_id: 'original-prompt', prompt: 'Updated prompt'
+    })
+    window.agentsDock.turns = { send, revise } as unknown as AgentsDockAPI['turns']
+    useAppStore.setState({
+      sessions: [
+        { id: 'chat-1', title: 'Chat', backend: 'codex' },
+        { id: 'chat-2', title: 'Other', backend: 'codex' }
+      ],
+      health: { ok: true, capabilities: { prompt_revision_v2: { available: true, version: 2 } } }
+    })
+    render(<section data-chat-pane="primary"><button>Previous prompt</button><Composer /></section>)
+    act(() => {
+      expect(replaceComposerDraft(
+        screen.getByRole('button', { name: 'Previous prompt' }),
+        { profileId: 'profile-a', profileGeneration: 0, serverIdentity: null },
+        'chat-1', 'Original prompt', [], [], [], 'original-prompt'
+      )).toBe('applied')
+    })
+    act(() => { useAppStore.setState({ selectedSessionId: 'chat-2' }) })
+    act(() => { useAppStore.setState({ selectedSessionId: 'chat-1' }) })
+    const editor = screen.getByPlaceholderText('Message')
+    fireEvent.change(editor, { target: { value: 'Updated prompt' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() => expect(revise).toHaveBeenCalledWith({
+      sessionId: 'chat-1', eventId: 'original-prompt', prompt: 'Updated prompt',
+      fileIds: [], chatReferences: [], teamReferences: [],
+      clientCapabilities: ['codex_interactive_v1', 'codex_goal_steer_v1']
+    }))
+    await waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: 'chat-1', prompt: 'Updated prompt', promptRevisionReply: true
+    })))
+    expect(send.mock.calls[0][0].prompt).toBe('Updated prompt')
   })
 
   it('keeps the current draft when replacing a prompt is cancelled', () => {
@@ -3398,9 +3442,13 @@ describe('Composer', () => {
 
   it('ignores a late draft load from another profile with the same session ID', async () => {
     let resolveProfileA: ((value: string) => void) | undefined
-    const get = vi.fn()
-      .mockImplementationOnce(() => new Promise<string>(resolve => { resolveProfileA = resolve }))
-      .mockResolvedValueOnce('Profile B draft')
+    const get = vi.fn((key: string, fallback: unknown) => {
+      if (key === 'draft-prompt-revision:chat-1') return Promise.resolve('')
+      if (key !== 'draft:chat-1') return Promise.resolve(fallback)
+      return useAppStore.getState().activeProfileId === 'profile-a'
+        ? new Promise<string>(resolve => { resolveProfileA = resolve })
+        : Promise.resolve('Profile B draft')
+    })
     Object.defineProperty(window, 'agentsDock', {
       configurable: true,
       value: {
@@ -3408,7 +3456,7 @@ describe('Composer', () => {
       } as unknown as AgentsDockAPI
     })
     render(<Composer />)
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(get).toHaveBeenCalledWith('draft:chat-1', ''))
 
     act(() => useAppStore.setState({ activeProfileId: 'profile-b', drafts: {} }))
     await waitFor(() => expect(screen.getByPlaceholderText('Message')).toHaveValue('Profile B draft'))

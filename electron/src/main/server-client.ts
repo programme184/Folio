@@ -1398,19 +1398,24 @@ export class AgentServerClient {
     chatReferences: ChatReference[] = [],
     teamReferences: TeamReference[] = [],
     skillSelection?: ProviderCommandSelection,
-    clientRequestId?: string
+    clientRequestId?: string,
+    revisionReply?: { displayPrompt?: string | null }
   ): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }> {
     const selection = providerCommandSelectionPayload(skillSelection)
     const response = await this.post<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }>(`/api/sessions/${encodeURIComponent(sessionId)}/turns`, {
       prompt,
       ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
       file_ids: fileIds,
-      model: model ?? '',
-      effort: effort ?? '',
+      ...(revisionReply ? {} : { model: model ?? '', effort: effort ?? '' }),
       client_capabilities: clientCapabilities,
       ...(chatReferences.length ? { chat_references: chatReferences } : {}),
       ...(teamReferences.length ? { team_references: teamReferences } : {}),
-      ...(selection ? { skill_selection: selection } : {})
+      ...(selection ? { skill_selection: selection } : {}),
+      ...(revisionReply ? {
+        display_prompt: revisionReply.displayPrompt ?? '',
+        purpose: 'prompt_revision_reply',
+        prompt_revision_reply: true
+      } : {})
     })
     if ((response as { acceptance?: string }).acceptance === 'pending') {
       throw new Error('The server is still accepting this message. Your draft is retained; retry the same message to check its acceptance safely.')
@@ -1424,18 +1429,23 @@ export class AgentServerClient {
     prompt: string,
     fileIds: string[],
     chatReferences: ChatReference[] = [],
-    teamReferences: TeamReference[] = []
-  ): Promise<Event> {
-    const response = await this.patch<{ event: Event }>(
+    teamReferences: TeamReference[] = [],
+    clientCapabilities: string[] = []
+  ): Promise<{ event: Event; replyStarted: boolean }> {
+    const response = await this.patch<{ event: Event; reply_started?: boolean }>(
       `/api/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(eventId)}`,
       {
         prompt,
         file_ids: fileIds,
         chat_references: chatReferences,
-        team_references: teamReferences
+        team_references: teamReferences,
+        ...(clientCapabilities.length ? { client_capabilities: clientCapabilities } : {})
       }
     )
-    return compactTimelineEvent(response.event)
+    return {
+      event: compactTimelineEvent(response.event),
+      replyStarted: response.reply_started === true
+    }
   }
 
   async stopTurn(sessionId: string): Promise<TurnStopResult> {
@@ -2121,6 +2131,23 @@ export class AgentServerClient {
       recursive: String(recursive)
     })
     return this.delete(`/api/sessions/${encodeURIComponent(sessionId)}/workspace/entry?${query}`)
+  }
+
+  removeAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    expectedRevision: string,
+    recursive: boolean
+  ): Promise<WorkspaceRemoveResult> {
+    const query = new URLSearchParams({
+      path,
+      expected_revision: expectedRevision,
+      recursive: String(recursive)
+    })
+    return this.privilegedNativeRequest(
+      `/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entry?${query}`,
+      { method: 'DELETE' }
+    )
   }
 
   async processes(sessionId: string): Promise<ProcessSnapshot> {

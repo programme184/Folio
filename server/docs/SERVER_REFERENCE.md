@@ -39,8 +39,13 @@ and personal machine paths outside tracked source.
 `turn_started` event in that chat. Provider-created, shared-collaborator and
 internal-purpose inputs are rejected. The server appends a durable
 `prompt_revised` presentation event containing the replacement text,
-attachments and structured references. It does not enter turn admission,
-start or queue a provider, interrupt current work, or generate a reply.
+attachments and structured references. The event stays on the original turn,
+including after that turn has finished, so history pages keep the edited
+prompt and its earlier reply together. When the replacement has text or
+attachments, the server then admits a provider turn for that text. That
+follow-up is marked `prompt_revision_reply` and is not rendered as another
+user message. It does not interrupt a turn that is already running; a busy
+chat queues the reply.
 
 ## What It Gives AgentsDock
 

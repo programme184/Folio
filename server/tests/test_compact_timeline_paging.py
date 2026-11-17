@@ -2998,6 +2998,52 @@ class CompactTimelinePagingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(index["landmarks"][0]["key"], f"turn:{run_id}:start-2")
         self.assertEqual([event["seq"] for event in page["events"]], [2, 3])
 
+    def test_prompt_revision_stays_with_its_reply(self) -> None:
+        first = {"run_id": "run-1"}
+        later = {"run_id": "run-2"}
+        self.write_events([
+            self.event(1, "turn_started", prompt="Original prompt", **first),
+            self.event(2, "assistant_text", text="Original answer", **first),
+            self.event(3, "tool_finished", output="one", **first),
+            self.event(4, "tool_finished", output="two", **first),
+            self.event(5, "tool_finished", output="three", **first),
+            self.event(6, "turn_finished", result_text="Original answer", **first),
+            self.event(7, "turn_started", prompt="Later question", **later),
+            self.event(8, "assistant_text", text="Later answer", **later),
+            self.event(9, "turn_finished", result_text="Later answer", **later),
+            self.event(
+                10, "prompt_revised", prompt="Revised prompt",
+                replaces_prompt_event_id="event-1", replaces_prompt_event_seq=1,
+                replaces_prompt_event_ts="2026-07-19T00:00:01Z",
+                replaces_prompt_run_id="run-1", replaces_prompt_backend="codex",
+            ),
+        ])
+
+        index = agent_server.build_timeline_index(self.session_id)
+        self.assertEqual(
+            [item["key"] for item in index["landmarks"]],
+            ["turn:run-1", "turn:run-2"],
+        )
+        self.assertEqual(index["landmarks"][0]["title"], "Revised prompt")
+        self.assertNotIn("Prompt Revised", [item["title"] for item in index["landmarks"]])
+
+        latest = agent_server.read_semantic_timeline_page(self.session_id, limit=1, tail=True)
+        self.assertTrue(any(event.get("text") == "Later answer" or event.get("result_text") == "Later answer" for event in latest["events"]))
+        self.assertFalse(any(event["type"] == "prompt_revised" for event in latest["events"]))
+
+        earlier = agent_server.read_semantic_timeline_page(
+            self.session_id,
+            semantic_before=latest["next_semantic_before"],
+            limit=1,
+            tail=True,
+        )
+        revised = [event for event in earlier["events"] if event["type"] == "prompt_revised"]
+        self.assertEqual([event["prompt"] for event in revised], ["Revised prompt"])
+        self.assertTrue(any(
+            event.get("result_text") == "Original answer" or event.get("text") == "Original answer"
+            for event in earlier["events"]
+        ))
+
     def write_events(self, events: list[dict[str, object]]) -> None:
         agent_server.events_path(self.session_id).write_text(
             "".join(json.dumps(event) + "\n" for event in events),

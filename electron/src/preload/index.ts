@@ -422,7 +422,8 @@ const api: AgentsDockAPI = {
     write: (sessionId, path, content, expectedRevision) => ipcRenderer.invoke('workspace:write', sessionId, path, content, expectedRevision),
     overwrite: (sessionId, path, content) => ipcRenderer.invoke('workspace:overwrite', sessionId, path, content),
     rename: (sessionId, path, newName, expectedRevision) => ipcRenderer.invoke('workspace:rename', sessionId, path, newName, expectedRevision),
-    remove: (sessionId, path, expectedRevision, recursive) => ipcRenderer.invoke('workspace:remove', sessionId, path, expectedRevision, recursive)
+    remove: (sessionId, path, expectedRevision, recursive) => ipcRenderer.invoke('workspace:remove', sessionId, path, expectedRevision, recursive),
+    removeAbsolute: (sessionId, path, expectedRevision, recursive) => ipcRenderer.invoke('workspace:remove-absolute', sessionId, path, expectedRevision, recursive)
   },
   workingDirectories: {
     complete: (path, limit) => ipcRenderer.invoke('working-directories:complete', path, limit)

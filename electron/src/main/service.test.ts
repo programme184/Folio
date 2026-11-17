@@ -421,7 +421,7 @@ describe('durable send request identity', () => {
     await expect(createService().sendTurn(input)).rejects.toThrow('response lost')
     await createService().sendTurn(input)
     await createService().sendTurn(input)
-    const identities = sendTurn.mock.calls.map(call => call.at(-1))
+    const identities = sendTurn.mock.calls.map(call => call.at(-2))
     expect(identities[0]).toMatch(/^[a-f0-9-]{36}$/)
     expect(identities[1]).toBe(identities[0])
     expect(identities[2]).not.toBe(identities[0])

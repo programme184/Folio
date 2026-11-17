@@ -103,6 +103,9 @@ export function requestOpenAgentFile(
 export function parseWorkspaceCodeReference(value: string): WorkspaceCodeReference | null {
   const reference = parseWorkspaceFileReference(value)
   if (!reference) return null
+  // Inline code stays inside the chat workspace. Explicit markdown links may
+  // point at a sibling checkout with `../`, and those are resolved later.
+  if (reference.path.split('/').includes('..')) return null
   const name = reference.path.split('/').at(-1)?.toLocaleLowerCase() ?? ''
   if (!name || (!CODE_FILE_NAMES.has(name) && !CODE_FILE_EXTENSIONS.has(name.split('.').at(-1) ?? ''))) return null
   return reference
@@ -140,9 +143,20 @@ export function parseWorkspaceFileReference(value: string): WorkspaceCodeReferen
     }
   }
 
-  path = path.trim().replace(/\\/g, '/').replace(/^\.\//, '')
-  if (!path || path.startsWith('../') || path.includes('/../') || path.endsWith('/..')) return null
+  path = path.trim().replace(/\\/g, '/').replace(/^(?:\.\/)+/, '')
+  if (!isResolvableFileReference(path)) return null
   return { path, ...(line ? { line } : {}), ...(column ? { column } : {}) }
+}
+
+function isResolvableFileReference(path: string): boolean {
+  if (!path) return false
+  const body = path.startsWith('/') ? path.slice(1) : path
+  const parts = body.split('/')
+  const filename = parts.at(-1)
+  return Boolean(filename)
+    && filename !== '.'
+    && filename !== '..'
+    && parts.every(part => part.length > 0)
 }
 
 function normalizedPath(value: string | null | undefined): string {

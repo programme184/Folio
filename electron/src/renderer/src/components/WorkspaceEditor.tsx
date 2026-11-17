@@ -6100,9 +6100,14 @@ export function resolveWorkspacePathInput(cwd: string, input: string): Workspace
     // workspace search scan/result limits.
     if (!candidate.includes('/') && !candidate.includes('\\')) return { kind: 'search' }
     const relativePath = normalizeWorkspaceReference(candidate)
-    return relativePath
-      ? { kind: 'workspace-file', path: relativePath }
-      : { kind: 'outside-workspace' }
+    if (relativePath) return { kind: 'workspace-file', path: relativePath }
+    // Agent links are often written from another checkout, for example
+    // `../PTI_vial/.../result.yaml` while this chat's cwd is a sibling repo.
+    // Canonicalize `..` against the chat directory, then reuse the absolute
+    // inside/outside decision. A path that still contains `..` is not sent
+    // to the server.
+    const resolved = resolveParentRelativePath(cwd, candidate)
+    return resolved ? resolveWorkspacePathInput(cwd, resolved) : { kind: 'outside-workspace' }
   }
   const normalizedCwd = normalizeAbsolutePath(cwd)
   const normalizedCandidate = normalizeAbsolutePath(candidate)
@@ -6171,6 +6176,25 @@ function normalizeWorkspaceReference(reference: string): string | null {
   const parts = normalized.split('/')
   if (parts.some(part => !part || part === '.' || part === '..')) return null
   return parts.join('/')
+}
+
+function resolveParentRelativePath(cwd: string, relative: string): string | null {
+  const base = normalizeAbsolutePath(cwd)
+  if (!base) return null
+  const raw = unquotePath(relative.trim()).replace(/\\/g, '/')
+  if (!raw || isAbsolutePath(raw) || !raw.split('/').includes('..')) return null
+  const parts = [...base.parts]
+  for (const part of raw.split('/')) {
+    if (!part || part === '.') continue
+    if (part === '..') {
+      if (parts.length === 0) return null
+      parts.pop()
+      continue
+    }
+    parts.push(part)
+  }
+  if (parts.length === 0) return null
+  return formattedAbsolutePath({ flavor: base.flavor, root: base.root, parts })
 }
 
 function uniqueWorkspaceFiles(entries: WorkspaceEntry[]): WorkspaceEntry[] {

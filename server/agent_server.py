@@ -4527,6 +4527,37 @@ def remove_workspace_entry_sync(
 ) -> dict[str, Any]:
     _, root = session_workspace_root(session_id, for_write=True)
     normalized = normalize_workspace_path(relative_path)
+    return remove_workspace_entry_at_root(root, normalized, expected_revision, recursive)
+
+
+def remove_absolute_workspace_entry_sync(
+    session_id: str,
+    absolute_path: str,
+    expected_revision: str,
+    recursive: bool,
+) -> dict[str, Any]:
+    if not WORKSPACE_MUTATIONS_AVAILABLE:
+        raise workspace_http_error(
+            501,
+            "workspace_mutations_unavailable",
+            "Secure absolute file deletion is unavailable on this host.",
+        )
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    if bool(sess.get("archived")):
+        raise workspace_http_error(409, "workspace_read_only", "Archived chats cannot edit files.")
+    root, relative, normalized = normalize_absolute_file_path(absolute_path)
+    result = remove_workspace_entry_at_root(root, relative, expected_revision, recursive)
+    return {**result, "path": normalized, "scope": "absolute"}
+
+
+def remove_workspace_entry_at_root(
+    root: Path,
+    normalized: str,
+    expected_revision: str,
+    recursive: bool,
+) -> dict[str, Any]:
     with workspace_write_lock(root, normalized):
         parent_fd, name = open_workspace_parent_fd(root, normalized)
         try:
@@ -7409,6 +7440,10 @@ class TurnRequest(BaseModel):
     effort: str | None = None
     skill_selection: SkillSelection | None = None
     display_prompt: str | None = None
+    # A reply to an in-place prompt edit. The provider receives ``prompt``;
+    # clients keep the edited bubble and do not render this turn as another
+    # user message.
+    prompt_revision_reply: bool = False
     purpose: str | None = None
     job_id: str | None = None
     job_title: str | None = None
@@ -7454,10 +7489,10 @@ class TurnRequest(BaseModel):
 
 
 class PromptRevisionRequest(BaseModel):
-    """Presentation-only replacement for one persisted user prompt.
+    """In-place replacement for one persisted user prompt, plus a new reply.
 
-    A revision never enters provider admission and therefore cannot start,
-    queue, steer, or interrupt a model turn.
+    The edited text stays on the original user message. The follow-up provider
+    turn is marked so clients do not render it as a second user message.
     """
 
     model_config = {"extra": "forbid"}
@@ -7466,6 +7501,7 @@ class PromptRevisionRequest(BaseModel):
     file_ids: list[str] = Field(default_factory=list)
     chat_references: list[ChatReference] = Field(default_factory=list, max_length=16)
     team_references: list[TeamReference] = Field(default_factory=list, max_length=16)
+    client_capabilities: list[str] = Field(default_factory=list, max_length=16)
 
 
 class CrossChatHandoffRequest(BaseModel):
@@ -18697,6 +18733,7 @@ async def enqueue_turn(
                 else None
             ),
             "display_prompt": req.display_prompt,
+            "prompt_revision_reply": req.prompt_revision_reply is True,
             "purpose": req.purpose,
             "digest_job_id": req.digest_job_id,
             "digest_detail": req.digest_detail,
@@ -18789,6 +18826,7 @@ async def enqueue_turn(
                 "request_prompt": req.prompt,
                 "client_request_id": getattr(req, "client_request_id", None),
                 "display_prompt": req.display_prompt,
+                "prompt_revision_reply": req.prompt_revision_reply is True,
                 "file_ids": list(req.file_ids),
                 "position": position,
                 "purpose": req.purpose,
@@ -23572,6 +23610,11 @@ def public_queued_turn(
         "session_id": session_id,
         "prompt": public_prompt,
         "file_ids": public_file_ids,
+        **(
+            {"prompt_revision_reply": True}
+            if item.get("prompt_revision_reply") is True
+            else {}
+        ),
         "backend": None if secure_peer_barrier else item.get("backend"),
         "model": None if secure_peer_barrier else item.get("model"),
         "effort": None if secure_peer_barrier else item.get("effort"),
@@ -26628,6 +26671,7 @@ async def _start_next_queued_turn_locked(
             effort=item.get("effort"),
             skill_selection=item.get("skill_selection"),
             display_prompt=item.get("display_prompt"),
+            prompt_revision_reply=item.get("prompt_revision_reply") is True,
             purpose=item.get("purpose"),
             digest_job_id=item.get("digest_job_id"),
             digest_detail=item.get("digest_detail"),
@@ -26962,6 +27006,7 @@ def queued_turn_from_event(event: dict[str, Any], sess: dict[str, Any], position
             None if delivery_row else event.get("skill_selection")
         ),
         "display_prompt": event.get("display_prompt"),
+        "prompt_revision_reply": event.get("prompt_revision_reply") is True,
         "shared_chat_id": event.get("shared_chat_id"),
         "shared_chat_request_id": event.get("shared_chat_request_id"),
         "author_label": event.get("author_label"),
@@ -33778,6 +33823,9 @@ SEMANTIC_TIMELINE_ESSENTIAL_DETAIL_TYPES = {
     "artifact_created",
     "file_uploaded",
     "code_diff",
+    # A presentation edit must travel with its turn. Leaving it optional lets a
+    # later display slot drop the assistant reply from the compact page.
+    "prompt_revised",
 }
 
 
@@ -35718,6 +35766,21 @@ def _build_timeline_index_locked(session_id: str) -> dict[str, Any]:
                     record["prompt"] = prompt
                 continue
 
+            if event_type == "prompt_revised":
+                revision_key = prompt_revision_owner_key(event, by_key)
+                if revision_key:
+                    record = ensure_record(
+                        revision_key,
+                        "user",
+                        event,
+                        advance_timeline=False,
+                    )
+                    revised_prompt = compact_timeline_index_text(event.get("prompt"))
+                    if revised_prompt:
+                        record["title"] = compact_timeline_index_text(revised_prompt, 72)
+                        record["prompt"] = revised_prompt
+                continue
+
             key = current_turn_by_run.get(run_id) if run_id else active_turn_key
             if run_id and not key:
                 key = f"turn:{run_id}"
@@ -36572,8 +36635,52 @@ def is_native_goal_steer_event(event: dict[str, Any]) -> bool:
     )
 
 
+def prompt_revision_owner_key(
+    event: dict[str, Any],
+    records_by_key: dict[str, dict[str, Any]],
+) -> str | None:
+    """Return the turn landmark that owns a presentation-only prompt edit.
+
+    Revisions are not new user turns. They keep the original run, including
+    when that run already finished or its id was reused, and they must not
+    become a separate system row.
+    """
+
+    if str(event.get("type") or "") != "prompt_revised":
+        return None
+    run_id = str(event.get("run_id") or event.get("replaces_prompt_run_id") or "").strip()
+    try:
+        target_seq = int(event.get("replaces_prompt_event_seq") or 0)
+    except (TypeError, ValueError):
+        target_seq = 0
+    if run_id and target_seq > 0:
+        exact = f"turn:{run_id}:start-{target_seq}"
+        if exact in records_by_key:
+            return exact
+    if run_id:
+        base = f"turn:{run_id}"
+        record = records_by_key.get(base)
+        if isinstance(record, dict) and (
+            target_seq <= 0 or int(record.get("start_seq") or 0) == target_seq
+        ):
+            return base
+    if target_seq > 0:
+        matches = [
+            key
+            for key, record in records_by_key.items()
+            if str(key).startswith("turn:")
+            and isinstance(record, dict)
+            and int(record.get("start_seq") or 0) == target_seq
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 def semantic_timeline_event_is_display(event: dict[str, Any]) -> bool:
     event_type = str(event.get("type") or "")
+    if event_type == "prompt_revised":
+        return False
     if timeline_index_is_error(event):
         return True
     if event_type == "assistant_text":
@@ -36943,6 +37050,8 @@ def collect_semantic_timeline_events(
                         active_turn_key = key
                         if run_id:
                             current_turn_by_run[run_id] = key
+                elif event_type == "prompt_revised":
+                    key = prompt_revision_owner_key(event, selected_by_key)
                 else:
                     key = current_turn_by_run.get(run_id) if run_id else active_turn_key
                     if run_id and not key:
@@ -37514,7 +37623,7 @@ def search_timeline_index(session_id: str, query: str, limit: int = 40) -> dict[
 
 
 HISTORY_SEARCH_EVENT_TYPES = {
-    "turn_started", "turn_steered", "assistant_text", "turn_finished", "reasoning_summary", "error",
+    "turn_started", "prompt_revised", "turn_steered", "assistant_text", "turn_finished", "reasoning_summary", "error",
     "job_created", "job_ran", "job_started", "job_deferred", "job_finished", "job_error",
     "artifact_created", "artifact_error", "file_uploaded",
     "handoff_digest_started", "handoff_digest_ready", "handoff_digest_received", "handoff_digest_submitted", "handoff_digest_sent",
@@ -37554,7 +37663,7 @@ def history_search_event_record(
         role = "job"
     elif timeline_index_is_error(event):
         role = "error"
-    elif event_type == "turn_started" or is_native_goal_steer_event(event):
+    elif event_type in {"turn_started", "prompt_revised"} or is_native_goal_steer_event(event):
         role = "user"
     elif event_type in {"assistant_text", "turn_finished"}:
         role = "assistant"
@@ -76280,7 +76389,7 @@ def editable_prompt_revision_target(session_id: str, event_id: str) -> dict[str,
             events_path(session_id),
             retained_fields=frozenset({
                 "id", "seq", "ts", "type", "run_id", "backend", "purpose",
-                "provider_generated", "shared_chat_id",
+                "provider_generated", "shared_chat_id", "prompt_revision_reply",
             }),
         )
         if str(event.get("id") or "") == event_id
@@ -76289,6 +76398,7 @@ def editable_prompt_revision_target(session_id: str, event_id: str) -> dict[str,
         target is not None
         and target.get("type") == "turn_started"
         and target.get("purpose") is None
+        and target.get("prompt_revision_reply") is not True
         and target.get("provider_generated") is not True
         and target.get("shared_chat_id") is None
     ) else None
@@ -77411,6 +77521,7 @@ async def _start_turn_admission_locked(
                if is_async_route_message(delivery_record or {}) else {}),
             "backend": backend,
             "prompt": display_prompt,
+            **({"prompt_revision_reply": True} if req.prompt_revision_reply else {}),
             "file_ids": display_file_ids if display_file_ids is not None else req.file_ids,
             "chat_references": chat_reference_dicts(req.chat_references),
             "team_references": team_reference_dicts(req.team_references),
@@ -95703,7 +95814,7 @@ async def revise_prompt(
     event_id: str,
     req: PromptRevisionRequest,
 ) -> dict[str, Any]:
-    """Replace a prompt's visible content without creating a provider turn."""
+    """Replace a prompt in place and start a reply without a second user message."""
 
     async with session_lifecycle_lock(session_id):
         ensure_session_not_deleting(session_id)
@@ -95719,7 +95830,7 @@ async def revise_prompt(
                 detail="The prompt being edited is no longer an editable user message.",
             )
         file_ids = validate_session_file_ids(session_id, req.file_ids)
-        event = await append_durable_event(session_id, "prompt_revised", {
+        payload: dict[str, Any] = {
             "replaces_prompt_event_id": event_id,
             "replaces_prompt_event_seq": int(target.get("seq") or 0),
             "replaces_prompt_event_ts": target.get("ts"),
@@ -95729,8 +95840,34 @@ async def revise_prompt(
             "file_ids": file_ids,
             "chat_references": chat_reference_dicts(req.chat_references),
             "team_references": team_reference_dicts(req.team_references),
-        })
-    return {"event": client_safe_event(event)}
+        }
+        # Keep the edit on the original run so paging cannot split it from
+        # that turn's reply or publish it as a new user message.
+        revision_run_id = str(target.get("run_id") or "").strip()
+        if revision_run_id:
+            payload["run_id"] = revision_run_id
+        revision_backend = target.get("backend")
+        if isinstance(revision_backend, str) and revision_backend.strip():
+            payload["backend"] = revision_backend
+        event = await append_durable_event(session_id, "prompt_revised", payload)
+        # Routed text must stay identical to the provider prompt. With no
+        # routes, the follow-up stores an empty visible prompt as well.
+        reply_request = TurnRequest(
+            prompt=req.prompt,
+            display_prompt=req.prompt if (req.chat_references or req.team_references) else "",
+            file_ids=file_ids,
+            chat_references=list(req.chat_references),
+            team_references=list(req.team_references),
+            client_capabilities=list(req.client_capabilities),
+            prompt_revision_reply=True,
+        ) if req.prompt.strip() or file_ids else None
+    reply_started = False
+    if reply_request is not None:
+        # Admission takes the same lifecycle lock. Hold it only around the
+        # presentation write so this reply cannot deadlock behind itself.
+        await start_turn(session_id, reply_request)
+        reply_started = True
+    return {"event": client_safe_event(event), "reply_started": reply_started}
 
 
 async def post_turn_without_receipt(session_id: str, req: TurnRequest) -> dict[str, Any]:
@@ -101770,6 +101907,24 @@ async def delete_session_workspace_entry(
 ) -> dict[str, Any]:
     return await asyncio.to_thread(
         remove_workspace_entry_sync,
+        session_id,
+        path,
+        expected_revision,
+        recursive,
+    )
+
+
+@app.delete("/api/sessions/{session_id}/workspace/absolute-entry")
+async def delete_session_absolute_workspace_entry(
+    request: Request,
+    session_id: str,
+    path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
+    expected_revision: str = Query(min_length=64, max_length=64),
+    recursive: bool = Query(default=False),
+) -> dict[str, Any]:
+    require_native_workspace_directory_control(request)
+    return await asyncio.to_thread(
+        remove_absolute_workspace_entry_sync,
         session_id,
         path,
         expected_revision,

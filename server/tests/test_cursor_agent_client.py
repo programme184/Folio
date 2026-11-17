@@ -532,6 +532,26 @@ class NormalizeCursorStreamEventTests(unittest.TestCase):
         # A literal provider ID in the encoded namespace must not collide.
         self.assertNotEqual(identifier, canonical_cursor_call_id(identifier))
 
+    def test_tool_events_recover_envelope_id_when_top_level_is_invalid(self) -> None:
+        # Cursor 2026.10 emits toolCallId beside the dynamic *ToolCall body.
+        # It remains usable when a stream event has an empty top-level call_id.
+        raw_id = ("call-00000000-0000-4000-8000-000000000001-0\n"
+                  "fc_00000000-0000-4000-8000-000000000002_0")
+        normalized = []
+        for subtype in ("started", "completed"):
+            body = {"args": {"path": "hello.txt"}}
+            if subtype == "completed":
+                body["result"] = {"success": {"content": "fixture"}}
+            normalized.append(normalize_cursor_stream_event(json.dumps({
+                "type": "tool_call", "subtype": subtype, "call_id": "",
+                "session_id": SESSION_ID,
+                "tool_call": {"toolCallId": raw_id, "readToolCall": body},
+            })))
+        self.assertEqual(normalized[0]["call_id"], normalized[1]["call_id"])
+        self.assertTrue(
+            normalized[0]["call_id"].startswith("cursor-call-sha256:")
+        )
+
     def test_composite_compatibility_does_not_accept_arbitrary_controls(self) -> None:
         for value in ("a\nb", "\nleading", "trailing\n", "a\rb", "a\tb",
                       "a\x00b", "a\x1bb", "a\x7fb", "x" * 241):

@@ -745,7 +745,7 @@ export class TimelineProjector {
       const prior = event.run_id ? this.turnByRun.get(event.run_id) : this.activeTurn
       const followsSilentInput = event.run_id ? this.silentInputRuns.delete(event.run_id) : false
       this.activeTurn = this.writableTurn(this.ensureTurn(event, Boolean(prior?.user) || followsSilentInput))
-      if (!isDigestDeliveryTurn(event) && !isNativeMailboxWakeInput(event) && !isNativeBackgroundWakeInput(event)) this.activeTurn.user = event
+      if (!isDigestDeliveryTurn(event) && !isNativeMailboxWakeInput(event) && !isNativeBackgroundWakeInput(event) && !isPromptRevisionReply(event)) this.activeTurn.user = event
       this.activeTurn.seq = Math.min(this.activeTurn.seq, event.seq)
       this.activeTurn.startedAt = event.ts
       this.activeTurn.purpose = event.purpose
@@ -1731,6 +1731,12 @@ function deduplicateEvents(events: Event[]): Event[] {
 }
 
 const CONTEXT_DIGEST_HEADINGS = ['# AgentsDock Context Digest']
+
+function isPromptRevisionReply(event: Event): boolean {
+  return event.type === 'turn_started' && (
+    event.prompt_revision_reply === true || event.purpose === 'prompt_revision_reply'
+  )
+}
 
 function isNativeMailboxWakeInput(event: Event): boolean {
   return event.type === 'turn_started' && event.imported !== true

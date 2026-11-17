@@ -4227,6 +4227,24 @@ describe('WorkspaceEditor', () => {
     expect(resolveWorkspacePathInput('/work/project', '/home/dev/../secrets.txt')).toEqual({
       kind: 'outside-workspace'
     })
+    expect(resolveWorkspacePathInput(
+      '/home/ubuntu/Github/dof_dataset',
+      '../PTI_vial/data/calibration/scenes/pti_bench/results/eye_to_hand_d405_result.yaml'
+    )).toEqual({
+      kind: 'absolute-file',
+      path: '/home/ubuntu/Github/PTI_vial/data/calibration/scenes/pti_bench/results/eye_to_hand_d405_result.yaml'
+    })
+    expect(resolveWorkspacePathInput('/work/project', 'src/../README.md')).toEqual({
+      kind: 'workspace-file',
+      path: 'README.md'
+    })
+    expect(resolveWorkspacePathInput('/work/project', '../project/README.md')).toEqual({
+      kind: 'workspace-file',
+      path: 'README.md'
+    })
+    expect(resolveWorkspacePathInput('relative-cwd', '../outside.yaml')).toEqual({
+      kind: 'outside-workspace'
+    })
   })
 
   it('builds reveal ancestors and copyable paths for POSIX and Windows workspaces', () => {

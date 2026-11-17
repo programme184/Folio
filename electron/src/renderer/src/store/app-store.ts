@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type {
-  AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, QueuedTurn, TeamReference,
+  AgentCrossChatRoutesSnapshot, AgentFile, Backend, BootstrapPayload, ChatReference, ChatSyncStatus, CreateSessionInput, Event, ForwardedPort, Health, Job, NativeFileRef, PromptRevisionResult, QueuedTurn, TeamReference,
   ProfileBootstrapPayload, ProfileConnectionEvent, ProfileNotificationRoute, ProviderCommandSelection, PublicServerProfile, RuntimeCatalog, Session, SessionSnapshot,
   ServerForceRestartConfirmation, SidebarSortMode, TimelinePage, UpdateServerProfilePatch, WorkspaceProfileScope
 } from '@shared/types'
@@ -2332,19 +2332,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       || !initial.sessions.some(session => session.id === sessionId && !session.archived)) return false
     const scope = captureProfileScope(initial)
     try {
-      const event = await window.agentsDock.turns.revise({
+      const session = initial.sessions.find(item => item.id === sessionId)
+      const revised = await window.agentsDock.turns.revise({
         sessionId,
         eventId,
         prompt,
         fileIds,
         chatReferences,
-        teamReferences
+        teamReferences,
+        clientCapabilities: interactiveClientCapabilities(session, initial.health)
       })
+      const revision = promptRevisionResult(revised)
       if (!profileScopeMatches(scope, get())) return false
       set(state => {
         const snapshot = state.snapshots[sessionId]
         if (!snapshot) return { error: null }
-        const events = upsertEvent(snapshot.events, event)
+        const events = upsertEvent(snapshot.events, revision.event)
         return {
           error: null,
           snapshots: cacheSnapshot(state.snapshots, sessionId, {
@@ -2353,11 +2356,24 @@ export const useAppStore = create<AppState>((set, get) => ({
             generation: nextTimelineGeneration(
               snapshot,
               events,
-              events.length === snapshot.events.length + 1 && events.at(-1) === event
+              events.length === snapshot.events.length + 1 && events.at(-1) === revision.event
             )
           }, visibleChatSessionIds(currentChatPaneLayout(state).panes))
         }
       })
+      if (!revision.replyStarted && (prompt.trim() || fileIds.length)) {
+        const routed = chatReferences.length > 0 || teamReferences.length > 0
+        await window.agentsDock.turns.send({
+          sessionId,
+          prompt,
+          fileIds,
+          chatReferences,
+          teamReferences,
+          clientCapabilities: interactiveClientCapabilities(session, get().health),
+          displayPrompt: routed ? prompt : '',
+          promptRevisionReply: true
+        })
+      }
       return true
     } catch (error) {
       if (profileScopeMatches(scope, get())) set({ error: errorMessage(error) })
@@ -5630,6 +5646,13 @@ function normalizeSessionPatch(patch: Partial<Session> & { gemini_connect_api?: 
   pinned: patch.pinned ?? undefined,
   archived: patch.archived ?? undefined
 } }
+
+function promptRevisionResult(value: Event | PromptRevisionResult): PromptRevisionResult {
+  if (value && typeof value === 'object' && 'event' in value && value.event && 'replyStarted' in value) {
+    return { event: value.event, replyStarted: value.replyStarted === true }
+  }
+  return { event: value as Event, replyStarted: false }
+}
 
 export function interactiveClientCapabilities(
   session: Session | undefined,

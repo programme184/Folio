@@ -39,6 +39,23 @@ describe('MarkdownContent', () => {
     expect(openExternal).not.toHaveBeenCalled()
   })
 
+  it('opens a parent-relative result link in the workspace instead of as a chat attachment', () => {
+    const open = vi.fn()
+    window.addEventListener('agentsdock:open-workspace-path', open)
+    const target = '../PTI_vial/data/calibration/scenes/pti_bench/results/eye_to_hand_d405_result.yaml'
+    render(<MarkdownContent text={`结果已保存：[eye_to_hand_d405_result.yaml](${target})`} sessionId="chat-7" />)
+    fireEvent.click(screen.getByRole('link', { name: 'eye_to_hand_d405_result.yaml' }))
+    expect((open.mock.calls[0][0] as CustomEvent).detail).toEqual({
+      sessionId: 'chat-7',
+      path: target,
+      line: undefined,
+      column: undefined,
+      resolve: true
+    })
+    expect(openLinked).not.toHaveBeenCalled()
+    window.removeEventListener('agentsdock:open-workspace-path', open)
+  })
+
   it('opens unresolved relative links through the authenticated workspace boundary', () => {
     const open = vi.fn()
     window.addEventListener('agentsdock:open-workspace-path', open)

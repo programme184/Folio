@@ -112,6 +112,7 @@ import type {
   RuntimeCatalog,
   SendTurnInput,
   RevisePromptInput,
+  PromptRevisionResult,
   ServerConnectionState,
   ServerForceRestartConfirmation,
   ServerRestartRequest,
@@ -4211,7 +4212,8 @@ export class AppService {
       input.chatReferences ?? [],
       input.teamReferences ?? [],
       input.skillSelection,
-      requestId
+      requestId,
+      input.promptRevisionReply ? { displayPrompt: input.displayPrompt } : undefined
     ).catch(error => {
       if (this.isCurrentScope(scope) && (error instanceof TypeError || error instanceof Error && error.name === 'TimeoutError')) {
         // A live receive socket is not proof that HTTP sends still work.
@@ -4236,22 +4238,23 @@ export class AppService {
     return response
   }
 
-  async revisePrompt(input: RevisePromptInput): Promise<Event> {
+  async revisePrompt(input: RevisePromptInput): Promise<PromptRevisionResult> {
     assertLocalAgentChatReferences(input.chatReferences)
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const event = await scope.client.revisePrompt(
+    const revised = await scope.client.revisePrompt(
       input.sessionId,
       input.eventId,
       input.prompt,
       input.fileIds,
       input.chatReferences ?? [],
-      input.teamReferences ?? []
+      input.teamReferences ?? [],
+      input.clientCapabilities ?? []
     )
     this.assertCurrentScope(scope)
-    this.cache.putEvents(scope.namespace, input.sessionId, [event])
-    this.applyEventToCaches(scope, event)
-    return event
+    this.cache.putEvents(scope.namespace, input.sessionId, [revised.event])
+    this.applyEventToCaches(scope, revised.event)
+    return revised
   }
 
   async providerCommands(sessionId: string, refresh = false): Promise<ProviderCommandsSnapshot> {
@@ -5268,6 +5271,19 @@ export class AppService {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
     const result = await scope.client.removeWorkspaceEntry(sessionId, path, expectedRevision, recursive)
+    this.assertCurrentScope(scope)
+    return result
+  }
+
+  async removeAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    expectedRevision: string,
+    recursive: boolean
+  ): Promise<WorkspaceRemoveResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const result = await scope.client.removeAbsoluteWorkspaceEntry(sessionId, path, expectedRevision, recursive)
     this.assertCurrentScope(scope)
     return result
   }

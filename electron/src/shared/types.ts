@@ -682,6 +682,8 @@ export interface QueuedTurn extends SharedChatAttribution {
   effort?: string | null
   display_prompt?: string | null
   purpose?: string | null
+  /** Follow-up reply for an in-place prompt edit. The queue must not show it as another user message. */
+  prompt_revision_reply?: boolean | null
   /** Legacy/new presentation link to an earlier authored prompt in this chat. */
   replaces_prompt_event_id?: string | null
   digest_job_id?: string | null
@@ -1056,6 +1058,8 @@ export interface Event extends SharedChatAttribution {
   superseded_by_queued_id?: string | null
   position?: number | null
   purpose?: string | null
+  /** Follow-up provider turn for an in-place prompt edit. Its text is not a second user message. */
+  prompt_revision_reply?: boolean | null
   /** Presentation-only replacement target for an earlier authored prompt. */
   replaces_prompt_event_id?: string | null
   replaces_prompt_event_seq?: number | null
@@ -2536,6 +2540,10 @@ export interface SendTurnInput {
   teamReferences?: TeamReference[]
   /** Opaque selection returned by the session-scoped provider command inventory. */
   skillSelection?: ProviderCommandSelection
+  /** Visible timeline text when it differs from the provider prompt. */
+  displayPrompt?: string | null
+  /** Hidden follow-up for an in-place prompt edit. The provider sees `prompt`. */
+  promptRevisionReply?: boolean
 }
 export interface RevisePromptInput {
   sessionId: string
@@ -2544,6 +2552,12 @@ export interface RevisePromptInput {
   fileIds: string[]
   chatReferences?: ChatReference[]
   teamReferences?: TeamReference[]
+  clientCapabilities?: string[]
+}
+export interface PromptRevisionResult {
+  event: Event
+  /** True when this server already admitted the follow-up provider turn. */
+  replyStarted: boolean
 }
 export interface CreateJobInput {
   session_id: string

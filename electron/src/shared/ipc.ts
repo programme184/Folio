@@ -425,7 +425,7 @@ export interface AgentsDockAPI {
   }
   turns: {
     send(input: SendTurnInput): Promise<{ session: Session; event?: Event; queued?: boolean; queued_id?: string; position?: number }>
-    revise(input: import('./types').RevisePromptInput): Promise<Event>
+    revise(input: import('./types').RevisePromptInput): Promise<import('./types').PromptRevisionResult>
     stop(sessionId: string): Promise<TurnStopResult>
   }
   providerConnections?: {
@@ -610,6 +610,7 @@ export interface AgentsDockAPI {
     overwrite(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     rename(sessionId: string, path: string, newName: string, expectedRevision: string): Promise<WorkspaceRenameResult>
     remove(sessionId: string, path: string, expectedRevision: string, recursive: boolean): Promise<WorkspaceRemoveResult>
+    removeAbsolute(sessionId: string, path: string, expectedRevision: string, recursive: boolean): Promise<WorkspaceRemoveResult>
   }
   workingDirectories: {
     complete(path: string, limit?: number): Promise<WorkingDirectoryCompletion>
