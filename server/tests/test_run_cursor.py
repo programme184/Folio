@@ -1624,6 +1624,51 @@ time.sleep(5)
         finished = next(event for event in events if event["type"] == "tool_finished")
         self.assertEqual(started["tool"]["id"], finished["tool_id"])
 
+    async def test_composer_model_token_tool_id_completes_turn(self) -> None:
+        call_id = (
+            "call-00000000-0000-4000-8000-000000000001-composer_call_fuW8qlAF\n"
+            "fc_00000000-0000-4000-8000-000000000002_0"
+        )
+        events = await self._run_script(_event_script([
+            _init_event(),
+            {"type": "tool_call", "subtype": "started", "call_id": call_id,
+             "session_id": "cursor-sess-test", "tool_call": {
+                 "toolCallId": call_id,
+                 "grepToolCall": {"args": {"pattern": "marker",
+                                           "toolCallId": call_id}}}},
+            {"type": "tool_call", "subtype": "completed", "call_id": call_id,
+             "session_id": "cursor-sess-test", "tool_call": {
+                 "toolCallId": call_id,
+                 "grepToolCall": {"args": {"pattern": "marker",
+                                           "toolCallId": call_id},
+                                  "result": {"success": {"pattern": "marker"}}}}},
+            _result_event(),
+        ]))
+        started = next(event for event in events if event["type"] == "tool_started")
+        finished = next(event for event in events if event["type"] == "tool_finished")
+        terminal = next(event for event in events if event["type"] == "turn_finished")
+        self.assertEqual(started["tool"]["id"], finished["tool_id"])
+        self.assertNotIn("\n", finished["tool_id"])
+        self.assertFalse(any(event["type"] == "error" for event in events))
+        self.assertFalse(terminal["is_error"])
+
+    async def test_tls_handshake_abort_is_named_without_stderr_text(self) -> None:
+        secret = "AUTHORITY-SENTINEL-TLS-STDERR"
+        events = await self._run_script(
+            f'''#!/usr/bin/env python3
+import json, sys
+print(json.dumps({{"type":"system","subtype":"init","session_id":"cursor-sess-test","cwd":".","model":"Auto"}}), flush=True)
+sys.stderr.write("Error: [aborted] Client network socket disconnected before secure TLS connection was established\\n{secret}\\n")
+sys.stderr.flush()
+sys.exit(1)
+''',
+            run_id="run-tls-abort",
+        )
+        error = next(event for event in events if event["type"] == "error")
+        self.assertIn("TLS handshake", error["message"])
+        self.assertNotIn(secret, json.dumps(events))
+        self.assertNotIn("stderr was omitted", error["message"])
+
     async def test_envelope_tool_id_recovers_empty_top_level_id(self) -> None:
         call_id = ("call-00000000-0000-4000-8000-000000000001-0\n"
                    "fc_00000000-0000-4000-8000-000000000002_0")

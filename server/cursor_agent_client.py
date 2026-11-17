@@ -34,10 +34,13 @@ CURSOR_SESSION_IDENTIFIER_RE = re.compile(
 )
 CURSOR_CALL_ID_MAX_CHARS = 240
 # Cursor 2026.10.22 emits this compound correlation key even for a normal
-# file-read tool. LF is part of the opaque ID, not a second stream event.
+# file-read tool. Cursor 2026.11.13 keeps the same LF separator and replaces
+# the numeric middle token with a model token such as composer_call_<id>.
+# LF is part of the opaque ID, not a second stream event.
 _CURSOR_UUID_PATTERN = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 _CURSOR_COMPOSITE_CALL_ID_RE = re.compile(
-    rf"call-{_CURSOR_UUID_PATTERN}-[0-9]+\nfc_{_CURSOR_UUID_PATTERN}_[0-9]+"
+    rf"call-{_CURSOR_UUID_PATTERN}-[A-Za-z0-9_-]{{1,120}}"
+    rf"\nfc_{_CURSOR_UUID_PATTERN}_[0-9]+"
 )
 _CURSOR_ENCODED_CALL_ID_PREFIX = "cursor-call-sha256:"
 CURSOR_LIFECYCLE_VALUE_MAX = 2_147_483_647

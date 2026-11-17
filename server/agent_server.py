@@ -30901,6 +30901,17 @@ def cursor_stderr_diagnostic(stderr_bytes: bytes) -> str:
 
     if not stderr_bytes:
         return "Cursor emitted no stderr output."
+    # Match only this stable CLI sentence. Do not echo stderr: it can quote
+    # the composed prompt, and the byte count below is the unclassified case.
+    folded = stderr_bytes.decode("utf-8", "replace").lower()
+    if (
+        "client network socket disconnected before secure tls connection "
+        "was established" in folded
+    ):
+        return (
+            "Cursor's connection closed before the TLS handshake finished. "
+            "Retry the turn."
+        )
     return (
         "Cursor stderr was omitted from diagnostics because it may quote "
         f"the composed prompt ({len(stderr_bytes)} bytes)."

@@ -1,5 +1,35 @@
 # Public development log
 
+## 2026-11-17 — Accept Composer tool ids and name TLS aborts
+
+- Cursor 2026.11.13 Composer tool events keep the two-part id separated by a
+  line feed, and the middle segment is a model token instead of a number.
+  The parser treated that line feed as an invalid id and stopped the turn
+  before the tool could run.
+- Those ids now stay correlated and the turn continues. A Cursor process that
+  exits because the TLS handshake was aborted reports that connection failure
+  instead of hiding the reason.
+
+```text
+Change and expected user behavior: send a Cursor Composer turn that searches
+the workspace; the grep or read tool runs and the reply finishes. A handshake
+abort says to retry, without quoting the prompt.
+Source commit / app build / server version: uncommitted AgentsServer source
+applied to the local 1.0.7-beta.11 process. Desktop package unchanged.
+Test surface: Cursor stream parser and isolated Cursor subprocess runner.
+Actions exercised and observed outcomes: a disposable Composer grep on an
+empty directory produced the new id shape, and the parser accepted that
+captured event. Focused parser and runner tests passed.
+Real boundaries exercised; any mocked/stubbed boundaries: the id shape came
+from the installed Cursor CLI. The runner tests use a scripted CLI. The
+user's failed chat was not resent.
+Focused regression / typecheck / production build: 7 focused Cursor tests
+passed. Python compile check not separately required after unittest import.
+Remaining limitations or blocked acceptance: the original chat was not
+clicked again after the server restart.
+Availability: local AgentsServer process updated; not published.
+```
+
 ## 2026-11-17 — Open parent-relative file links from chat
 
 - A markdown link such as `../other-repo/result.yaml` was rejected before the

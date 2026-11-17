@@ -532,6 +532,34 @@ class NormalizeCursorStreamEventTests(unittest.TestCase):
         # A literal provider ID in the encoded namespace must not collide.
         self.assertNotEqual(identifier, canonical_cursor_call_id(identifier))
 
+    def test_composer_model_token_tool_id_stays_correlated(self) -> None:
+        # Cursor 2026.11.13 composer-2.5 grep events use the same LF-separated
+        # pair, with a model token instead of a numeric middle segment.
+        raw_id = (
+            "call-00000000-0000-4000-8000-000000000001-composer_call_fuW8qlAF\n"
+            "fc_00000000-0000-4000-8000-000000000002_0"
+        )
+        normalized = []
+        for subtype in ("started", "completed"):
+            body = {"args": {"pattern": "marker", "toolCallId": raw_id}}
+            if subtype == "completed":
+                body["result"] = {"success": {"pattern": "marker"}}
+            normalized.append(normalize_cursor_stream_event(json.dumps({
+                "type": "tool_call", "subtype": subtype, "call_id": raw_id,
+                "session_id": SESSION_ID,
+                "tool_call": {
+                    "grepToolCall": body,
+                    "toolCallId": raw_id,
+                },
+            })))
+        identifier = normalized[0]["call_id"]
+        self.assertEqual(identifier, normalized[1]["call_id"])
+        self.assertTrue(identifier.startswith("cursor-call-sha256:"))
+        self.assertNotIn("\n", identifier)
+        self.assertNotIn(raw_id, json.dumps(normalized))
+        self.assertEqual(normalized[0]["tool"], "grep")
+        self.assertEqual(normalized[1]["kind"], "tool_finished")
+
     def test_tool_events_recover_envelope_id_when_top_level_is_invalid(self) -> None:
         # Cursor 2026.10 emits toolCallId beside the dynamic *ToolCall body.
         # It remains usable when a stream event has an empty top-level call_id.
