@@ -1,5 +1,31 @@
 # Public development log
 
+## 2026-11-20 — Keep @Chat selection separate from message submission
+
+- Selecting a local `@Chat` target now remains an editing step. The composer
+  keeps the route reference in the draft until the user explicitly sends the
+  completed message, so route-grant notices cannot be mistaken for deliveries.
+
+```text
+Change and expected user behavior: choosing @Training keeps the selected route
+in the editable draft; no turn is submitted until the user clicks Send.
+Source commit / app build / server version: uncommitted desktop source.
+Test surface: Composer component tests.
+Actions exercised and observed outcomes: selection preserved the draft and did
+not call the turns transport; explicit send submitted one structured route.
+Real boundaries exercised; any mocked/stubbed boundaries: isolated native
+Electron used production preload/IPC and authenticated HTTP to the local
+AgentsServer. A disposable Cursor chat selected a second disposable chat,
+preserved the draft without sending on selection, then sent through the real
+provider; the provider used the async route and the target mailbox accepted it.
+Focused regression / typecheck / production build: Composer 278 tests passed,
+TypeScript typecheck passed, production build and compile-output verification
+passed.
+Remaining limitations or blocked acceptance: the target turn was left unread
+for isolation; no existing user chat was used as a destination.
+Availability: source only; not published or deployed.
+```
+
 ## 2026-11-17 — Accept Composer tool ids and name TLS aborts
 
 - Cursor 2026.11.13 Composer tool events keep the two-part id separated by a

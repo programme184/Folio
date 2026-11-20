@@ -6774,6 +6774,9 @@ describe('Composer', () => {
     expect(screen.queryByRole('option', { name: /Archived training/ })).not.toBeInTheDocument()
     await user.click(target)
 
+    // Selecting a chat only records the route grant intent. It must not submit
+    // an empty or mention-only turn before the user finishes the message.
+    expect(send).not.toHaveBeenCalled()
     expect(editor).toHaveValue('Ask @Training ')
     expect(editor.parentElement).toHaveClass('composer-editor', 'has-inline-references')
     expect(editor.parentElement?.querySelector('.composer-editor-mirror')).toBeInTheDocument()
