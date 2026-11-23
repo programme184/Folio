@@ -87,7 +87,8 @@ describe('ChatHeader', () => {
     expect(screen.queryByRole('button', { name: 'Open papers' })).not.toBeInTheDocument()
     const layout = buttons[0].parentElement
     const minimize = screen.getByRole('button', { name: 'Minimize' })
-    expect(layout?.compareDocumentPosition(minimize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(layout).not.toBeNull()
+    expect(layout!.compareDocumentPosition(minimize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('keeps the right-panel button visible in an unfocused pane', async () => {
