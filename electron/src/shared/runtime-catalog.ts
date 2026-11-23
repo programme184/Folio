@@ -17,7 +17,13 @@ export function customProviderAvailable(health: Health | null | undefined, catal
   if (catalog?.backends?.[backend]?.custom_provider?.configured === false) return false
   if (backend === 'codex') return codexCustomProviderAvailable(health, catalog, customCatalog)
   const custom = customCatalog ?? catalog?.backends?.[backend]?.custom_provider
-  return health?.capabilities?.provider_connections_v1?.per_chat === true && ['claude', 'opencode', 'cursor', 'gemini'].includes(backend) && custom?.configured === true && custom.available === true
+  const perChat = health?.capabilities?.provider_connections_v1?.per_chat === true
+  // A connected endpoint is authoritative even when an older/stale health
+  // snapshot omits the provider-connections capability. The server still
+  // reports configured/available only after validating the saved binding.
+  return ['claude', 'opencode', 'cursor', 'gemini'].includes(backend)
+    && custom?.configured === true && custom.available === true
+    && (perChat || backend === 'opencode' && (customCatalog?.configured === true || catalog?.backends?.[backend]?.custom_provider?.configured === true))
 }
 
 /** Credential discovery is a retry/selection hint, not proof of a valid login. */
@@ -86,7 +92,15 @@ export function runtimeBackendCatalogFor(catalog: RuntimeCatalog | null | undefi
 }
 
 export function selectableChatBackendChoices(health: Health | null | undefined, catalog: RuntimeCatalog | null | undefined): ChatBackendChoice[] {
-  const supported = selectableChatBackends(health, catalog)
+  const supported = [...new Set([
+    ...selectableChatBackends(health, catalog),
+    // Preserve a configured custom endpoint when an older server's optional
+    // backend capability has not appeared in the current health snapshot.
+    ...(['claude', 'opencode', 'cursor', 'gemini'] as Backend[]).filter(backend => {
+      const custom = catalog?.backends?.[backend]?.custom_provider
+      return backend === 'opencode' && custom?.configured === true && custom.available === true
+    })
+  ])]
   // Native first. Settings, not the composer, lists disconnected providers.
   return supported.flatMap(backend => [
     ...(nativeProviderConnected(health, catalog, backend) ? [backend] : []),

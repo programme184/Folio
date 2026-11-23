@@ -13757,3 +13757,32 @@ tests. A fresh locally signed QA package was built with the isolated feed, but
 it did not reach the application UI on this machine, so the revised offline
 message and automatic app exit are still unverified in a packaged App. This QA
 package is not a release candidate. The disposable server was restored.
+
+## 2026-11-23 — Keep connected Doubao agent visible in chat picker
+
+- A configured and available Doubao/OpenCode endpoint remains selectable when
+  an older or stale server health snapshot omits the optional backend
+  capability metadata. This keeps the connected agent visible in the chat
+  composer instead of silently reducing the list to Claude and Codex.
+
+```text
+Change and expected user behavior: with the Synria server reporting the Ark
+custom provider as configured and available, the chat agent picker includes
+the Doubao/OpenCode custom agent and preserves its bound model/base URL.
+Source commit / app build / server version: pending commit; local production
+Electron build; running server health reported 1.0.12-beta.3.
+Test surface: runtime-catalog regression, renderer/typecheck, and production
+build. The local server health endpoint was inspected read-only.
+Actions exercised and observed outcomes: the stale-capability fixture now
+returns `opencode-custom`; 425 focused tests passed, typecheck passed, and the
+production Electron build completed successfully.
+Real boundaries exercised; any mocked/stubbed boundaries: the local server's
+real health/catalog HTTP response was checked. Native click-through could not
+be repeated because the available computer-control bridge exposed no app
+surface; no live Doubao request was sent.
+Remaining limitations or blocked acceptance: a packaged/remote client must
+reload this build before the menu can change; comparison with 100.111.162.22
+was unavailable from this machine.
+Availability: source pushed to the personal remote; not deployed to a remote
+server by this change.
+```

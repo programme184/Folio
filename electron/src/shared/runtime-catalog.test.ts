@@ -216,6 +216,14 @@ describe('native and custom API choices', () => {
     expect(runtimeSelectionError({ ok: true }, catalog, 'claude', 'api/model', 'custom')).not.toBeNull()
     expect(runtimeSelectionError(health, catalog, 'claude', null, 'custom', { ...custom, model: null })).toContain('Choose a model')
   })
+
+  it('keeps a configured Doubao/OpenCode endpoint selectable when optional capability metadata is stale', () => {
+    const health: Health = { ok: true, capabilities: { provider_connections_v1: { per_chat: true } } }
+    const custom = { configured: true, available: true, model: 'doubao-seed-2-0-mini-260428', base_url: 'https://ark.cn-beijing.volces.com/api/plan/v3' }
+    const catalog: RuntimeCatalog = { backends: { claude: { models: [], efforts: [] }, codex: { models: [], efforts: [] }, opencode: { models: [], efforts: [], custom_provider: custom } } }
+    expect(selectableChatBackendChoices(health, catalog)).toContain('opencode-custom')
+    expect(runtimeSelectionError(health, catalog, 'opencode', custom.model, 'custom')).toBeNull()
+  })
 })
 
 describe('runtimeCatalogHasSelectableModels', () => {
