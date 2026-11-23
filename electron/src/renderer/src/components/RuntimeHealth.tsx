@@ -16,12 +16,14 @@ import {
   runtimeDiagnosticLabel,
   runtimeDiagnosticNeedsAttention,
   runtimeDiagnosticTone,
+  sessionRuntimeForNextTurn,
 } from '@shared/runtime-catalog'
 import { memo, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/app-store'
 import { eventErrorText, isTimelineError } from '../lib/timeline'
 import { NativeProviderSignIn } from './NativeProviderSignIn'
 import { openAIProviderSettings } from '../lib/provider-settings'
+import { isCodexLoginHandoffMessage } from '@shared/codex-auth'
 import { CopyErrorButton } from './CopyErrorButton'
 import { isServerConnectionError } from '@shared/connection-error'
 
@@ -185,7 +187,10 @@ function RuntimeStatus({
   const chatError = useAppStore(state => (
     compact && sessionId ? latestChatRunError(state.snapshots[sessionId]?.events, backend) : ''
   ))
-  const customCatalog = useAppStore(state => { const session = state.sessions.find(item => item.id === sessionId); return session?.provider_connection_catalog ?? session?.codex_provider_catalog })
+  const customCatalog = useAppStore(state => {
+    const session = state.sessions.find(candidate => candidate.id === sessionId)
+    return session ? session.provider_connection_catalog ?? sessionRuntimeForNextTurn(session).codex_provider_catalog : undefined
+  })
   const cursorChatLocked = useAppStore(state => {
     if (!sessionId) return true
     const session = state.sessions.find(item => item.id === sessionId)
@@ -213,7 +218,9 @@ function RuntimeStatus({
   // Only an actual failed send/run belongs above the composer. Cached login
   // status can outlive reconnection and must never demand configuration here.
   if (compact && !chatError && !admissionError) return null
-  const tone = connectionFailure || chatError ? 'warning' : compact && cursorUnavailable ? 'error' : admissionError ? 'warning' : !compact && diagnostic?.installed !== false
+  const handoffWait = backend === 'codex' && codexProvider !== 'custom'
+    && isCodexLoginHandoffMessage(admissionError || chatError)
+  const tone = handoffWait && !connectionFailure ? 'unknown' : connectionFailure || chatError ? 'warning' : compact && cursorUnavailable ? 'error' : admissionError ? 'warning' : !compact && diagnostic?.installed !== false
     ? connected && diagnostic?.authenticated === true && diagnostic.status === 'ready' ? 'ready' : 'unknown'
     : cursorUnavailable ? 'error' : runtimeDiagnosticTone(diagnostic)
   const Icon = tone === 'ready' ? CheckCircle2 : tone === 'error' ? XCircle : tone === 'warning' ? AlertTriangle : CircleHelp
@@ -229,16 +236,12 @@ function RuntimeStatus({
     || (!compact ? runtimeDiagnosticCurrentError(diagnostic) : '')
     || diagnostic?.message
     || `${provider} has not been checked yet.`
-  const label = connectionFailure ? t('connections.serverCheckFailed') : !compact && !connected ? t('connections.unavailable')
+  const label = connectionFailure ? t('connections.serverCheckFailed') : handoffWait ? t('codexAuth.handoffWaiting') : !compact && !connected ? t('connections.unavailable')
     : !compact && diagnostic?.installed !== false
       ? tone === 'ready' ? t('connections.signedIn') : diagnostic?.authenticated === false ? t('codexAuth.signedOut') : t('connections.loginUnknown')
       : compact && admissionError ? t('connections.checkFailed') : compact && chatError ? 'Latest chat error' : cursorUnavailable ? 'Unavailable' : runtimeDiagnosticLabel(diagnostic)
   const cursorAction = diagnostic?.action?.trim() || cursorCapability?.action?.trim()
-  const action = offerCursorKey
-    ? undefined
-    : connectionFailure
-      ? undefined
-    : cursorUnavailable
+  const action = offerCursorKey || connectionFailure || handoffWait ? undefined : cursorUnavailable
     ? cursorAction && !cursorUnavailableDetail.includes(cursorAction) ? cursorAction : undefined
     : diagnostic?.action
   const useSavedCursorKey = () => {
@@ -263,14 +266,14 @@ function RuntimeStatus({
       <small className="runtime-detail">{detail}</small>
       {connectionFailure && (serverVersion || health?.server_version) && <small>{t('connections.serverReportedVersion', { version: serverVersion || health!.server_version! })}</small>}
       {action ? <small className="runtime-action">{action}</small> : null}
-      {!compact && tone !== 'ready' && <NativeProviderSignIn key={`${backend}:${profileId}:${profileGeneration}`} backend={backend} disabled={!connected} />}
+      {!compact && !handoffWait && tone !== 'ready' && <NativeProviderSignIn key={`${backend}:${profileId}:${profileGeneration}`} backend={backend} disabled={!connected} />}
     </div>
     {compact && <div className="runtime-health-actions">
     <CopyErrorButton key={`${detail}:${action}`} text={[detail, action && !detail.includes(action) ? action : null].filter(Boolean).join('\n')} />
     {connectionFailure && <button type="button" className="quiet-button runtime-recheck-button" disabled={reconnecting || !profileId} onClick={() => void reconnect()}><RefreshCw className={reconnecting ? 'spin' : ''} size={12} />{t('connections.reconnectServer')}</button>}
     {!connectionFailure && offerCursorKey && <button type="button" className="quiet-button runtime-recheck-button" onClick={useSavedCursorKey}>{t('connections.cursorKey')}</button>}
     {!connectionFailure && (codexProvider === 'custom' || backend === 'gemini') && <button type="button" className="quiet-button runtime-recheck-button" onClick={() => openAIProviderSettings(backend)}>{t('connections.configure')}</button>}
-    {!connectionFailure && !offerCursorKey && codexProvider !== 'custom' && backend !== 'gemini' && providerNeedsAttention && onRecheck
+    {!connectionFailure && !offerCursorKey && !handoffWait && codexProvider !== 'custom' && backend !== 'gemini' && providerNeedsAttention && onRecheck
       ? <button
           type="button"
           className="quiet-button runtime-recheck-button"

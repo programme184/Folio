@@ -1743,6 +1743,762 @@ read.
 Availability: local running server only
 ```
 
+## 2026-11-18 — Mobile download documentation
+
+- Update the repository README's Android download from 0.1.1-beta.8 to the
+  published 0.1.4-beta.1 ARM64 APK (build 12), with a link to its release notes.
+- Distinguish iOS 0.1.4 (build 196), available to internal TestFlight testers,
+  from the existing public App Store download. This build has not been
+  submitted to the App Store.
+- Verified the public Android release metadata, APK URL, beta update manifest,
+  and existing App Store URL. Desktop/server download targets are unchanged.
+
+## Unreleased - Android server connection form
+
+- Present Android server management in a standard native Modal with a stable
+  scrollable editor, avoiding the formSheet touch/keyboard path that left the
+  visible connection-test button unresponsive. Keep iOS native sheet detents.
+- Dismiss the keyboard when testing and show connection errors beside the
+  editor's test result and actions instead of above the offscreen form.
+  A successful authenticated test is still required before adding a server.
+- Verified on an isolated Android API 34 emulator with an independent Dev
+  package and a real isolated AgentsServer: three full keyboard/input/error/
+  correction/success/close/reopen cycles, plus Chinese dark-mode error and
+  success states. Added a server, handled the first-run notification permission
+  prompt, checked Back navigation, and confirmed the saved server after an app
+  restart. No provider messages or production server changes were involved.
+- Passed 44 profile/scanner tests, 16 request cancellation/deadline tests,
+  TypeScript and the native ARM64 Android Debug build. Added a repeatable
+  emulator flow. iOS presentation is covered by component regressions, not a
+  new iOS device run. Installed locally only; no production APK was published.
+
+## Unreleased - Android in-app update reliability
+
+- Do not report an installed build as current when advertised update metadata
+  cannot be downloaded or verified. Preserve discovery of a verified older
+  upgrade when another release is incomplete; never relax APK identity,
+  checksum, size, version or release-signature checks.
+- Keep checks from overwriting an active download or pending installation
+  permission flow. Surface native-state initialization failures as retryable
+  errors rather than unhandled rejections.
+- Added store-level regression coverage for metadata and download failures,
+  recovery, duplicate requests, permission denial/return, installer retry and
+  detection of the installed version. Native installation and downloads in
+  this suite are mocked boundaries, not device acceptance.
+- Updater/store/signing regressions, TypeScript and production Android
+  JavaScript export passed.
+- Source changes only. A complete app-initiated upgrade to the new candidate
+  still requires an APK signed with the established release key; no new build
+  has been published or claimed as install-tested.
+
+## Verification - Android update discovery regression
+
+- Reproduced build 10 reporting current when the public release API placed
+  build 11 on page two. The existing pagination correction is already included
+  in published beta.9/build 11; this change adds regression coverage, not a new
+  runtime fix. Cover a first page containing only an older Android release,
+  repeated discovery of a later-page update, and later-page network failure.
+- On an isolated Android emulator, upgraded the official signed build 10 APK
+  in place to build 11 without uninstalling. The 110% font preference survived.
+  Exercised update checks, reopening settings, offline failure with retry, and
+  recovery after reconnecting against the real public release service.
+- Focused updater regressions and TypeScript passed. The in-place install used
+  ADB, not the app's installer; existing build 10 cannot discover this release
+  reliably and needs a one-time manual APK upgrade. No new APK was published.
+
+## Unreleased - Android beta.10 preparation
+
+- Reserve Android versionCode 12 for the 0.1.1 beta line, preserving the package
+  identity and iOS release metadata. The previous public Android beta is build 11.
+- Include the existing bounded local-cache/full-database recovery, accepted-send
+  and queue reconciliation fixes, exact history search navigation, and scoped
+  model inventories with inline dropdowns from current main.
+- Preparation only: signed packaging, installed-version upgrade acceptance and
+  publication remain pending. Do not replace the established release signer.
+- Verified updater/signing contracts, update manifest selection, crash-safe
+  storage regressions, media permission composition, TypeScript, production
+  Android JavaScript export and regenerated native configuration. Native
+  configuration retains the 64 MB AsyncStorage limit and original package ID.
+
+## Unreleased — Mobile model inventory parity
+
+- Use the connected account or saved API binding's model inventory in chat
+  details and new-chat defaults. Do not fabricate API models from saved IDs;
+  preserve missing selections in the current-value label without modifying chats.
+- Expand model choices directly below the field on both platforms instead of
+  presenting a modal. Hide locked/missing models from the options; bound long
+  inventories to a scrollable list and collapse after selection or another tap.
+- Honor server-declared replacements, locked defaults and unsupported API
+  models. Distinguish unavailable inventories from confirmed empty lists, and
+  replace misleading upgrade labels with English/Chinese availability labels.
+- Verification: 25 catalog/provider tests, 49 focused UI-contract and preference
+  tests, 40 settings/provider/inspector/sidebar integration tests, a rendered
+  dropdown interaction test, TypeScript and iOS/Android
+  production JavaScript exports passed. The earlier broader mobile suite passed
+  432 tests with one skip; one camera-permission
+  introspection failure was traced to an ignored generated Android manifest.
+  The same three media-permission tests passed with clean generated config.
+- Local iOS simulator interaction exercised light/English and dark/Chinese
+  model pickers, disabled saved IDs, model selection through the real server,
+  persisted selection after reopening, a successful provider response, and
+  switching among all five providers in new-chat defaults without leaking choices.
+- Eight real-provider request combinations across all five providers returned
+  seven expected replies and one unavailable-model error. An explicit server
+  check confirmed that rejection; both bound-chat and default-model dropdowns
+  hid the server-locked option. A separate simulator-selected model also replied.
+  Inventory discovery is not inference verification: upstreams can still list
+  rejected models, and server check evidence expires. This does not guarantee
+  every listed model's future availability or change the server's evidence policy.
+  Android device interaction and optional API inference-check UI are not part
+  of this change. No server deployment or release was performed.
+
+## Unreleased — Desktop analytics reliability and measurement boundaries
+
+- Fill missing onboarding connection/add, native-menu update-check and update-toast
+  request events. Document retired Changes and legacy update events separately
+  from active features; do not treat historical zeroes as failed feature adoption.
+- Keep an anonymous desktop identifier stable in memory when storage fails.
+  Validate collector HTTP and body responses, reuse a random event identifier
+  on bounded retries, and retain only a small memory queue. Opt-out clears the
+  queue and identifier. Delivery remains best effort, not lossless.
+- Classify native file-open and connection-check failures with a fixed enum,
+  without transmitting file metadata, raw errors, credentials or content.
+  Native file-open requests exclude internal editor and media previews.
+- Add renderer initialization, live-server readiness, explicit submission
+  outcomes and a run-correlated first-reply milestone. Fresh health evidence
+  does not introduce timestamp churn into the public profile event stream.
+  Current servers cannot prove post-update task recovery; the new observation
+  explicitly reports unsupported/unknown coverage instead of guessed success.
+- Attribute Codex submissions to the saved next-turn endpoint when a running
+  turn still owns the old endpoint. Exclude explicit reasoning/unknown phases
+  from first-reply observations and correlate supported exact-run receipts.
+  Retry delays use a monotonic clock while retaining the original event time.
+- Document per-event dashboard calculations, deduplication and missing-data
+  handling, reporting-installation denominators, and synthetic query fixtures.
+  Counts do not establish people, task completion or cross-device conversion.
+- Verification: Electron typecheck and production build passed; the full
+  Vitest suite passed 6,038 tests with six skipped, plus eight compile/license
+  checks. Isolated native Electron
+  pointer/keyboard interactions exercised real authenticated server downloads,
+  an OS-open success and failure, internal text preview, invalid/valid connection
+  tests, initialization/readiness and a failed provider submission. Telemetry
+  was intercepted by a local collector, never replayed into production.
+- Follow-up native acceptance used controlled provider output through the
+  real authenticated server HTTP/event-socket boundary: both pending endpoint
+  directions were attributed correctly; a queued send counted once, the old
+  run/reasoning did not count as its reply, and the matching final reply did.
+  This is not a live-provider inference or production-collector test.
+- Limits: real collector/project ingestion, Linux/Windows native opening,
+  successful live-provider first-reply/queue observation and installed updater
+  restart remain pending. Retry, ownership, stale readiness, consent and update
+  coverage cases are covered by focused deterministic tests, not claimed as
+  complete live-provider or update-recovery acceptance. No mobile changes,
+  server deployment or release is included.
+
+## Unreleased — Prompt pane creation and recoverable Claude status reads
+
+- Open a newly created chat in the visible pane even when a saved workspace is
+  hidden. Use the returned session immediately instead of waiting for every
+  other open chat's history to reload; display “Creating chat…” while pending.
+- Distinguish an unsuccessful Claude status read from a failed Claude runtime.
+  Keep independently confirmed Running/Starting visible, show the read failure
+  in Claude controls, and accept a delayed success from the same request.
+  Superseded requests and responses from a previous chat or server stay ignored.
+  Manual refresh remains available; this adds no polling or automatic retries.
+- Verification: desktop typecheck, production compile and the local package's
+  existing suite passed (5,996 tests; six skipped). Native Electron pointer
+  clicks reproduced both pane failures before the fix. The corrected packaged
+  app created chats in ordinary, second and third panes in under a second while
+  preserving drafts/history. A separate personal click also exercised pane four.
+- Native Claude status checks exercised the UI, IPC, authenticated server reads
+  and websocket events with controlled status/delay fixtures: late success,
+  read failure during Running, manual retry, superseded responses, navigation
+  and authoritative Unavailable. The delayed-response journey was personally
+  exercised as well. These checks did not invoke a live Claude provider and do
+  not diagnose a particular user's underlying transport or server failure.
+- Accepted local arm64 package: development version `0.2.0`, build `86`, source
+  `56b5f871188cda641f9907beec7672f8ee398c66` (this change plus the separate
+  file-reveal fix in PR #156). Its exact ASAR passed both native journeys via
+  isolated Electron; bundle auditing and strict signing verification passed.
+  This is a local build, not a new public beta or Gatekeeper acceptance. No live
+  server was changed or restarted.
+
+## Unreleased — Recover terminal startup after working-directory removal
+
+- Launch tmux control processes from a stable directory instead of inheriting
+  a removable checkout. For new terminal sessions, windows and splits, enter
+  the selected directory before login-shell initialization. This also works
+  around an already-running tmux 3.7b daemon ignoring `-c` after its own working
+  directory disappears. Existing panes and foreground commands are not reset.
+- Verification: 167 focused server tests, 251 desktop terminal/transport tests,
+  desktop typecheck and production compilation, using development sources
+  based on `c8f45fe4` plus this fix (not a release package). Isolated native Electron on
+  macOS exercised production IPC, authenticated HTTP/WebSocket, PTY and tmux:
+  new sessions, both split directions, new windows after directory removal,
+  stdout/stderr, 4,000 output lines followed by stderr, and reconnect.
+- Boundaries: isolated credential-storage adapter; no OS Keychain acceptance,
+  package installation, production-server replacement or release. The fix is
+  server-side and does not silently repair the cwd of an existing running shell.
+  This does not establish that every reported blank-terminal symptom has the
+  same cause. Portable process regressions ran on macOS; live Linux acceptance
+  remains untested.
+
+## Unreleased — Account-scoped model inventories and explicit checks
+
+- Stop presenting historical Claude/Codex version fallbacks and saved chat IDs
+  as current account inventory. Keep Claude discovery passive and let real SDK
+  metadata share its cache with the picker despite chat-only scheduling limits.
+  Follow the native account's default selector when reported, unless the server
+  has an explicit configured override; do not assume the default is Sonnet.
+- Reconcile desktop catalog caches on reconnect; refresh custom Codex inventories
+  with credential-scoped expiry and explicitly refresh OpenCode's CLI registry.
+  Retain same-connection rows on transient failure with an unconfirmed warning,
+  accept authoritative empty lists, and preserve native/default model semantics.
+- Raise Cursor API inventory capacity from 256 to 512 with partial-list reporting.
+  Exclude known Gemini audio-only products from the text-agent catalog.
+- If OpenCode's explicit registry refresh fails, read the same CLI's native
+  registry within the existing deadline and label freshness unconfirmed. Do not
+  substitute another account's cached rows or retry an authoritative empty list.
+- Add a native-only, revision-fenced optional text check for Claude/OpenCode/Gemini
+  API models, with English/Chinese UI and usage disclosure. It does not change
+  defaults, credentials or chats. Quota/auth/network errors do not prove retirement;
+  short-lived rejection observations are not a permanent model blacklist.
+- Verification: 307 focused server tests; desktop typecheck, production compile
+  and 580 focused tests including locale terminology checks. Isolated native offscreen Electron exercised real settings
+  reads, default selection, reload/reopen and explicit Gemini/OpenCode requests
+  through production IPC/native HTTP/server authorization. A Gemini inventory
+  entry rejected the request while another succeeded; connection readiness stayed
+  unchanged. English/Chinese, dark/light and narrow layout were inspected.
+  Repeated 24-read concurrency batches returned complete backend catalogs. Live Cursor
+  inventory exceeded the previous cap. Account-switch/failure races used fixtures.
+- Full chat acceptance: isolated native offscreen Electron sent a disposable
+  prompt through each real Claude, Codex, Cursor, OpenCode and Gemini runtime;
+  all five returned the expected answer and completed successfully. Fresh Claude
+  SDK initialization populated the picker with native current and older models.
+  These checks used an accessible, clean workspace without project overrides.
+- Limits: not every model was invoked; text success does not establish full agent
+  compatibility. No second live account was available for an account-switch test.
+  No mobile changes, packaging
+  acceptance, public release or production-server deployment is included.
+
+## 2026-11-09 - Publish coordinated 1.0.12-beta.6
+
+- Publish desktop build `1275`, the signed server runtime, short CLI and legacy
+  bridge at product source `0e46b3f81e98596da3d91c73137f89efeee05686`. Beta.6
+  includes admitted-update restart-gap recovery, credential-free update checks
+  and legacy-server file-descriptor headroom. Stable remains `1.0.11`; the
+  unpublished beta.5 candidate is unchanged. See [release notes](RELEASE_1.0.12-beta.6.md).
+- Native preparation and independent verification passed on all four desktop
+  platforms. Matched CLI lifecycle acceptance passed on macOS and Linux.
+  [Mac upgrade/recovery checks](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/42534945814)
+  passed all eleven cases across retained attempts, including public beta.4 and
+  stable `1.0.11` with both legacy root modes. Both beta.4 cases needed explicit
+  recovery after server completion, not a seamless first attempt.
+- [Linux rollback/retry](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/42534947832)
+  passed in both root modes using the same signed packages. Original artifact
+  digests, source pins and scoped observation flags were verified and retained.
+- Separate isolated provider checks retained Codex/Claude context, queued work
+  and a persistent goal across the signed server update. Packaged desktop
+  replacement with active providers, complete history rendering, reboot,
+  natural OAuth renewal and the native Windows updater are not established.
+  [Claude history duplication #166](https://github.com/ZhengyiLuo/AgentsDock/issues/166)
+  remains a documented beta limitation. Windows previews remain unsigned.
+- [Matched npm publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/42537649524)
+  verified both exact archives. A fresh scripts-disabled registry installation
+  verified `agentsdock@beta`, its exact runtime dependency and CLI help without
+  operating services. Both npm `beta` tags select `1.0.12-beta.6`; both `latest`
+  tags remain `1.0.11`. The matching signed legacy bridge is public and verified.
+- [Desktop publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/42538264142)
+  reverified all four platforms and published both download repositories. Each
+  public copy has the same 16 asset digests, signed metadata, update feeds and
+  known-limit notes. All stable defaults remain `1.0.11`. Public feed verification
+  is separate from the exact-artifact native rehearsals; no additional installed
+  public-feed upgrade is claimed. No mobile build or upload is included. Later
+  documentation commits are not new artifact sources.
+
+## Unreleased — Preserve both legacy update-recovery receipt fields
+
+- The separate legacy-recovery rehearsal accepts a completed schedule receipt
+  when a lost restart response left no operation receipt. Require at least one
+  valid receipt, and preserve both identifiers and their namespaces exactly
+  across native replacement. No identifiers are included in public diagnostics.
+- Keep the exact failure, identity, current/unpaused server, candidate bytes and
+  no-additional-restart gates. This corrects a harness false refusal; it is not
+  a new product retry or a claim of seamless upgrade or release acceptance.
+
+## Unreleased — Match beta.4's native coordinated-update acceptance contract
+
+- Keep the signed beta.5 candidate unchanged while testing beta.4's shipped
+  server-first update behavior: observe offline refusal, reconnect, explicitly
+  retry, and require the paired server ready before native app replacement.
+- Preserve the older baselines' app-first offline recovery and shared-operation
+  checks. The beta.4 case labels its later two-client state as convergence rather
+  than claiming both clients observed a live update operation.
+- Add focused refusal, version/order, component-health and client-convergence
+  regressions. Hosted native execution is still required; this entry does not
+  establish successful acceptance or publication.
+- Retain bounded, read-only native updater-state comparisons during replacement
+  failures so server preparation and desktop quit failures are distinguishable.
+  Raw messages, process details and private logs are not included in evidence.
+- Keep a transient-503 legacy recovery experiment separate from seamless-upgrade
+  acceptance: require the exact current server and unchanged candidate before
+  one additional explicit UI retry, and prove no second server restart occurs.
+- Derive the exact displayed-failure fixture from the native client's message
+  composition, without inventing punctuation. Count the additional recovery
+  click in both the detailed checks and console summary; display classification
+  does not establish the unobserved HTTP response body or content type.
+
+## Unreleased — Keep admitted server updates alive across gateway restart gaps
+
+- Keep an app update waiting through a generic HTTP 503 only after a verified,
+  exact-target server update has been admitted. Require an explicit active
+  receipt; completed, canceled, failed and paused history does not authorize
+  this recovery. Identity, API, signature and structured-error checks remain.
+- Preserve the existing bounded wait and restart request identity. Do not
+  reinterpret an initial admission failure or repeat a destructive restart.
+- Regression: 168 focused coordinator/updater tests, type checks and Electron
+  production build pass. An isolated offscreen native UI exercised the actual
+  Update button, production IPC/coordinator, authenticated managed server
+  admission, signed package verification, real server runtime replacement and
+  reconnection.
+  The app remained installing across a gateway-shaped 503 and continued only
+  after the original server identity returned at the target version.
+- The first local attempt correctly reported a test download-environment
+  failure; an explicit retry passed after correcting that isolated fixture.
+  Release discovery/download and the final native app-replacement handoff were
+  simulated. Signed desktop replacement and live-provider work are not claimed
+  by this test; release acceptance remains separate. Source change only.
+
+## Unreleased — Retry transient notarization-ticket validation failures
+
+- Extend release orchestration's bounded Apple ticket-download recovery to
+  ticket validation and final package verification. Retry only explicit CloudKit
+  connection-loss or timeout errors after accepted outer-DMG notarization.
+- Keep the frozen product builder, signed payloads and complete native verifier
+  unchanged. Invalid signatures, tickets, metadata and smoke checks still fail;
+  early app-stapling failures are not treated as completed-package validation.
+- All 433 release-tooling/CLI checks pass, including 14 focused regressions for
+  recovery boundaries, bounded retries, immutable assets and non-transport
+  failure rejection. Hosted native acceptance remains required; this
+  entry does not establish a successful package or publication.
+
+## Unreleased — Prepare exact beta.5 upgrade rehearsals
+
+- Add independently verified public beta.4/build 1272 and retained stable
+  1.0.11 baselines for the exact beta.5 candidate. Exercise both legacy root
+  permission modes; stable users must explicitly opt into Beta, and existing
+  Beta subscriptions are retained. Earlier candidate pins remain unchanged.
+- Keep the complete reviewed installer hash and all source, signature, native
+  runner and non-publication guards. This changes test configuration only,
+  not application/runtime behavior, release versions or published packages.
+- Three new admission regressions fail before the change. All 113 Node and
+  98 Python harness tests pass, including wrong-version, substituted-input and
+  cross-scope rejection. Independently downloaded beta.4 desktop and signed
+  official-registry runtime bytes pass the new baseline verifier.
+- This is preparation, not native beta.5 acceptance. Exact signed-package
+  install/relaunch, recovery and real active-work checks remain pending. No
+  service deployment or release publication is established by this entry.
+
+## Unreleased — Reconcile beta updater fixes with main
+
+- Bring the already-shipped beta.4 stale-update reconciliation fix and bounded
+  recovery diagnostics into main, retaining the later isolated update-check
+  session, pinned CI download fallback and legacy-service resource-limit fixes.
+  This does not change release versions, feeds or published artifacts.
+- Verification on integrated source `218b7151`: 243 focused server tests,
+  97 acceptance-harness tests and 91 replay/candidate/download tests pass;
+  TypeScript checking, Electron production compilation and output validation
+  pass. The added regression methods fail against the pre-backport server.
+- Two isolated servers preserved newer durable updater progress through real
+  authenticated status requests and rejected each other's credentials. Only
+  the failed updater-liveness probe was synthetic; no installer was started.
+  Actual mouse input in an isolated offscreen Electron app exercised Settings,
+  both release channels and repeated public update checks. Stable and Beta
+  returned their published versions without freezing, and both test server
+  versions remained visible. The development app correctly did not self-update.
+- Acceptance limits: this verifies source integration and status reconciliation,
+  not native update installation, restart or active-work recovery. Those flows
+  still require an exact signed candidate and managed-service rehearsal before
+  release acceptance. No deployment or publication is part of this backport.
+
+## Unreleased — Isolate update checks and legacy-service resource limits
+
+- Public release checks and paired-server metadata fetches use a non-persistent,
+  credential-free Electron session. They no longer open the browser cookie
+  encryption store, which can stall behind macOS Keychain access. Existing
+  deadlines, size bounds, channel rules and signed-descriptor checks remain.
+- The legacy managed-server entrypoint now applies the same file-descriptor
+  headroom as the split worker/gateway. Provider children inherit the raised
+  soft limit without changing the hard limit or lowering an existing limit.
+- Verification: the new regressions fail before their fixes. Eight additional
+  cases cover HTTP 504/rate limiting, offline retry, invalid UTF-8, and failed,
+  oversized or incorrectly signed paired metadata without starting installation.
+  Desktop updater, coordinator, destination and shutdown suites pass (180 tests,
+  two skipped). The full desktop suite passes (5,957 tests, six skipped), plus
+  eight build/license checks, all 13 execution-service tests, TypeScript checking
+  and production compilation. An ad-hoc
+  packaged native app exercised update checking and cancellation. A managed
+  test instance completed an authenticated published-package upgrade, retained
+  its state, then ran the patched startup and a real Claude reply in an isolated
+  working directory. Repeated real desktop update checks report the HTTP failure
+  without freezing and keep manual retry available. These source changes are
+  not part of a published release.
+- Source CI can recover an upstream Electron download 5xx/transport failure
+  through the official GitHub asset API, keeping the exact npm-pinned SHA-256,
+  original installer and complete validation. It does not change product feeds,
+  publish artifacts, or accept unknown versions, invalid hashes or API failures.
+  Real macOS and Linux archives passed pinned-hash verification; the Linux probe
+  exercised the API fallback. All 419 release-tooling/CLI checks passed.
+- Acceptance limits: public release download URLs returned HTTP 504 independently
+  of Electron, so signed desktop download/install/relaunch remains unaccepted.
+  The ad-hoc package still encountered a separate browser-store Keychain wait
+  during quit; isolating release requests does not establish native restart safety.
+  An existing external-volume working directory also failed in the managed
+  service context; the successful provider check does not resolve that boundary.
+  Active-turn continuation across an update was not exercised in this run.
+
+## Unreleased — Preserve updater progress during stale status checks
+
+- Recheck the full update receipt under its file lock before finalizing an
+  apparently abandoned updater. New heartbeats, process/phase changes and
+  recovery ownership now preserve the live operation and its maintenance hold.
+- Update check/start requests keep a refreshed active operation instead of
+  replacing its status or launching another updater. Unchanged dead-runner
+  recovery and retained activation-journal safeguards remain intact.
+- Verification: 227 focused update, endpoint, runner and recovery tests pass,
+  including real receipt writes interleaved with simulated failed liveness
+  probes. Python compilation and diff checks pass. Native app/service update
+  acceptance and exact release-package validation are still pending; this is
+  source-only, not a published or deployed fix.
+
+## 2026-11-08 - Clarify failed update rehearsal diagnostics
+
+- Preserve fixed failure reasons for an exited updater, execution-hold cleanup
+  and activation recovery in bounded release-test reports. Keep raw messages
+  and private logs out of uploaded evidence.
+- This changes test diagnostics only. Signed app/server packages, updater
+  behavior and pending release acceptance remain unchanged.
+- Validation: 97 harness tests and 68 candidate/replay guard tests pass. A fresh
+  exact-package hosted replay is still required; no native pass is claimed here.
+
+## 2026-11-08 - Prepare coordinated 1.0.12-beta.3
+
+- Integrate main through `5de30b23` into the published beta.2 release line,
+  retaining previously shipped runtime, update, mailbox and history fixes.
+  Prepare one desktop/server/CLI beta version; stable remains `1.0.11`.
+- Combine native goal lifecycle filtering with update-continuation provenance,
+  retaining imported and explicitly user-authored messages. Preserve the
+  resumed goal's run-bound tools and durable update recovery boundary.
+- Isolate update endpoint tests from a developer's managed-install environment;
+  package preparation retains its separate tests and real native acceptance.
+- Preserve keyword-only defaults when rebinding the isolated route-authentication
+  test functions, so mailbox authorization exercises the production defaults.
+- Add exact beta.2/stable 1.0.11 upgrade profiles and the reviewed beta.3 installer
+  pin without changing historical artifact identities or relaxing runner,
+  signature, ownership or rollback guards.
+- Desktop type checking/build and 5,948 tests pass (six skipped), plus eight
+  packaging/license checks. The 117 update endpoint tests and 277 focused
+  timeline/coordinator tests pass. Native release acceptance remains pending;
+  see [candidate notes](RELEASE_1.0.12-beta.3.md). No publication or deployment
+  is established by this preparation entry.
+
+## 2026-11-07 — Complete isolated coordinated-update source acceptance
+
+- Source `75da4096` passed actual signed managed-service replacement with two
+  isolated services, real Claude/Cursor work and native Codex goals. The review
+  fixed a first-turn Cursor recovery hole: updates now wait for its native
+  session to be durable rather than restarting into an empty conversation.
+- Rechecked invalid signatures, corrupt archives before takeover, partial
+  success and retry, and failure after takeover. The latter restored the old
+  healthy service and cleared the failed stage/fence; the same package then
+  installed successfully on retry. Existing identities/history were retained,
+  including installations with legacy 0755/0750 root permissions.
+- Through actual native app input, two private packaged update cycles exited,
+  installed and reopened automatically. The last cycle updated both saved
+  services before replacing the app, resumed Cursor once, and waited safely
+  for Claude's independent background command. Draft, connection, language and
+  channel settings survived. Rechecking did not reinstall current targets.
+  Offline preflight kept the old app and a persistent actionable error.
+  Detached terminal work survived rollback/retry and reconnected afterward.
+- Verification: all 11 hosted checks passed on the code head; 96 focused
+  restart/recovery and 254 update/installer/handoff tests passed. Desktop
+  verification also passed 310 focused tests, type checking and production
+  compilation. Final native history showed one interrupted Cursor turn and
+  one successful continuation, with no internal continuation user bubble.
+- Test surface: isolated, focus-emulated native Electron with real IPC,
+  authenticated HTTP, providers, service manager and native updater. Private
+  QA feeds/packages used ephemeral server signing and an Apple Development-
+  signed shell containing the branch's compiled desktop code. Production
+  signing/notarization, platform-specific release installation and supported
+  old-client feed migration remain release gates; they are not established by
+  this local acceptance. No production server was changed and nothing was
+  released. See `docs/COORDINATED_UPDATES.md` for the exact boundaries.
+
+## Unreleased — Wait for Cursor's first durable native session before updating
+
+- A Cursor thread identifier is persisted only after a successful native reply.
+  Its first running turn now waits for that safe boundary instead of being
+  interrupted into a new thread with no original task context. Later turns
+  with a durable native session remain eligible for update continuation.
+- Verification: 96 restart/recovery tests pass, including a live-but-not-yet-
+  persisted Cursor identifier and the subsequent durable-session case.
+  Managed-package and native desktop acceptance remains in progress below.
+
+## Unreleased — Avoid double-counting a resumable native goal during update
+
+- The live managed-install replay exposed a native goal's consumer being counted
+  both as an active chat and as independent background work. Deduplicate only
+  the exact, still-owned active goal consumer. Unrelated operations, changed
+  ownership, prompts and child agents remain restart blockers.
+- Verification: 77 restart/admission tests pass, including the actual native
+  operation registry in the goal-checkpoint test and stale-owner regressions.
+- An isolated two-service managed-package replay exercised legacy installation
+  roots with modes 0755 and 0750, invalid signatures, a corrupt archive before
+  takeover, partial success and retry. The failed service stayed healthy; retry
+  did not restart the already-updated service. A real Claude task recovered and
+  completed before its retained queued follow-up, each once. These packages use
+  a private QA signing key and loopback feed, not production release signing.
+- The subsequent native Codex goal replay passed a real managed-package update:
+  one pause and one recovery, unchanged native goal identity, retained usage,
+  and completion of the existing file checkpoint. It exposed an internal goal
+  resume notice rendered as a user message; the desktop now hides only the
+  server-marked update recovery boundary, retaining user text and the reply.
+  Verified that correction in the isolated native app against the real events.
+- Follow-up checks pass 269 server tests and 310 desktop tests, TypeScript and
+  production compilation. Native desktop automatic exit/install/relaunch is
+  still pending; private QA signing is not production release acceptance.
+
+## Unreleased — Preserve native goals through coordinated server restarts
+
+- Extend update-continuation capability to native Codex goals. Save the exact
+  thread/goal identity, pause before provider teardown, and resume the same goal
+  without resetting its token or time usage. Completion, replacement, exhausted
+  budgets and a later manual pause/clear take precedence over recovery.
+- Preserve the original interactive transport for ordinary continuations.
+  Claude SDK runs must confirm native Stop before recovery; closing the transport
+  alone is not a safe stop. Bind Claude recovery to its current native goal,
+  excluding earlier replaced goals, and show a recoverable error if stopping
+  cannot be confirmed. Internal continuation prompts stay out of user bubbles.
+- Pause independent chat owners concurrently within the bounded shutdown phase.
+  A prepared update with a durable continuation receipt receives the cooperative
+  shutdown budget, not the emergency three-second kill deadline. Keep emergency
+  restart behavior and the installer's bounded wait aligned with shutdown.
+- Verification on review base `2604af6a`: 380 focused server regression tests
+  pass, including lifecycle/queue, native goal identity and cancellation,
+  concurrent stop, transport retention and both restart signal paths. A separate
+  110-test goal-admission/history-repair run passes. Desktop type checking,
+  production compilation and 306 focused updater/timeline tests pass.
+- Real acceptance used an isolated native Electron app (offscreen/focus-emulated)
+  with authenticated local servers and real Codex and Claude providers. Goals
+  were created through the UI, interrupted, resumed after server restart,
+  and completed their file checkpoints. Codex retained native usage; a manual
+  pause prevented recovery. Claude resumed only the current goal, leaving old
+  goal checkpoints untouched; another restart produced no second continuation.
+  Interactive approvals were still required and usable after recovery.
+  A further Claude run exercised the production restart signal/watchdog code
+  using a private fixture trigger and completed the current goal after relaunch.
+- Test boundary: installation receipts were fixture-generated; source servers
+  were restarted, not upgraded through a signed package/service-manager install.
+  Current-source signed multi-server replacement, offline/partial-install
+  failure and native desktop quit/install/relaunch remain pre-merge gates.
+  Unsupported active jobs, standalone tasks and terminals still wait for a safe
+  boundary. No production server was restarted and nothing was released.
+
+## 2026-11-06 — Refresh the coordinated-update review against current main
+
+- Integrate main through `eac24fca`, preserving both native background-wake and
+  server-update continuation filtering in the desktop timeline.
+- Add two- and twelve-profile coordinator regressions: every exact server
+  reservation receives one continuation-enabled restart request, and desktop
+  installation remains gated until the last server is verified current.
+- Verification: 443 focused desktop tests, 207 update/restart/recovery server
+  tests and 74 provider-history repair tests pass. Desktop type checking,
+  production compilation and compiled-entry
+  verification pass. The server suites run with isolated configuration and
+  state, without inherited managed-installation settings. Two real disposable
+  servers were reached through a native development app; its Settings listed
+  both, and separate Claude and Codex conversations each received their reply.
+  Local installation discovery is isolated in this private harness; native IPC,
+  authenticated HTTP, providers and chat persistence are real.
+- Remaining gates: current-source signed multi-server replacement, busy-turn
+  recovery, offline/partial-failure retry, and automatic native app quit and
+  relaunch. This review does not establish universal task checkpointing or a
+  global pause across servers. Source/local development only; no release or
+  production app/server replacement.
+
+## Unreleased — Use one product update control in desktop Settings
+
+- Remove the separate manual AgentsServer update controls from Settings. The
+  Updates page keeps one Stable/Beta choice and one AgentsDock installation
+  action while listing each server's version and paired-update progress. A
+  failed paired update is retried from one product-level action; server restart
+  remains available on the Server page.
+- Verification: 236 focused desktop UI/updater tests, TypeScript checking, production
+  compilation and the compiled-entry audit pass. An isolated native Electron
+  development app used its actual Settings controls and authenticated client
+  connection to a disposable local server: the server version appeared, the
+  product channel was shown once and no separate server update panel appeared.
+  A separately identified local QA app containing this compiled UI was also
+  opened and operated through Settings: Updates showed one product channel and
+  action, the Server page had no manual update panel, and saved server versions
+  remained visible. This QA bundle reuses a test shell and is not a release-grade
+  package. The final UI has not been exercised through a packaged update
+  installation. Availability: source and local QA only; no public release or
+  production app/server replacement.
+
+## 2026-10-20 — Sync the coordinated updater with current main
+
+- Merge main `b21ef7ea` into the unreleased coordinated-update branch, retaining
+  both the server-first update work and intervening desktop/server fixes.
+- After integration, 311 focused desktop tests and 206 focused server tests pass
+  with isolated test state. Desktop TypeScript, production compilation, Python
+  compilation and diff checks pass. No native update package or public release
+  was produced by this source integration.
+
+## Unreleased — Prepare paired servers before replacing the desktop app
+
+- A downloaded app update now verifies its matching signed server descriptor,
+  checks saved server identities, and waits for every paired server to reach
+  the target before invoking the native installer. The app blocks chat controls
+  while updating and reports an incomplete update on failure.
+- A capable server can activate its exact queued update immediately. Ordinary
+  Codex, Claude and Cursor chats interrupted by that update receive one durable
+  internal continuation after restart. This does not checkpoint the exact
+  in-flight provider operation; already-completed side effects can be repeated.
+  Goals, other internal work and unsupported runtimes still wait for a safe
+  boundary.
+- A live forced-update check found that graceful shutdown can write a stopped
+  terminal event before the replacement process scans abandoned turns. Save
+  the active ordinary run identities in the restart receipt and restore their
+  internal continuation after a matching signed update, including when the
+  update has already completed before startup recovery. Completed turns stay
+  complete; a second startup does not queue another continuation. Real-provider
+  testing confirmed one continuation was queued and launched, but the first
+  continuation only reported an interrupted command instead of finishing its
+  remaining work. The internal instruction now explicitly asks the agent to
+  complete unfinished steps, including a necessary retry after checking effects.
+  A later disposable, signed beta.10-to-beta.11 update interrupted a real Codex
+  command. The replacement server retained identity, queued and completed
+  exactly one internal continuation, and the file contained one start and one
+  finish marker. The local app displayed the resumed answer after reload, and
+  a follow-up sent through that app completed on the same chat.
+- Validation: 151 focused server tests, 71 focused desktop tests, TypeScript and
+  the desktop production build pass. A disposable named server was upgraded
+  with a signed unpublished candidate and completed an ordinary Codex turn.
+  No public release was changed.
+- A compiled local Electron app from this branch connected to an existing
+  test server through the real client/server transport. A disposable Codex
+  chat and follow-up both completed, and the Updates page resolved the
+  published Stable and Beta feeds. Equal-version and local-suffix preflight
+  behavior has focused regression coverage. The development app cannot
+  install unpublished updates through its public feed; the separate signed
+  package test exercised active-chat continuation through the real server.
+- An isolated native update replay exposed an early forced-restart request
+  while the server package was still staging. The coordinator now waits for
+  an explicit ready state before requesting activation; a regression test
+  covers staging followed by readiness.
+- A later isolated replay activated the matching server but did not complete
+  native app replacement. The coordinator now keeps the same user update
+  action alive across the expected server restart connection gap, including
+  an ambiguous restart response. A later isolated macOS native replay with
+  signed, notarized, unpublished beta.6 and beta.7 packages passed the actual
+  one-click journey: the server reached beta.7 before app replacement, the app
+  relaunched at beta.7, and server identity and a saved chat survived. See
+  [native replay](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39105335755).
+  The replay used a private exact-package test feed and a disposable server;
+  it did not exercise a real provider turn during the update, busy goals,
+  multiple saved servers, or a production release.
+
+## 2026-10-21 — Replay a private busy-chat update
+
+- An explicit retry after server preparation failed could reattach to the old
+  failed schedule and fail again without attempting a new preparation. The main
+  Update action now clears that operation ownership on retry while retaining
+  the exact signed target. A regression failed before the fix; 135 focused
+  desktop tests, TypeScript checking and the production compile pass.
+- An unpublished, isolated macOS QA app and signed server package replayed a
+  beta.10-to-beta.11 update through the real Update button. The server
+  completed first; the app then replaced itself, relaunched and reopened the
+  same chat. A live Claude turn interrupted during the server restart received
+  one durable continuation, produced a final answer on the new server and
+  remained visible in the app. The continuation was marked system-generated
+  and not user-authored. A separate failed-preparation replay verified that
+  the same main button could retry successfully.
+- These QA app packages use a separate bundle identity, private app data and
+  loopback-only feeds; they were signed for local development, not notarized or
+  published. Busy Codex/Cursor turns, non-chat blockers, multiple clients and
+  rollback still need native acceptance before a product release.
+## 2026-11-06 - Improve terminal feedback and bound bulk output
+
+- Feed received output directly into xterm's existing input-aware parser instead
+  of imposing another animation-frame delay. Keep port discovery frame-batched
+  with a bounded tail. Remove the redundant tmux existence check before exiting
+  application-owned history scrolling on the next keystroke.
+- Add conservative visual-only typing prediction after distinct ordinary
+  characters have echoed correctly in the current burst. Predictions occupy
+  blank cells only and retire on mismatches, idle expiry, command/edit keys,
+  paste, composition, scrolling, selection, resizing, navigation and reconnect.
+  They never change terminal history, clipboard contents or transmitted input.
+  First/unconfirmed input, Unicode, line wrapping and unsupported input modes
+  continue to use authoritative output; this is not a universal shell-mode or
+  password detector.
+- Negotiate optional ack-v1 output credit with matching desktop/server builds.
+  ACK original PTY byte offsets only after xterm parses them, fence callbacks by
+  server generation and socket identity, and bound unconsumed output to a
+  64 KiB window plus at most one read. Input remains independent of output
+  credit. Older clients/servers retain the existing streaming path.
+- Source base `69eb0f8a`; development desktop 0.2.0/build 86, Electron 43.1.1,
+  server metadata 1.0.7-beta.11. All 280 selected desktop checks and 54 server
+  regressions, desktop typecheck and production compilation pass. Native hidden-window Electron
+  acceptance uses real mouse/keyboard, IPC, authenticated WebSocket, PTY and
+  tmux: ordinary typing, exact echo reconciliation, a non-echoing test password,
+  Unicode paste, backspace/arrows, Vim entry/exit, 10,000-line scrollback, bulk
+  output/Ctrl-C, reopen/reconnect and light/narrow presentation. An additional
+  80 ms renderer-ingress delay exercises predictions without changing transport
+  authentication or provider behavior; it is not a WAN or paint benchmark.
+- A further visible native-app pass repeats five fast-typing bursts and three
+  scroll-then-input cycles, edits pending input, and interrupts bulk output.
+  Confirmed output remains exact, with no duplicate characters or stale
+  prediction overlay after settling. No synthetic ingress delay is used in
+  this pass. Repeated bulk-output interruption checks also guide the smaller
+  credit window, reducing queued parsing before the next command is visible.
+- Real transport acceptance verifies output stops at its credit limit, ignores
+  invalid ACKs and resumes; Ctrl-C remains accepted while credit is exhausted.
+  No provider request is needed. No Windows/Linux native, real WAN, or exhaustive
+  shell/password-program acceptance is claimed. Source and local test runtime
+  only; no release, mobile change or production-server deployment.
+
+## 2026-11-06 - Clarify Claude context usage and recover failed reads
+
+- Replace the ambiguous context-meter “Unavailable” label with an explicit
+  missing-measurement state. Localize the usage details, loading, next-response
+  guidance and retry hints in English and Simplified Chinese. No token counts
+  or context limits are estimated when Claude supplies no valid measurement.
+- Surface runtime-read errors in the meter instead of silently displaying an
+  empty state. Retry failed reads through the observational runtime endpoint,
+  including when the cached state says active; never sample the SDK alongside
+  a running turn. Successful runtime responses clear obsolete read errors.
+  Keep last-known usage on manual sampling failures and prevent duplicate
+  clicks during initial loading or refresh.
+- Source: desktop-only correction on main `81e6e75c`; development package
+  version 0.2.0, Electron 43.1.1, unchanged test-server version 1.0.7-beta.11.
+  Five new focused regressions fail against the previous implementation. All
+  96 selected Claude-control, context-usage, localization and design tests pass;
+  TypeScript and production Electron compilation/output verification pass.
+- Exercise an isolated native offscreen Electron app with mouse and keyboard:
+  unloaded-chat guidance, real Claude messages and follow-ups, automatic usage
+  after completion, active-turn refresh blocking, manual refresh, navigation,
+  Chinese copy, light/dark themes and a narrow viewport. Keyboard refresh
+  advances the server's usage generation through real IPC, authenticated
+  transport and the native Claude SDK. Inject a runtime-read failure only in
+  the test harness, then remove it and recover with the real retry action.
+  Credential storage and the failure injection are fixtures; normal provider
+  responses and context measurements are not mocked. Analytics is disabled.
+- The reporter's custom endpoint and app/server versions remain unknown, so
+  persistent missing telemetry specific to that endpoint is not reproduced.
+  No server/mobile code changes, production restart, release or deployment.
+  Available as local source/build only.
+
 ## 2026-11-04 - Keep delegated worker tasks separate from creator orchestration
 
 - Follow up PR #145 integration on `e435f079`: clarify the provider policy,
@@ -2259,6 +3015,59 @@ Availability: local running server only
   providers have not received live generation acceptance for this change.
 - Server/helper change based on `9f6f1f13`; no desktop contract migration,
   production server restart, installation, release or mobile change.
+
+## 2026-11-02 - Publish coordinated 1.0.12-beta.2
+
+- Publish direct desktop build **1270**, npm runtime/short CLI and the matching
+  signed legacy server bridge from frozen source
+  `9e816c6b3b73508a47764b4d4ea546e41bcd3857`. Preserve stable `1.0.11` across npm
+  and both desktop feeds. This is a beta release, with no mobile submission or
+  deployment to existing services.
+- [Paired npm publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/41391793355)
+  and [desktop publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/41392454191)
+  pass. Independently verify fresh scripts-disabled npm installation, exact
+  runtime dependency, installed files/modes and CLI help; verify both desktop
+  asset sets, source tag, signed descriptors, beta feeds and bridge publicly.
+- Exercise real Claude/Codex contextual follow-ups and repeated messages through
+  the exact signed native app and matching runtime in an isolated hidden window.
+  Verify retained history, workspace/editor state and the lifecycle-marker fix.
+  The app was launched directly; local macOS LaunchServices relaunch acceptance
+  remains incomplete, and further restart checks were explicitly deferred for
+  this beta. Do not count that boundary as passed.
+- All 11 scoped Mac update/recovery cases, both legacy-permission Linux rollback
+  cases and macOS/Linux CLI acceptance pass. Preserve the reports' limits for
+  populated customer history, fresh interaction, busy replacement and reboot.
+  Full native-provider content parity, Windows native updates and idle Codex
+  goal-resume mail authority remain unverified. QA analytics collection was off.
+- macOS is Developer ID signed and notarized. Windows remains explicitly
+  unsigned. See [release notes](RELEASE_1.0.12-beta.2.md) for changes, download
+  links, validation evidence and limitations. Documentation updates do not move
+  the artifact source or trigger rebuilding accepted bytes.
+
+## 2026-11-01 - Prepare coordinated 1.0.12-beta.2
+
+- Integrate reviewed main through `9f6f1f13704e767717b5131e2df1213306a58abd`
+  with the shipped beta.1 release line. Preserve installer/update protections,
+  signed runtime metadata, custom-provider and Side chat behavior while retaining
+  the new workspace, composer, code-intelligence, sorting and Claude fixes.
+- Reconcile native Claude goal status with retained continuation-limit details;
+  retain failed evaluation outcomes. Combine current goal/route ownership checks
+  with release-line cleanup, and advance the SDK configuration identity for the
+  combined configuration. Preserve a retired Claude child's exact tool alias
+  when a delayed structured task identity arrives.
+- Keep internal native Codex goal-resume lifecycle markers out of user bubbles.
+  Preserve genuine input with identical text and the chronological live steer
+  boundary, activity and final answer. Reproduced and verified through the
+  native desktop/server/provider path in an isolated offscreen profile.
+- Prepare matching desktop/server/CLI version `1.0.12-beta.2`. Keep stable
+  `1.0.11` unchanged. Bind scoped native rehearsal to independently verified
+  stable 1.0.11 and beta.1 bytes, preserving historical replay identities and
+  installer recovery/permission checks.
+- Desktop type checking, production compilation, 5,947 desktop tests (six
+  skipped), eight packaging/license checks and 393 release-tooling tests pass.
+  Targeted server/recovery checks and hosted native acceptance remain in progress.
+  See [candidate notes](RELEASE_1.0.12-beta.2.md). This entry records preparation
+  only, not signed-package acceptance, publication, deployment or a mobile release.
 
 ## 2026-11-01 - Toggle workspace controls without creating a workspace
 
@@ -2801,6 +3610,61 @@ Availability: local running server only
   Escape while idle did nothing. Claude was not exercised (no Claude login in
   the isolated environment); the stop request itself is provider-agnostic.
   Availability: source only.
+## 2026-10-31 - Publish coordinated 1.0.12-beta.1
+
+- Publish the [direct desktop beta](https://github.com/ZhengyiLuo/AgentsDock/releases/tag/v1.0.12-beta.1),
+  build **1269**, with matching `@agentsdock/server` and `agentsdock` npm packages
+  and the signed legacy server bridge. Both npm `beta` tags advance to this
+  version; stable desktop and npm `latest` remain **1.0.11**.
+- Freeze artifact source at `c52aad2ed807a911000e41ffc0ade24d7edd4778`, combining
+  main through `827ed452140db0a09bfab39905aa133f736871be` with the fixes shipped
+  in stable 1.0.11. Publish identical desktop assets and final notes to the
+  canonical and legacy download repositories; no package is rebuilt during
+  publication.
+- Add named workspaces with up to four live chat panes, paired-chat user
+  delegation without a fresh mention, and inbox **Edit and send** that preserves
+  the matching draft. Retain released progress and Side chat behavior alongside
+  native child ownership, provider follow-up and composer fixes.
+- Hosted source/server checks, matched npm/CLI checks, four-platform package
+  verification, scoped macOS upgrade/recovery rehearsals and Linux rollback
+  checks passed. Fresh registry installation matched accepted archive contents
+  and the exact CLI/runtime version. macOS uses Developer ID and notarization;
+  Windows retains the disclosed unsigned-installer policy.
+- Isolated live Claude/Codex checks exercised conversations, cold context resume,
+  workspace restoration, paired mail, draft review/send and Codex Side chat
+  continuation through real app/server transports. Full provider-content parity,
+  populated customer-history migration, normal local quit/logout/reboot and
+  busy-work replacement remain outside accepted coverage.
+- The known idle Codex goal-resume mail-authority limitation remains. Mobile
+  builds and store submissions are separately scoped. See the
+  [release notes](RELEASE_1.0.12-beta.1.md) for details and verification links.
+
+## 2026-10-31 - Prepare coordinated 1.0.12-beta.1
+
+- Integrate main `827ed452140db0a09bfab39905aa133f736871be` with stable
+  `1.0.11` release protections for the next beta desktop, npm server, short
+  CLI and signed legacy bridge. Preserve the stable channel and existing
+  immutable release artifacts.
+- Retain main's native child ownership checks together with the released
+  subagent activity labels, Side chat progress and per-turn runtime settings.
+  Preserve mailbox delivery for older paired-route callers while carrying
+  main's server-attested user delegation and reply identity checks.
+- Advance Claude's runtime configuration revision so existing release sessions
+  receive the updated native tool policy. Include notification and unread-state
+  modules consistently in both runtime package formats.
+- Local validation: desktop TypeScript and production build pass, along with
+  the full desktop test suite and release-tooling Node/Python checks. Focused
+  server merge checks pass after isolating inherited service selectors in the
+  local test process. Native package and hosted source checks remain pending.
+- Hosted source CI and all eight canonical server shards passed. The separate
+  signing gate exposed a read-only preparation test comparing access timestamps;
+  its own file/link reads can change those timestamps. Compare contents and
+  exact inode, ownership, mode, size, link count and nanosecond write timestamps
+  instead. Runtime behavior is unchanged; rerun the signing gate from the new
+  committed test source before accepting any package.
+- See [candidate notes](RELEASE_1.0.12-beta.1.md) for public changes and the
+  known idle Codex goal-resume limitation. Package and native acceptance remain
+  pending; this entry records preparation, not publication or deployment.
 
 ## 2026-10-31 - Workspace toolbar entry and contextual chat headers
 
@@ -4747,6 +5611,194 @@ Availability: local package
   CLI version, mobile change, public release or production deployment is included;
   this source fix requires a server update.
 
+## 2026-10-26 — Prepare stable 1.0.11 from the published beta.12 source
+
+- Start the stable candidate at published beta.12 product source
+  `ab95ad3284f91997c2b249ac413b155f99c09ce6`. Preserve its desktop, server and CLI
+  functionality; only the release version and preparation documentation change.
+  Later main changes are outside this release.
+- Prepare matching desktop, npm runtime, short CLI and signed legacy bridge
+  packages as version `1.0.11`. Exact new package verification and local native
+  upgrade acceptance remain pending; prior beta checks are not relabeled.
+- Hold public publication until populated provider-history retention,
+  busy/queued work, restart and recovery observations have been reviewed.
+  No mobile build or publication is included. See [candidate notes](RELEASE_1.0.11.md).
+
+## 2026-10-21 — Prepare 1.0.11-beta.12 source
+
+- Integrate main through `b21ef7ea20bd8bc1121708590fa3bc21785c0984` with the
+  published beta.2 release line. Retain the shipped Codex streaming, pending
+  update, CLI PATH and managed service lifecycle protections.
+- Include CLI pairing QR output, shared-chat analytics, connection recovery,
+  Claude fork timestamps, and the server's Codex goal summary fields used by
+  notification clients. Existing mobile changes come from main; no mobile
+  package is built or uploaded as part of this preparation.
+- Pin the reviewed beta.12 installer separately from every historical pin.
+  Keep historical release exception tests tied to their exact original source
+  fixtures, and include the pairing modules in the inert npm PATH test package.
+- Focused desktop checks (1,263 cases), TypeScript and production compilation
+  pass. CLI, installer, packaging, session-summary and release-tooling checks
+  also pass after correcting isolated test setup. Full source CI and exact
+  signed candidate acceptance remain pending.
+- This is source preparation only. The new candidate still requires native
+  first-install and upgrade acceptance, active-work safety, and notification
+  checks through the actual client/server boundary. No new npm package,
+  desktop release, bridge, mobile build or installed service is changed.
+
+## 2026-10-21 — Verify public bridge and npm server upgrades
+
+- On disposable GitHub-hosted Macs, exercise the published signed desktop app
+  against real managed servers: `1.0.3` → legacy bridge `1.0.10` → npm
+  `1.0.11-beta.2`, and npm-capable `1.0.9` → npm `1.0.10` → npm
+  `1.0.11-beta.2`.
+- Observe real public TLS download hosts without replacing payloads or
+  disabling signature verification. The legacy first hop uses GitHub release
+  assets; npm-capable hops use `registry.npmjs.org`.
+- Verify automatic recovery after an offline start, a refused npm connection
+  that leaves the incumbent usable, and successful retry through the App's
+  visible **Retry server update** control. Preserve server identity, token,
+  saved test session/event and settings. Compare all 120 stable and 129 beta
+  runtime files with their independently verified public packages.
+- Both scoped native jobs pass in [run 39557877984](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39557877984).
+  Live provider history, busy/queued work, activation rollback, logout or reboot,
+  other desktop platforms and desktop binary replacement remain outside this
+  acceptance. This verifies the published versions, not the new beta.12 source.
+
+## 2026-10-18 — Publish 1.0.11-beta.2
+
+- Complete [paired npm publication, attempt 2](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39103091104)
+  after the accepted runtime becomes publicly available. Verify and skip that
+  unchanged runtime, publish the exact matching CLI through its separate Trusted
+  Publisher, and verify both public archives. Both `beta` tags now resolve to
+  `1.0.11-beta.2`; both stable `latest` tags remain `1.0.10`.
+- A fresh isolated registry installation with setup scripts disabled resolves
+  the matched CLI/runtime pair and exact dependency, and exercises command help
+  without operating existing services. Native first-install and lifecycle
+  acceptance remains the separately recorded candidate check below.
+- [Desktop publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39177990728)
+  passes all four native platform verifiers and publishes the
+  [canonical beta](https://github.com/ZhengyiLuo/AgentsDock/releases/tag/v1.0.11-beta.2)
+  and [compatibility mirror](https://github.com/ZhengyiLuo/AgentsDock-Releases/releases/tag/v1.0.11-beta.2).
+  The signed [legacy server bridge](https://github.com/ZhengyiLuo/AgentsServer/releases/tag/v1.0.11-beta.2)
+  is public as well. Preserve product source
+  `853dcd285ef442176370632149deba21ef732eda`, native build 1261 and asset-manifest
+  digest `bff0ef6024feb840c7b8e9d1a8c84817b775fc1c23711aa3f29132c96e71ec8c`.
+  No accepted artifact was rebuilt, repacked or replaced.
+- Keep stable releases, mobile builds and existing installations unchanged.
+  Retain the disclosed clean-quit, unsigned Windows, native Windows/Linux UI,
+  populated-history/busy-upgrade and logout/reboot limits. Gemini is included
+  for desktop/server API connections, not mobile or Google/CLI sign-in.
+
+## 2026-10-18 — Accept the 1.0.11-beta.2 candidate
+
+- Freeze product source `853dcd285ef442176370632149deba21ef732eda`, native
+  build 1261. [Desktop preparation](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39100809951)
+  passes all four native platforms, including Developer ID signing, Apple
+  notarization and the exact asset-set verification. The separate orchestration
+  commit `197f07b9ca949c1a81441d18b46a048764d6dd2d` does not change product code.
+  The sealed asset-manifest digest is
+  `bff0ef6024feb840c7b8e9d1a8c84817b775fc1c23711aa3f29132c96e71ec8c`.
+- Exercise the unmodified signed macOS app and exact packaged server through
+  real UI, IPC, HTTP and Gemini CLI 0.64.0 against Google inference: connected
+  API settings, direct new chat, a long first prompt, automatic short title,
+  two turns with the same native session, and retained replies/title on reload.
+  Title generation inserts no extra user turn. Temporary credentials and
+  disposable server state are removed afterward; existing installations remain
+  unchanged. Test cleanup required force-closing the owned app, so this is not
+  clean-quit acceptance.
+- Pass 5,392 desktop tests (six skipped), the full hosted server suite, 18 native
+  Gemini CLI/HTTP cases and a 40-turn, four-chat streaming/reconnect stress check.
+  [Native npm acceptance](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39099183063)
+  passes on macOS and Linux, including first setup, exact runtime inventory,
+  default/named lifecycle, repeat installation and preserved state on removal.
+- [Paired npm publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/39103091104)
+  initially accepted the runtime upload, then exhausted 61 read-only visibility
+  checks. At candidate acceptance, the CLI upload and public desktop/bridge
+  release remained pending; the completion receipt above supersedes that state.
+  Candidate acceptance alone was not a completed public release. Mobile Gemini,
+  unsigned Windows warnings, native Windows/Linux UI, populated-history/busy
+  upgrades and logout/reboot remain the disclosed boundaries.
+
+## 2026-10-18 — Bound macOS release ticket-download recovery
+
+- Keep product source and signed server/npm candidates frozen independently of
+  the reviewed build orchestrator. Recover only a recognized network failure
+  while attaching an already-accepted outer DMG notarization ticket.
+- Retry the same artifact with bounded delays; require its ticket, Developer ID
+  signature and every original package/updater check before accepting a build.
+  Compilation, test, signing, notarization rejection and other failures still
+  block release. No artifact is published by the recovery helper.
+
+## 2026-10-18 — Prepare 1.0.11-beta.2
+
+- Integrate current main and the built-in Gemini desktop/server provider with
+  the prior published beta line. Preserve existing native ownership, login
+  handoff, next-turn provider selection, CLI PATH and lifecycle protections.
+- Include terminal-only first-install connection details, service logs,
+  latest-first history recovery, file-link handling and copied diagnostics.
+  Mobile Gemini and mobile publication remain outside this release.
+- Combine Gemini's runtime files with the existing Codex runtime inventory.
+  Pin the reviewed beta.2 installer separately; do not alter historical pins,
+  signed artifacts, stable channels or existing installations.
+- This is source preparation, not a publication or candidate acceptance receipt.
+  Signed-package and real-app acceptance must precede public publication.
+
+## 2026-10-13 — Accept imports and publish 1.0.11-beta.1
+
+- Publish immutable source `e93391294af2cb0c35f5f04fe8e94cce77810458`, native
+  build 1252. No accepted package was rebuilt, repacked or replaced.
+- Exercise the signed/notarized macOS app and matching packaged server through
+  the real client/server boundary with isolated data. Import a 300 MiB Claude
+  image record and a 64 MiB Codex tool record; preserve native titles, surrounding
+  text and Unicode. Confirm subagent/archive filtering, cancellation, repeat
+  discovery, unchanged provider files and no duplicate incremental imports.
+- Import and continue real Claude and Codex sessions with their original native
+  IDs and remembered context. Four imported chats survive an isolated relaunch.
+  Excessive retained text fails with the observed amount, limit, record ordinal
+  and byte offset without creating a partial chat. All 103 focused regressions
+  pass. These checks do not establish new image rendering or live Cursor parity.
+- Hosted source checks and macOS/Linux native CLI lifecycle checks pass.
+  [Paired npm publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/38370285507)
+  verifies both exact public archives through their separate Trusted Publishers.
+  A fresh registry installation with lifecycle scripts disabled verifies both
+  package versions and command help. Both `beta` tags are `1.0.11-beta.1`;
+  both `latest` tags remain `1.0.10`.
+- [Desktop publication](https://github.com/ZhengyiLuo/AgentsDock/actions/runs/38431444310)
+  passes all four native platform verifiers and publishes the
+  [canonical beta](https://github.com/ZhengyiLuo/AgentsDock/releases/tag/v1.0.11-beta.1)
+  and [compatibility mirror](https://github.com/ZhengyiLuo/AgentsDock-Releases/releases/tag/v1.0.11-beta.1)
+  with the same 16 sealed assets. The signed
+  [legacy server bridge](https://github.com/ZhengyiLuo/AgentsServer/releases/tag/v1.0.11-beta.1)
+  is also public. The asset-manifest digest remains
+  `dbed888a33160639ba00992bbb5ec1d1f9ba0650c7329c27c7701f55df9579cd`.
+- Retain the disclosed limits: unsigned Windows installer; no new live Cursor
+  resume or native Windows/Linux app interaction acceptance; no full populated
+  history, active/queued upgrade, logout/reboot or Windows updater acceptance.
+  The isolated relaunch check is not clean-quit lifecycle acceptance. Temporary
+  test credentials/state were removed; existing apps and servers were untouched.
+
+## 2026-10-13 — Prepare the 1.0.11 beta integration
+
+- Start `release/1.0.11-beta.1` from the frozen 1.0.10 release line and merge
+  main through `2b666a9f`. Include streaming native-history import, the Files
+  inspector, simplified server settings and connection sharing, recoverable
+  empty chats, and provider/permission inheritance for new chats.
+- Preserve release-line native writer handoff, pending provider selection,
+  mailbox-only delivery authority, CLI service PATH and stop/start fixes.
+  Combine observational catalog refresh and attributed login-reload diagnostics
+  with those existing ownership protections rather than restoring older code.
+- Keep the new transcript reader in every runtime manifest and compile check.
+  Pin the new installer separately for this exact beta; historical installer
+  hashes and accepted 1.0.10 artifacts remain unchanged.
+- Local checks: 5,266 Electron tests passed (six skipped), eight build/license
+  checks passed, TypeScript and production compilation passed; 407 release/CLI
+  checks and 196 Python release-tooling checks passed. Targeted import,
+  provenance, login, cross-chat, cleanup, goal, instance and restart regressions
+  passed after resolving the runtime inventory ordering mismatch.
+- Availability: source preparation only. New-beta signed packages, hosted
+  native lifecycle/update checks and real-app feature acceptance are pending.
+  These source checks do not establish a public release or native provider
+  resume acceptance. No mobile package is built by this preparation.
 ## 2026-10-20 — Fix Claude running-chat fork timestamp precision
 
 - Fix #94: recognize millisecond native timestamps within a second-truncated
@@ -12589,3 +13641,35 @@ Remaining limitations or blocked acceptance: native app click-through remains
 pending on an isolated profile. No package or server update was produced.
 Availability: source only; not installed, published or deployed.
 ```
+
+## 2026-10-22 — Draft coordinated busy-server update verification
+
+- One product Update action now prepares and verifies saved servers before the
+  native app installer. Disposable managed-service upgrades confirmed one
+  internal continuation and a final reply for each of Codex, Claude, and
+  Cursor. A non-chat job and a persistent goal deferred forced interruption;
+  a persistent terminal survived, and simultaneous client requests caused one
+  server replacement.
+- An isolated packaged-app replay confirmed that an unreachable server leaves
+  the old app installed, but found its error message could be overwritten by a
+  background release check. The source fix retains an explicit incomplete
+  update message across checks and identifies the failed connection. Focused
+  desktop tests, type checking, and the production compile passed; this revised
+  UI message has not yet passed packaged-app acceptance.
+- Native replacement remains unaccepted: a repacked QA app downloaded the
+  matching update, but did not exit automatically. Its installer completed and
+  relaunched only after the disposable old app was explicitly terminated. The
+  QA shell was modified for isolated feeds and is not an exact-source signed
+  release candidate. A clean packaged replay, multi-server partial failure,
+  rollback, and busy-chat UI journey are still required. No public release or
+  production installation changed.
+
+Follow-up verification covered a partial multi-server update in the desktop
+coordinator: after one server reaches the target and another rejects the
+update, the plan retains both results; repeating the main Update action retries
+only the failed server. The affected desktop suites passed 130 tests and type
+checking passed. Server activation, handoff and rollback fixtures passed 112
+tests. A fresh locally signed QA package was built with the isolated feed, but
+it did not reach the application UI on this machine, so the revised offline
+message and automatic app exit are still unverified in a packaged App. This QA
+package is not a release candidate. The disposable server was restored.

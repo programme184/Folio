@@ -3,7 +3,7 @@ import NativeWebSocket from 'ws'
 import { CODE_INTELLIGENCE_PROTOCOL, codeIntelligenceLanguage, parseCodeIntelligenceStatus, type CodeIntelligenceLanguage, type CodeIntelligenceStatus } from '../shared/code-intelligence'
 import { parseProviderUsage, type ProviderUsageSnapshot, type UsageBackend } from '../shared/provider-usage'
 import { codexAuthImportDocument, parseCodexAuthStatus, type CodexChatGPTAuthImport } from '../shared/codex-auth'
-import { customModelBackend, customModelInput, parseCustomModels, type CustomModelBackend, type CustomModelInput } from '../shared/custom-models'
+import { customModelBackend, customModelInput, parseCustomModels, parseCustomModelCheck, type CustomModelBackend, type CustomModelInput } from '../shared/custom-models'
 import { cliAccountBackend, parseCLIAccount, type CLIAccountBackend, connectionBackend, connectionRequest, parseConnectionReply, type ConnectionBackend, type ConnectionAction, type ProviderConnectionRequest, type ProviderConnectionReply } from '../shared/provider-connections'
 import { parseCodexProviderConfiguration, parseCodexProviderModels, parseCodexProviderTestResult, validateCodexProviderInput, validateCodexProviderModelTestInput, validateCodexProviderSelection } from '../shared/codex-provider'
 import { randomUUID } from 'node:crypto'
@@ -320,6 +320,7 @@ export interface OpenedUploadSource {
 }
 
 export interface TerminalConnection {
+  acknowledge(receipt: { streamId: string; offset: number }): void
   write(data: string): void
   resize(columns: number, rows: number): void
   scroll(delta: number): void
@@ -960,6 +961,13 @@ export class AgentServerClient {
     const path = `/api/admin/provider-models/${checked}${sessionId ? `?${new URLSearchParams({ session_id: sessionId })}` : ''}`
     return parseCustomModels(checked, await this.privilegedNativeRequest(path, body ? { method: 'PUT', body: JSON.stringify(body) } : {}, 30_000, 200, 512 * 1024), !body)
   }
+  async checkCustomModel(backend: CustomModelBackend, input: CustomModelInput) {
+    const checked = customModelBackend(backend), body = customModelInput(checked, input)
+    const result = parseCustomModelCheck(checked, await this.privilegedNativeRequest(`/api/admin/provider-models/${checked}/check`,
+      { method: 'POST', body: JSON.stringify(body) }, 30_000, 200, 8192))
+    if (result.model !== body.model || result.revision !== body.expected_revision) throw new Error('CUSTOM_MODELS_INVALID')
+    return result
+  }
   codexProviderModels(sessionId?: string): Promise<CodexProviderModels> {
     if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId || sessionId.length > 256)) throw new Error('CODEX_PROVIDER_INVALID')
     const query = sessionId ? `?${new URLSearchParams({ session_id: sessionId })}` : ''
@@ -1366,6 +1374,30 @@ export class AgentServerClient {
     return this.requestText(`/api/sessions/${encodeURIComponent(sessionId)}/diffs/${encodeURIComponent(runId)}`)
   }
 
+  async findTimelineEvent(sessionId: string, eventId: string): Promise<TimelineSearchResult | null> {
+    const configuration = this.configuration
+    try {
+      const response = await this.get<{ event: TimelineSearchResult | null }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/timeline-event/${encodeURIComponent(eventId)}`, configuration)
+      return response.event
+    } catch (error) {
+      if (!(error instanceof ServerError) || error.status !== 404) throw error
+    }
+    // Older servers have no identity endpoint. Read exact IDs through their
+    // existing history API; do not search a shortened/merged display preview.
+    let before: number | undefined
+    for (;;) {
+      if (this.configuration !== configuration) throw new Error('Server changed while locating the pinned message')
+      const page = await this.sessionPageWithConfiguration(configuration, sessionId, { before, limit: 1000, tail: true, visible: true })
+      const event = page.events.find(event => event.session_id === sessionId && event.id === eventId)
+      if (event) return { session_id: sessionId, event_id: event.id, seq: event.seq, ts: event.ts, role: 'system', snippet: '' }
+      if (!page.has_more) return null
+      const next = page.next_before ?? page.before ?? page.events[0]?.seq
+      if (next == null || before != null && next >= before) throw new Error('Unable to load older history for this pinned message')
+      before = next
+    }
+  }
+
   async searchTimeline(sessionId: string, query: string, limit = 40): Promise<TimelineSearchResult[]> {
     const params = new URLSearchParams({ q: query, limit: String(limit) })
     const response = await this.get<{ results?: TimelineSearchResult[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/search?${params}`)
@@ -1406,7 +1438,10 @@ export class AgentServerClient {
       prompt,
       ...(clientRequestId ? { client_request_id: clientRequestId } : {}),
       file_ids: fileIds,
-      ...(revisionReply ? {} : { model: model ?? '', effort: effort ?? '' }),
+      ...(revisionReply ? {} : {
+        ...(model !== undefined ? { model: model ?? '' } : {}),
+        ...(effort !== undefined ? { effort: effort ?? '' } : {}),
+      }),
       client_capabilities: clientCapabilities,
       ...(chatReferences.length ? { chat_references: chatReferences } : {}),
       ...(teamReferences.length ? { team_references: teamReferences } : {}),
@@ -2174,7 +2209,7 @@ export class AgentServerClient {
   terminal(
     sessionId: string,
     options: TerminalConnectOptions,
-    onData: (data: string) => void,
+    onData: (data: string, receipt?: { streamId: string; offset: number }) => void,
     onState: (state: TerminalStateEvent) => void
   ): TerminalConnection {
     const configuration = this.configuration
@@ -2191,6 +2226,10 @@ export class AgentServerClient {
     let rows = options.rows
     let scrollTimer: NodeJS.Timeout | null = null
     let pendingScroll = 0
+    let streamId = ''
+    let flowEnabled = false
+    let receivedOffset = 0
+    let acknowledgedOffset = 0
     const cancelScroll = (): void => {
       if (scrollTimer) clearTimeout(scrollTimer)
       scrollTimer = null
@@ -2232,6 +2271,7 @@ export class AgentServerClient {
       const url = new URL(endpoint)
       url.searchParams.set('columns', String(columns))
       url.searchParams.set('rows', String(rows))
+      url.searchParams.set('flow_control', 'ack-v1')
       if (options.cwd) url.searchParams.set('cwd', options.cwd)
       if (options.remoteHost) url.searchParams.set('remote_host', options.remoteHost)
       const protocols = authenticatedWebSocketProtocols(
@@ -2240,6 +2280,15 @@ export class AgentServerClient {
         TERMINAL_STREAM_PROTOCOL
       )
       const currentDecoder = new TextDecoder()
+      const currentStreamId = randomUUID()
+      streamId = currentStreamId
+      flowEnabled = false
+      receivedOffset = acknowledgedOffset = 0
+      const deliver = (bytes: Uint8Array): void => {
+        if (stopped || disconnected || socket !== current) return
+        receivedOffset += bytes.byteLength
+        onData(currentDecoder.decode(bytes, { stream: true }), flowEnabled ? { streamId: currentStreamId, offset: receivedOffset } : undefined)
+      }
       const current = new WebSocket(url, protocols)
       socket = current
       current.binaryType = 'arraybuffer'
@@ -2277,8 +2326,9 @@ export class AgentServerClient {
         if (stopped || disconnected || socket !== current) return
         if (typeof message.data === 'string') {
           try {
-            const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string }
+            const control = JSON.parse(message.data) as { type?: string; name?: string; message?: string; flow_control?: string }
             if (control.type === 'ready') {
+              flowEnabled = control.flow_control === 'ack-v1'
               retryDelay = 500
               onState({ sessionId, state: 'connected', name: control.name ?? null })
             } else if (control.type === 'error') {
@@ -2301,11 +2351,11 @@ export class AgentServerClient {
           void message.data.arrayBuffer().then(buffer => {
             if (stopped || disconnected || socket !== current) return
             const blobBytes = new Uint8Array(buffer)
-            if (blobBytes.byteLength) onData(currentDecoder.decode(blobBytes, { stream: true }))
+            if (blobBytes.byteLength) deliver(blobBytes)
           })
           return
         }
-        if (bytes?.byteLength) onData(currentDecoder.decode(bytes, { stream: true }))
+        if (bytes?.byteLength) deliver(bytes)
       })
       current.addEventListener('close', event => {
         clearConnectWatchdog()
@@ -2341,6 +2391,15 @@ export class AgentServerClient {
     if (configuration.abortController.signal.aborted) stop()
     else connect()
     return {
+      acknowledge(receipt): void {
+        if (stopped || !flowEnabled || socket?.readyState !== 1 || !receipt || receipt.streamId !== streamId ||
+            !Number.isSafeInteger(receipt.offset) || receipt.offset > receivedOffset || receipt.offset <= acknowledgedOffset) return
+        // ACK at 16 KiB boundaries, below the server's 64 KiB window. Ordinary
+        // typing creates no extra frames. Old render callbacks cannot ACK a new socket.
+        if (receipt.offset - acknowledgedOffset < 16 * 1024) return
+        acknowledgedOffset = receipt.offset
+        socket.send(JSON.stringify({ type: 'output_ack', offset: acknowledgedOffset }))
+      },
       write(data: string): void {
         if (stopped) return
         flushScroll()
@@ -2645,8 +2704,8 @@ export class AgentServerClient {
             if (notice.session_id === sessionId && (notice.backend === 'codex' || notice.backend === 'claude')) onProviderUsageChanged?.(notice.backend)
             return
           }
-          if (isProviderRuntimeChanged(packet)) {
-            if (packet.session_id === sessionId) onProviderRuntime?.(packet)
+          if (packet && typeof packet === 'object' && 'type' in packet && packet.type === 'provider_runtime_changed') {
+            if (isProviderRuntimeChanged(packet) && packet.session_id === sessionId) onProviderRuntime?.(packet)
             return
           }
           if (isTimelinePinsChanged(packet)) {
@@ -3233,12 +3292,32 @@ function isEmergencySessionPacket(value: unknown): value is Session {
 function isProviderRuntimeChanged(value: unknown): value is ProviderRuntimeChanged {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const packet = value as Record<string, unknown>
-  return packet.type === 'provider_runtime_changed'
+  const envelope = packet.type === 'provider_runtime_changed'
     && packet.ephemeral === true
-    && packet.runtime === 'context_usage'
     && (packet.backend === 'claude' || packet.backend === 'codex')
     && typeof packet.session_id === 'string'
     && packet.session_id.length > 0
+  if (!envelope) return false
+  if (packet.runtime === 'context_usage') return true
+  if (packet.runtime === 'codex_provider') {
+    const session = packet.session
+    if (packet.backend !== 'codex' || !session || typeof session !== 'object' || Array.isArray(session)) return false
+    const fields = session as Record<string, unknown>
+    return fields.id === packet.session_id && fields.backend === 'codex'
+      && typeof fields.title === 'string'
+      && (fields.codex_provider === 'default' || fields.codex_provider === 'custom')
+  }
+  if (packet.runtime !== 'subagent_limit' || packet.backend !== 'codex') return false
+  const limit = (value: unknown) => value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+  const control = packet.subagent_limit_control
+  if (!control || typeof control !== 'object' || Array.isArray(control)) return false
+  const fields = control as Record<string, unknown>
+  return limit(packet.subagent_limit)
+    && fields.supported === true
+    && fields.applies_to === 'automatically_when_idle'
+    && ['applied', 'pending', 'next_start'].includes(String(fields.application_state))
+    && limit(fields.requested_limit)
+    && limit(fields.effective_limit)
 }
 
 function isTimelinePinsChanged(value: unknown): value is TimelinePinsChanged {
@@ -3667,6 +3746,7 @@ function isPrivilegedNativeControlTarget(
   if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor|gemini)$/.test(path)) return !target.search && ['GET', 'PUT', 'DELETE'].includes(method)
   if (/^\/api\/admin\/provider-connections\/(claude|opencode|cursor|gemini)\/check$/.test(path)) return !target.search && method === 'POST'
   if (/^\/api\/admin\/provider-accounts\/(claude|cursor|opencode)$/.test(path)) return !target.search && method === 'GET'
+  if (/^\/api\/admin\/provider-models\/(claude|opencode|gemini)\/check$/.test(path)) return method === 'POST' && !target.search
   if (/^\/api\/admin\/provider-models\/(codex|claude|opencode|cursor|gemini)$/.test(path)) return method === 'PUT' ? !target.search : method === 'GET' && [...target.searchParams.keys()].every(key => key === 'session_id') && target.searchParams.getAll('session_id').length <= 1
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/gemini\/runtime$/.test(path)) return !target.search && method === 'GET'
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/gemini\/interactions\/geminireq_[a-f0-9]{32}\/resolve$/.test(path)) return !target.search && method === 'POST'

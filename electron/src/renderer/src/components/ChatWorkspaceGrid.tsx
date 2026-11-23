@@ -431,7 +431,7 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
 }) {
   const sessions = useAppStore(state => state.sessions)
   const folderOrder = useAppStore(state => state.folderOrder)
-  const workspaceId = useAppStore(state => state.activeChatWorkspaceId)
+  const workspaceId = useAppStore(state => state.chatWorkspaceBarVisible ? state.activeChatWorkspaceId : '')
   const creatingChat = useAppStore(state => state.creatingChat)
   const switchingProfileId = useAppStore(state => state.switchingProfileId)
   const [query, setQuery] = useState('')
@@ -471,9 +471,9 @@ export function PaneProjectBrowser({ pane, focused, selectedProfileId, excludedS
       </div>
       {onChooseServer && <div className="empty-pane-server-picker"><ServerSelector compact selectedProfileId={selectedProfileId} onChooseProfile={onChooseServer} /></div>}
     </div>
-    <button type="button" className="primary-button empty-pane-new-chat" disabled={creatingChat || Boolean(switchingProfileId)}
+    <button type="button" className="primary-button empty-pane-new-chat" aria-busy={creatingChat} disabled={creatingChat || Boolean(switchingProfileId)}
       onClick={() => void createChat()}>
-      <Plus size={16} aria-hidden="true" />{t('chatWorkspace.newChat')}
+      <Plus size={16} aria-hidden="true" />{t(creatingChat ? 'chatWorkspace.creatingChat' : 'chatWorkspace.newChat')}
     </button>
     <input type="search" aria-label={t('chatWorkspace.search')} placeholder={t('chatWorkspace.search')}
       value={query} onChange={event => setQuery(event.target.value)} />

@@ -30,7 +30,9 @@ import { WelcomeChat } from './components/WelcomeChat'
 import { WorkspaceFilesProvider } from './components/WorkspaceFilesContext'
 import { paperUseSideChat } from './components/paper-ask'
 import { readInspectorTab, saveInspectorTab } from './lib/inspector-preference'
-import { trackEvent } from './lib/analytics'
+import { installAnalyticsLifecycle, trackEvent } from './lib/analytics'
+import { trackMilestone } from './lib/analytics-funnel'
+import { observeUpdateRecovery } from './lib/analytics-recovery'
 import { activeEmergencyAlert } from './lib/emergency-alert'
 import { isTerminalToggleShortcut } from './lib/workspace-shortcuts'
 import {
@@ -309,7 +311,8 @@ function AppWorkspace() {
       if (value) shell.style.setProperty(property, value)
     }
   }, [activeProfileKey, columnStyle])
-  useEffect(() => { trackEvent('app_launched') }, [])
+  useEffect(() => { trackMilestone('app_launched') }, [])
+  useEffect(() => installAnalyticsLifecycle(), [])
   useEffect(() => { void initialize() }, [initialize])
   useEffect(() => installRendererStallMonitor(
     () => {
@@ -711,6 +714,7 @@ function AppWorkspace() {
         <UpdateNotice />
       </div>
       <Dialogs key={`dialogs:${activeRenderKey}`} />
+      <UpdateInstallGate />
     </main>
   )
 }
@@ -880,8 +884,27 @@ function UpdateNotice() {
   if (!update || update.channel !== 'direct' || update.state !== 'downloaded' || dismissedVersion === update.availableVersion) return null
   return <aside className="update-toast" role="status" aria-live="polite">
     <RotateCcw size={17} />
-    <div><strong>AgentsDock {update.availableVersion} is ready</strong><span>{t("ui.App.UpdateNotice.your_chats_stay_on_the_server_restart_when_de808de")}</span></div>
-    <button type="button" className="primary-button" onClick={() => void window.agentsDock.updates.install()}>{t("ui.App.UpdateNotice.restart_6b983a8")}</button>
+    <div><strong>AgentsDock {update.availableVersion} is ready</strong><span>{update.message?.startsWith('The update is still downloaded')
+      ? update.message : t("ui.App.UpdateNotice.your_chats_stay_on_the_server_restart_when_de808de")}</span></div>
+    <button type="button" className="primary-button" onClick={() => { trackEvent('app_update_install_requested'); void window.agentsDock.updates.install() }}>{t("ui.App.UpdateNotice.restart_6b983a8")}</button>
     <button type="button" className="icon-button" aria-label={t("ui.App.UpdateNotice.later_73b6e48")} title={t("ui.App.UpdateNotice.later_73b6e48")} onClick={() => setDismissedVersion(update.availableVersion ?? '')}><X size={14} /></button>
   </aside>
+}
+
+function UpdateInstallGate() {
+  const [status, setStatus] = useState<AppUpdateStatus | null>(null)
+  useEffect(() => {
+    let active = true
+    void window.agentsDock.updates.status().then(value => { if (active) { setStatus(value); void observeUpdateRecovery(value?.serverUpdates ?? []) } })
+    const unsubscribe = window.agentsDock.events.on('app:update', value => { setStatus(value); void observeUpdateRecovery(value?.serverUpdates ?? []) })
+    return () => { active = false; unsubscribe() }
+  }, [])
+  if (status?.state !== 'installing') return null
+  return <div className="coordinated-update-gate" role="status" aria-live="polite">
+    <div className="coordinated-update-gate-card">
+      <strong>Updating AgentsDock {status.availableVersion}…</strong>
+      <span>{status.message || 'Preparing matching servers and the app.'}</span>
+      <small>Running chats may resume after the server update. Check completed file changes before repeating actions.</small>
+    </div>
+  </div>
 }

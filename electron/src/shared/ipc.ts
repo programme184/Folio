@@ -414,6 +414,7 @@ export interface AgentsDockAPI {
     around(sessionId: string, anchorSeq: number, limit?: number): Promise<TimelinePage>
     trace(sessionId: string, runId: string, anchorSeq: number, after?: number, limit?: number): Promise<TimelineTracePage>
     index(sessionId: string): Promise<TimelineIndex>
+    findEvent(sessionId: string, eventId: string): Promise<TimelineSearchResult | null>
     search(sessionId: string, query: string, limit?: number): Promise<TimelineSearchResult[]>
     subscribe(sessionId: string, after: number): Promise<void>
     unsubscribe(sessionId: string): Promise<void>
@@ -444,6 +445,7 @@ export interface AgentsDockAPI {
     cancel(scope: CodexServerSettingsScope): Promise<void>
   }
   customModels?: {
+    check?(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, input: import('./custom-models').CustomModelInput): Promise<import('./custom-models').CustomModelCheck>
     read(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, sessionId?: string): Promise<import('./custom-models').CustomModels>
     save(scope: CodexServerSettingsScope, backend: import('./custom-models').CustomModelBackend, input: import('./custom-models').CustomModelInput): Promise<import('./custom-models').CustomModels>
   }
@@ -470,6 +472,7 @@ export interface AgentsDockAPI {
     ): Promise<CodexPendingInteraction>
     permissionProfiles(sessionId: string): Promise<CodexPermissionProfile[]>
     goal(sessionId: string): Promise<CodexGoalSnapshot>
+    blockedGoalReport?(sessionId: string): Promise<{ goal: CodexGoalSnapshot['goal']; report: string | null }>
     setGoal(sessionId: string, input: CodexGoalInput): Promise<CodexGoalSnapshot>
     clearGoal(sessionId: string): Promise<CodexGoalSnapshot>
     compact(sessionId: string): Promise<CodexOperationAccepted>
@@ -636,6 +639,7 @@ export interface AgentsDockAPI {
     write(profileId: string, profileGeneration: number, sessionId: string, data: string): void
     resize(profileId: string, profileGeneration: number, sessionId: string, columns: number, rows: number): void
     scroll(profileId: string, profileGeneration: number, sessionId: string, delta: number): void
+    acknowledge(profileId: string, profileGeneration: number, sessionId: string, receipt: { streamId: string; offset: number }): void
     disconnect(profileId: string, profileGeneration: number, sessionId: string): Promise<void>
     kill(profileId: string, profileGeneration: number, sessionId: string): Promise<boolean>
     windows(profileId: string, profileGeneration: number, sessionId: string): Promise<TerminalWindowsSnapshot>

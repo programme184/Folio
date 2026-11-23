@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Health, RuntimeCatalog, RuntimeDiagnostic } from './types'
+import type { Health, RuntimeCatalog, RuntimeDiagnostic, Session } from './types'
 import {
   chatBackendChoice,
   chatBackendSelection,
@@ -17,6 +17,7 @@ import {
   runtimeDiagnosticNeedsAttention,
   runtimeModelLockReason,
   runtimeSelectionError,
+  sessionRuntimeForNextTurn,
   runtimeSendAdmissionError,
   selectableChatBackends,
   nativeProviderSignInStatus,
@@ -210,6 +211,19 @@ describe('native and custom API choices', () => {
 })
 
 describe('runtimeCatalogHasSelectableModels', () => {
+  it('does not bypass an unavailable custom model through its default alias', () => {
+    const custom = { configured: true, available: true, model: 'old', discovery_status: 'ready',
+      base_url: 'https://example.invalid', models: [{ value: 'new', label: 'New' }] }
+    const missing = runtimeCatalogOptions(validCatalog, 'claude', 'models', 'old', 'custom', custom)
+    expect(missing.find(row => row.value === '')?.locked).toBe(true)
+    expect(missing.find(row => row.value === 'old')?.locked).toBe(true)
+    const rejected = runtimeCatalogOptions(validCatalog, 'claude', 'models', null, 'custom', {
+      ...custom, models: [{ value: 'old', label: 'Old', locked: true }] })
+    expect(rejected.find(row => row.value === '')?.locked).toBe(true)
+    const unconfirmed = runtimeCatalogOptions(validCatalog, 'claude', 'models', null, 'custom', {
+      ...custom, discovery_status: 'unavailable' })
+    expect(unconfirmed.find(row => row.value === '')?.locked).not.toBe(true)
+  })
   it('offers a verified Cursor key separately from native login and removes it after Forget', () => {
     const health = { ok: true, capabilities: { cursor_backend: { available: true, version: 2 }, provider_connections_v1: { per_chat: true, available: true } } } as Health
     const custom = { configured: true, available: true, base_url: 'https://api2.cursor.sh', model: 'auto', default_model: 'auto', models: [{ value: 'auto', label: 'Auto' }] }
@@ -251,13 +265,13 @@ describe('runtimeCatalogHasSelectableModels', () => {
     ])
   })
 
-  it('rejects the synthetic server-default-only response', () => {
+  it('accepts an empty account catalog instead of retaining another accounts choices', () => {
     expect(runtimeCatalogHasSelectableModels({
       backends: {
         claude: { models: [{ value: '', label: 'Server default' }], efforts: [] },
         codex: { models: [{ value: '', label: 'Server default' }], efforts: [] }
       }
-    })).toBe(false)
+    })).toBe(true)
   })
 
   it('rejects missing and partial catalogs', () => {
@@ -437,7 +451,7 @@ describe('runtimeCatalogOptions', () => {
   it('preserves a saved custom choice while the catalog reloads', () => {
     expect(runtimeCatalogOptions(null, 'claude', 'models', 'claude-fable-5')).toEqual([
       { value: '', label: 'Loading model choices…' },
-      { value: 'claude-fable-5', label: 'claude-fable-5' }
+      expect.objectContaining({ value: 'claude-fable-5', label: 'claude-fable-5 · Not in current list', locked: true })
     ])
   })
 })
@@ -543,6 +557,31 @@ describe('runtime diagnostics', () => {
     expect(runtimeDiagnosticNeedsAttention(diagnostic)).toBe(false)
     expect(runtimeDiagnosticLabel(diagnostic)).toBe('Ready')
     expect(runtimeDiagnosticCurrentError(diagnostic)).toBe('')
+  })
+})
+
+
+describe('saved next-turn Codex runtime', () => {
+  const session: Session = { id: 'chat', title: 'Chat', backend: 'codex', codex_provider: 'default', model: 'normal', effort: 'high',
+    codex_provider_control: { pending: true, active_provider: 'default', requested_provider: 'custom', active_base_url: null, requested_base_url: 'https://custom.example/v1' } }
+
+  it('projects saved settings without changing active ownership and preserves explicit defaults', () => {
+    const requestedCatalog = { configured: true, available: true, model: 'custom', base_url: 'https://custom.example/v1' }
+    const active = { ...session, codex_provider_control: { ...session.codex_provider_control!, requested_model: 'custom', requested_effort: 'low', requested_catalog: requestedCatalog } }
+    expect(sessionRuntimeForNextTurn(active)).toMatchObject({ codex_provider: 'custom', model: 'custom', effort: 'low', codex_provider_catalog: requestedCatalog })
+    expect(active).toMatchObject({ codex_provider: 'default', model: 'normal', effort: 'high' })
+    expect(sessionRuntimeForNextTurn({ ...active, codex_provider_control: { ...active.codex_provider_control, requested_model: null, requested_effort: null } }))
+      .toMatchObject({ model: null, effort: null })
+  })
+
+  it('leaves unreported pending settings unknown on older servers', () => {
+    expect(sessionRuntimeForNextTurn(session)).toMatchObject({ codex_provider: 'custom', model: undefined, effort: undefined })
+    const sameEndpoint = { ...session, codex_provider_control: { ...session.codex_provider_control!, requested_provider: 'default' as const } }
+    expect(sessionRuntimeForNextTurn(sameEndpoint)).toMatchObject({ codex_provider: 'default', model: undefined, effort: undefined })
+    const idle = { ...session, codex_provider_control: { ...session.codex_provider_control!, pending: false } }
+    expect(sessionRuntimeForNextTurn(idle)).toBe(idle)
+    const claude = { ...session, backend: 'claude' as const }
+    expect(sessionRuntimeForNextTurn(claude)).toBe(claude)
   })
 })
 

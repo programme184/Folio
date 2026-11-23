@@ -236,6 +236,7 @@ const api: AgentsDockAPI = {
     around: (sessionId, anchorSeq, limit) => ipcRenderer.invoke('timeline:around', sessionId, anchorSeq, limit),
     trace: (sessionId, runId, anchorSeq, after, limit) => ipcRenderer.invoke('timeline:trace', sessionId, runId, anchorSeq, after, limit),
     index: sessionId => ipcRenderer.invoke('timeline:index', sessionId),
+    findEvent: (sessionId, eventId) => ipcRenderer.invoke('timeline:find-event', sessionId, eventId),
     search: (sessionId, query, limit) => ipcRenderer.invoke('timeline:search', sessionId, query, limit),
     subscribe: (sessionId, after) => ipcRenderer.invoke('timeline:subscribe', sessionId, after),
     unsubscribe: sessionId => ipcRenderer.invoke('timeline:unsubscribe', sessionId),
@@ -265,6 +266,7 @@ const api: AgentsDockAPI = {
     cancel: scope => ipcRenderer.invoke('claude:login:cancel', scope)
   },
   customModels: {
+    check: (scope, backend, input) => ipcRenderer.invoke('custom-models:check', scope, backend, input),
     read: (scope, backend, sessionId) => ipcRenderer.invoke('custom-models:read', scope, backend, sessionId),
     save: (scope, backend, input) => ipcRenderer.invoke('custom-models:save', scope, backend, input)
   },
@@ -289,6 +291,7 @@ const api: AgentsDockAPI = {
     ),
     permissionProfiles: sessionId => ipcRenderer.invoke('codex:permission-profiles', sessionId),
     goal: sessionId => ipcRenderer.invoke('codex:goal:get', sessionId),
+    blockedGoalReport: sessionId => ipcRenderer.invoke('codex:goal:blocked-report', sessionId),
     setGoal: (sessionId, input) => ipcRenderer.invoke('codex:goal:set', sessionId, input),
     clearGoal: sessionId => ipcRenderer.invoke('codex:goal:clear', sessionId),
     compact: sessionId => ipcRenderer.invoke('codex:compact', sessionId),
@@ -449,6 +452,7 @@ const api: AgentsDockAPI = {
     write: (profileId, profileGeneration, sessionId, data) => ipcRenderer.send('terminal:write', profileId, profileGeneration, sessionId, data),
     resize: (profileId, profileGeneration, sessionId, columns, rows) => ipcRenderer.send('terminal:resize', profileId, profileGeneration, sessionId, columns, rows),
     scroll: (profileId, profileGeneration, sessionId, delta) => ipcRenderer.send('terminal:scroll', profileId, profileGeneration, sessionId, delta),
+    acknowledge: (profileId, profileGeneration, sessionId, receipt) => ipcRenderer.send('terminal:acknowledge', profileId, profileGeneration, sessionId, receipt),
     disconnect: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:disconnect', profileId, profileGeneration, sessionId),
     kill: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:kill', profileId, profileGeneration, sessionId),
     windows: (profileId, profileGeneration, sessionId) => ipcRenderer.invoke('terminal:windows', profileId, profileGeneration, sessionId),
