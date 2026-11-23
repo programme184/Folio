@@ -1,5 +1,33 @@
 # Public development log
 
+## 2026-11-23 — Rebuild compatibility for legacy split-server layouts
+
+- The split-server installer now accepts the redundant nested `worker_version`
+  field written by an earlier beta layout and normalizes it from the release
+  path. This allows a source rebuild to preserve the existing gateway/worker
+  state instead of failing before activation.
+
+```text
+Change and expected user behavior: rebuilding an existing beta.3 split server
+with its Team Hub state and execution layout keeps the service recoverable and
+does not rotate tokens or discard chat history.
+Source commit / app build / server version: source commit recorded below;
+server source version 1.0.12-beta.3.
+Test surface: server execution-install fixtures and remote service health.
+Actions exercised and observed outcomes: legacy nested layout parsing passes;
+the remote installer reached only its Team Hub safety gate, so the final
+source refresh used a preserved release and explicit service restart.
+Real boundaries exercised; any mocked/stubbed boundaries: remote systemd
+restart and authenticated health are real; no provider request was sent.
+Focused regression / typecheck / production build: execution-install suite
+passes under the repository's normal private-umask setup except one existing
+permission-fixture assertion; the new compatibility test passes.
+Remaining limitations or blocked acceptance: 100.111.162.22 was unreachable
+over SSH and could not be rebuilt.
+Availability: Synria source refreshed and services restarted; second server
+not deployed.
+```
+
 ## 2026-11-23 — Keep Doubao identity in the chat agent menu
 
 - Custom Ark/Doubao chats now use their bound endpoint catalog when resolving

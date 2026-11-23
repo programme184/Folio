@@ -48,6 +48,13 @@ class ExecutionInstallTests(unittest.TestCase):
         (release / ".venv/bin/python").symlink_to(Path(os.sys.executable).resolve())
         return release
 
+    def test_layout_accepts_legacy_nested_worker_version(self) -> None:
+        manifest = install.layout_manifest(self.layout)
+        legacy = json.loads(json.dumps(manifest))
+        legacy["layout"]["worker_version"] = manifest["worker_version"]
+        parsed = install.ExecutionLayout.from_dict(legacy["layout"])
+        self.assertEqual(parsed, self.layout)
+
     def receipt(self, layout: install.ExecutionLayout) -> dict:
         manifest = install.layout_manifest(layout)
         return {"gateway_version": manifest["gateway_version"], "worker_version": manifest["worker_version"],

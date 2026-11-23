@@ -170,9 +170,16 @@ class ExecutionLayout:
     def from_dict(cls, value: dict[str, Any]) -> "ExecutionLayout":
         expected = {"install_root", "config_root", "state_root", "home", "platform",
                     "worker_release", "gateway_release", "bind", "port", "environment"}
-        if not isinstance(value, dict) or set(value) != expected:
+        if not isinstance(value, dict):
             raise ValueError("execution layout fields are invalid")
-        converted = dict(value)
+        # beta.3 wrote the worker version redundantly inside the nested layout.
+        # It is advisory (the authoritative value is derived from the release
+        # path), so accept and discard that legacy field while still rejecting
+        # every other unknown field.
+        extras = set(value) - expected
+        if extras - {"worker_version"} or expected - set(value):
+            raise ValueError("execution layout fields are invalid")
+        converted = {key: value[key] for key in expected}
         for key in ("install_root", "config_root", "state_root", "home", "worker_release", "gateway_release"):
             converted[key] = _path(converted[key])
         result = cls(**converted)
@@ -342,9 +349,13 @@ def installed_layout(root: Path) -> ExecutionLayout:
         raise ValueError("installed execution layout is invalid")
     layout = ExecutionLayout.from_dict(value.get("layout"))
     expected = layout_manifest(layout)
+    # Normalize the legacy redundant nested worker_version before comparing
+    # the persisted manifest with the canonical representation.
+    normalized = dict(value)
+    normalized["layout"] = expected["layout"]
     retained = value.get("retained_releases")
     if (layout.install_root != root or set(value) != set(expected)
-            or {key: item for key, item in value.items() if key != "retained_releases"}
+            or {key: item for key, item in normalized.items() if key != "retained_releases"}
             != {key: item for key, item in expected.items() if key != "retained_releases"}
             or not isinstance(retained, list) or not all(isinstance(item, str) for item in retained)
             or len(retained) != len(set(retained))
