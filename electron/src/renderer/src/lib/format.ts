@@ -1,6 +1,6 @@
 import type { Backend, CodexProvider, RuntimeCatalog, Session } from '@shared/types'
 import { getLocale, t, type Locale } from '@shared/i18n'
-import { doubaoLabel } from '@shared/doubao'
+import { doubaoLabel, doubaoModelOptions } from '@shared/doubao'
 import { runtimeBackendCatalogFor, runtimeEffortOptions } from '@shared/runtime-catalog'
 
 export function backendLabel(backend: Backend, codexProvider?: CodexProvider, customBaseURL?: string | null): string {
@@ -46,9 +46,13 @@ export function runtimeLabel(session: Session, catalog?: RuntimeCatalog | null):
   const custom = session.backend === 'codex' && (session.provider_connection === 'custom' ? 'custom' : session.codex_provider) === 'custom'
   const model = session.model?.trim()
   const effort = session.backend === 'cursor' || session.backend === 'opencode' ? '' : session.effort?.trim()
+  const models = doubaoModelOptions(
+    session.provider_connection === 'custom' ? session.provider_connection_catalog?.base_url : undefined,
+    backend?.models ?? []
+  )
   const modelLabel = model
-    ? backend?.models.find(option => option.value === model)?.label ?? model
-    : backend?.models.find(option => option.value === (backend.default_model ?? ''))?.label ?? (backend?.default_model?.trim() || (custom ? t('codexProvider.chooseModel') : session.backend === 'claude' ? 'Sonnet' : session.backend === 'codex' ? 'GPT' : session.backend === 'opencode' ? t('opencode.defaultModel') : 'Auto'))
+    ? models.find(option => option.value === model)?.label ?? model
+    : models.find(option => option.value === (backend?.default_model ?? ''))?.label ?? (backend?.default_model?.trim() || (custom ? t('codexProvider.chooseModel') : session.backend === 'claude' ? 'Sonnet' : session.backend === 'codex' ? 'GPT' : session.backend === 'opencode' ? t('opencode.defaultModel') : 'Auto'))
   const supportedEfforts = custom ? runtimeEffortOptions(catalog, session.backend, session.model, null, (session.provider_connection === 'custom' ? 'custom' : session.codex_provider), (session.provider_connection_catalog ?? session.codex_provider_catalog)) : null
   const effortLabel = session.backend === 'cursor' || session.backend === 'opencode'
     ? null

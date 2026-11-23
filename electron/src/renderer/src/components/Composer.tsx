@@ -3877,6 +3877,9 @@ function BackendMenu({ session: activeSession, running, admitting }: { session: 
   const openCodeAvailable = opencodeBackendAvailable(health, catalog)
   const openCodeUnavailableReason = opencodeBackendUnavailableReason(health, catalog)
   const providerLocked = isBackendLocked(session)
+  const sessionCatalog = session.provider_connection_catalog ?? session.codex_provider_catalog
+  const customBaseURL = sessionCatalog?.base_url
+    ?? catalog?.backends?.[session.backend]?.custom_provider?.base_url
   // Both endpoint choices use the same native Codex conversation. The server
   // saves changes made during a turn and applies them at its idle boundary.
   const codexEndpointOnly = session.backend === 'codex' && (providerLocked || running || admitting)
@@ -3894,7 +3897,7 @@ function BackendMenu({ session: activeSession, running, admitting }: { session: 
         ? 'Wait for the message to be accepted before changing backend'
         : t('ui.composer.changeAgent')
   const activeProvider = session.provider_connection === 'custom' ? 'custom' : (activeSession.codex_provider_control?.active_provider ?? activeSession.codex_provider)
-  const providerLabel = backendLabel(session.backend, activeProvider, catalog?.backends?.[session.backend]?.custom_provider?.base_url)
+  const providerLabel = backendLabel(session.backend, activeProvider, customBaseURL)
   const compactLabel = session.backend === 'codex' && activeProvider === 'custom'
     ? t('codexProvider.compactLabel')
     : providerLabel
@@ -3923,10 +3926,13 @@ function BackendMenu({ session: activeSession, running, admitting }: { session: 
       </Tooltip.Trigger>
       <Tooltip.Portal><Tooltip.Content className="shortcut-tooltip backend-unavailable-tooltip" side="right" sideOffset={7}><span>{unavailableReason}</span><Tooltip.Arrow className="shortcut-tooltip-arrow" /></Tooltip.Content></Tooltip.Portal>
     </Tooltip.Root>
+    const choiceBaseURL = provider_connection === 'custom'
+      ? (backend === session.backend ? customBaseURL : catalog?.backends?.[backend]?.custom_provider?.base_url)
+      : undefined
     return <DropdownMenu.CheckboxItem key={choice} className="menu-item" checked={selectedChoice === choice} onCheckedChange={() => {
       if (selectedChoice !== choice) void useAppStore.getState().updateSession(session.id, { backend, codex_provider, provider_connection, model: null, effort: null })
       else if (pending) void useAppStore.getState().updateSession(session.id, { backend, codex_provider, provider_connection })
-    }}><BackendMark backend={backend} size={15} />{backendLabel(backend, provider_connection === 'custom' ? 'custom' : codex_provider, catalog?.backends?.[backend]?.custom_provider?.base_url)}</DropdownMenu.CheckboxItem>
+    }}><BackendMark backend={backend} size={15} />{backendLabel(backend, provider_connection === 'custom' ? 'custom' : codex_provider, choiceBaseURL)}</DropdownMenu.CheckboxItem>
   })}<DropdownMenu.Separator className="menu-separator" /><DropdownMenu.Item className="menu-item" onSelect={() => openAIProviderSettings()}><Plus size={15} />{t('connections.addAgent')}</DropdownMenu.Item></DropdownMenu.Content></DropdownMenu.Portal></DropdownMenu.Root></Tooltip.Provider>
 }
 

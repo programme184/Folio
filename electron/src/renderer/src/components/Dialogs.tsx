@@ -3153,6 +3153,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
         const selection = chatBackendSelection(value)
         const needsConfiguration = value === 'codex-custom' && !codexCustomProviderAvailable(health, catalog)
         const unavailable = selection.provider_connection !== 'custom' && (value === 'cursor' && !cursorAvailable || value === 'opencode' && !opencodeBackendAvailable(health, catalog))
+        const customBaseURL = selection.provider_connection === 'custom' ? catalog?.backends?.[selection.backend]?.custom_provider?.base_url : undefined
         return <button type="button" className={backendChoice === value ? 'active' : ''} key={value} aria-pressed={backendChoice === value} title={needsConfiguration ? t('codexProvider.configure') : unavailable ? (value === 'opencode' ? opencodeBackendUnavailableReason(health, catalog) : cursorUnavailableReason) ?? undefined : undefined} onClick={() => {
           if (needsConfiguration) {
             useAppStore.getState().setModal(mode, false)
@@ -3161,7 +3162,7 @@ export function SessionDialog({ mode }: { mode: 'newChat' | 'resume' }) {
             return
           }
           setBackendChoice(value); setModel(''); setEffort(''); setManualModel(false)
-        }}><BackendMark backend={selection.backend} size={16} />{backendLabel(selection.backend, selection.provider_connection === 'custom' ? 'custom' : selection.codex_provider)}{needsConfiguration ? ` · ${t('codexProvider.configure')}` : unavailable ? t("ui.Dialogs.unavailable_77649d6") : ''}</button>
+        }}><BackendMark backend={selection.backend} size={16} />{backendLabel(selection.backend, selection.provider_connection === 'custom' ? 'custom' : selection.codex_provider, customBaseURL)}{needsConfiguration ? ` · ${t('codexProvider.configure')}` : unavailable ? t("ui.Dialogs.unavailable_77649d6") : ''}</button>
       })}</div>{mode === 'newChat' && <button type="button" className="quiet-button" onClick={() => {
         useAppStore.getState().setModal(mode, false)
         openAIProviderSettings()

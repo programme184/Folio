@@ -1,5 +1,32 @@
 # Public development log
 
+## 2026-11-23 — Keep Doubao identity in the chat agent menu
+
+- Custom Ark/Doubao chats now use their bound endpoint catalog when resolving
+  the agent label and model display. This keeps a connected Doubao endpoint
+  visible as Doubao instead of falling back to a generic OpenCode label when
+  the global runtime catalog is stale or sparse.
+
+```text
+Change and expected user behavior: a connected Doubao chat remains selectable
+and visibly labeled Doubao in the conversation agent menu; its bound models
+remain available even when the global catalog omits endpoint metadata.
+Source commit / app build / server version: uncommitted desktop source;
+AgentsServer 1.0.12-beta.3.
+Test surface: renderer/shared fixtures plus production Electron build.
+Actions exercised and observed outcomes: verified Synria's live health and
+runtime catalog show OpenCode ready and the Ark custom endpoint configured;
+429 focused tests passed, including Composer, dialogs, catalog, and formatting.
+The live Doubao request was not sent.
+Real boundaries exercised; any mocked/stubbed boundaries: health/catalog were
+read from the local server; provider inference remained uncalled.
+Focused regression / typecheck / production build: typecheck and 429 focused
+tests passed; production build pending final verification.
+Remaining limitations or blocked acceptance: the active desktop app still needs
+one manual agent-menu click-through against the connected Synria profile.
+Availability: source only; not published or deployed.
+```
+
 ## 2026-11-23 — Offer multiple Doubao model IDs in chat
 
 - Doubao/Volcengine Ark custom endpoints now expose the known Seed and GLM
