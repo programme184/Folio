@@ -3,7 +3,7 @@ import { t } from '@shared/i18n'
 import { useLocale } from '../lib/i18n'
 import { useEffect, useMemo, useState } from 'react'
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Archive, ArchiveRestore, ArrowLeftRight, BookOpen, Check, ChevronRight, Columns2, Copy, Folder, GitFork, LayoutGrid, LoaderCircle, Minus, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pencil, Pin, RefreshCw, Search, Square, SquareTerminal, Trash2, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeftRight, Check, ChevronRight, Columns2, Columns3, Copy, Folder, GitFork, Grid2X2, LayoutGrid, LoaderCircle, Minus, MoreHorizontal, PanelLeft, PanelRight, PanelRightClose, Pencil, Pin, RefreshCw, Search, Square, SquareTerminal, Trash2, X } from 'lucide-react'
 import type { Session } from '@shared/types'
 import { completedPrefixForkAvailable } from '@shared/session-fork'
 import { backendLabel, shortId } from '../lib/format'
@@ -30,9 +30,7 @@ export function ChatHeader({
   onBrowsePane,
   onOpenSplit,
   onSwapPanes,
-  onClosePane,
-  papersOpen = false,
-  onPapersToggle
+  onClosePane
 }: {
   session?: Session | null
   focused?: boolean
@@ -48,8 +46,6 @@ export function ChatHeader({
   onOpenSplit?: (sessionId: string) => void
   onSwapPanes?: () => void
   onClosePane?: () => void
-  papersOpen?: boolean
-  onPapersToggle?: () => void
 }) {
   useLocale()
   const selectedSession = useAppStore(state => state.sessions.find(candidate => candidate.id === state.selectedSessionId) ?? null)
@@ -111,10 +107,7 @@ export function ChatHeader({
   const sidebarButton = !sidebarVisible && onSidebarToggle
     ? <ShortcutTooltip shortcut="toggleSidebar" label={t('ui.sidebar.showChatList')}><button className="icon-button" aria-label={t('ui.sidebar.showChatList')} onClick={onSidebarToggle}><PanelLeft size={16} /></button></ShortcutTooltip>
     : null
-  const papersButton = onPapersToggle
-    ? <button type="button" className={`icon-button papers-toggle${papersOpen ? ' active' : ''}`} aria-pressed={papersOpen} aria-label={papersOpen ? t('papers.close') : t('papers.open')} title={papersOpen ? t('papers.close') : t('papers.open')} onClick={onPapersToggle}><BookOpen size={16} /></button>
-    : null
-  if (!session) return <header className="chat-header empty"><div className="header-actions">{papersButton}{sidebarButton}</div></header>
+  if (!session) return <header className="chat-header empty"><div className="header-actions">{sidebarButton}</div></header>
   const save = () => { const clean = title.trim(); if (clean && clean !== session.title) void useAppStore.getState().updateSession(session.id, { title: clean }) }
   const sessionIdValue = session.session_id || session.codex_thread_id || session.claude_session_id || session.cursor_session_id || session.opencode_session_id || session.gemini_session_id
   const geminiIdentityPending = session.backend === 'gemini' && !sessionIdValue
@@ -169,7 +162,6 @@ export function ChatHeader({
         {onBrowsePane && <button type="button" className="icon-button pane-browser-toggle"
           title={t('chatWorkspace.browsePane')} aria-label={t('chatWorkspace.browsePane')}
           onClick={onBrowsePane}><PanelLeft size={16} /></button>}
-        {onOpenFile && <ShortcutTooltip shortcut="openWorkspaceFile" label={t('editor.openFile')}><button type="button" className="icon-button" aria-label={t('editor.openFile')} onClick={onOpenFile}><Search size={16} /></button></ShortcutTooltip>}
         <DropdownMenu.Root open={actionsMenuOpen} onOpenChange={open => {
           setActionsMenuOpen(open)
           if (!open) setSplitMenuRequested(false)
@@ -203,13 +195,21 @@ export function ChatHeader({
         <ScheduledJobsPopover session={session} />
         <button type="button" className="icon-button" title={t(workspaceBarVisible ? 'chatWorkspace.hide' : 'chatWorkspace.show')} aria-label={t(workspaceBarVisible ? 'chatWorkspace.hide' : 'chatWorkspace.show')} aria-expanded={workspaceBarVisible} onClick={() => useAppStore.getState().toggleChatWorkspaceBar()}><LayoutGrid size={16} /></button>
         {onSwapPanes && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} aria-label={t("ui.ChatHeader.ChatHeader.swap_chat_panes_7129f59")} onClick={onSwapPanes}><ArrowLeftRight size={15} /></button>}
-        {papersButton}
-        {focused && onTerminalToggle && <ShortcutTooltip shortcut="toggleTerminal" label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}><button
-          className={`icon-button terminal-toggle${terminalOpen ? ' active' : ''}`}
-          aria-label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}
-          aria-pressed={terminalOpen}
-          onClick={onTerminalToggle}
-        ><SquareTerminal size={16} /></button></ShortcutTooltip>}
+        <span className="chat-header-dock-actions">
+          {focused && onTerminalToggle && <ShortcutTooltip shortcut="toggleTerminal" label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}><button
+            className={`icon-button terminal-toggle${terminalOpen ? ' active' : ''}`}
+            aria-label={terminalOpen ? t("ui.ChatHeader.ChatHeader.close_terminal_panel_48e963f") : t("ui.ChatHeader.ChatHeader.open_terminal_panel_3284242")}
+            aria-pressed={terminalOpen}
+            onClick={onTerminalToggle}
+          ><SquareTerminal size={16} /></button></ShortcutTooltip>}
+          {onOpenFile && <ShortcutTooltip shortcut="openWorkspaceFile" label={t('editor.openFile')}><button type="button" className="icon-button" aria-label={t('editor.openFile')} onClick={onOpenFile}><Search size={16} /></button></ShortcutTooltip>}
+          <ShortcutTooltip shortcut="toggleInspector" label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}><button
+            className="icon-button inspector-toggle"
+            aria-label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}
+            aria-pressed={focused && inspector}
+            onClick={onInspectorToggle ?? (() => useAppStore.getState().setInspectorVisible(!inspector))}
+          >{focused && inspector ? <PanelRightClose size={16} /> : <PanelRight size={16} />}</button></ShortcutTooltip>
+        </span>
         <CodexStatusButton />
         <ClaudeStatusButton />
         {(running || admitting) && (
@@ -217,12 +217,6 @@ export function ChatHeader({
           || (session.backend === 'codex' && !codexControlsSupported)
         ) && <AgentRunningStatus backend={session.backend} starting={!running && admitting} />}
         <ChatSyncStatus sessionId={session.id} />
-        <ShortcutTooltip shortcut="toggleInspector" label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}><button
-          className="icon-button inspector-toggle"
-          aria-label={`${focused && inspector ? t("ui.ChatHeader.ChatHeader.hide_ac20a57") : 'Show'} right panel`}
-          aria-pressed={focused && inspector}
-          onClick={onInspectorToggle ?? (() => useAppStore.getState().setInspectorVisible(!inspector))}
-        >{focused && inspector ? <PanelRightClose size={16} /> : <PanelRight size={16} />}</button></ShortcutTooltip>
         {onClosePane && <button className="icon-button" title={t("ui.ChatHeader.ChatHeader.close_this_chat_pane_4926598")} aria-label={t("ui.ChatHeader.ChatHeader.close_pane_fe2672f", { "title": String(session.title) })} onClick={onClosePane}><X size={15} /></button>}
       </div>
     </header>
@@ -254,14 +248,36 @@ function ChatSyncStatus({ sessionId }: { sessionId: string }) {
   </span>
 }
 
+function WorkspaceLayoutControls() {
+  useLocale()
+  const count = useAppStore(state => state.chatPaneCount)
+  const threeColumns = useAppStore(state => state.chatPaneCount === 3
+    && state.chatWorkspaces.find(workspace => workspace.id === state.activeChatWorkspaceId)?.threePaneLayout === 'columns')
+  return <div className="workspace-layout-picker window-layout-picker" role="group" aria-label={t('chatWorkspace.layout')}>
+    {([1, 2, 3, 'columns', 4] as const).map(value => <button key={value} type="button" className="icon-button"
+      aria-label={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
+      title={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
+      aria-pressed={value === 'columns' ? threeColumns : count === value && !threeColumns}
+      onClick={() => {
+        if (value === 'columns' || value === 3) useAppStore.getState().setChatThreePaneLayout(value === 'columns' ? 'columns' : 'split')
+        else useAppStore.getState().setChatPaneCount(value)
+      }}>
+      {value === 1 ? <Square size={14} /> : value === 2 ? <Columns2 size={14} /> : value === 'columns' ? <Columns3 size={14} /> : value === 4 ? <Grid2X2 size={14} /> : <span className="three-pane-icon" aria-hidden="true"><span /><span /><span /></span>}
+    </button>)}
+  </div>
+}
+
 export function WindowFrameControls() {
   useLocale()
   const [maximized, setMaximized] = useState(false)
-  if (document.documentElement.dataset.platform === 'darwin') return null
+  const darwin = document.documentElement.dataset.platform === 'darwin'
   const run = (action: () => Promise<unknown>) => { void action().catch(() => undefined) }
   return <div className="window-frame-controls">
-    <button type="button" aria-label={t('window.minimize')} onClick={() => run(() => window.agentsDock.native.minimizeWindow())}><Minus size={14} /></button>
-    <button type="button" aria-label={t(maximized ? 'window.restore' : 'window.maximize')} onClick={() => run(async () => setMaximized(await window.agentsDock.native.toggleMaximizeWindow()))}><Square size={12} /></button>
-    <button type="button" className="window-frame-close" aria-label={t('native.close')} onClick={() => run(() => window.agentsDock.native.closeWindow())}><X size={15} /></button>
+    <WorkspaceLayoutControls />
+    {darwin ? null : <>
+      <button type="button" aria-label={t('window.minimize')} onClick={() => run(() => window.agentsDock.native.minimizeWindow())}><Minus size={14} /></button>
+      <button type="button" aria-label={t(maximized ? 'window.restore' : 'window.maximize')} onClick={() => run(async () => setMaximized(await window.agentsDock.native.toggleMaximizeWindow()))}><Square size={12} /></button>
+      <button type="button" className="window-frame-close" aria-label={t('native.close')} onClick={() => run(() => window.agentsDock.native.closeWindow())}><X size={15} /></button>
+    </>}
   </div>
 }

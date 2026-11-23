@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-11-23 — Move workspace layout controls into the title bar
+
+- The multi-server pane layout picker now stays in the window-controls row,
+  immediately before the native minimize, maximize, and close controls. It is
+  available even before a workspace is created. The terminal, workspace-file,
+  and right-panel file controls now share one chat-header action group, and the
+  papers/read button has been removed from chat headers.
+
+```text
+Change and expected user behavior: choose 1, 2, 3, three-column, or 4-pane
+layouts from the title bar; the selected layout updates the active workspace.
+The terminal and file/right-panel controls are adjacent in each pane header.
+Source commit / app build / server version: uncommitted desktop source; local
+AgentsServer process unchanged.
+Test surface: component fixtures plus production Electron build.
+Actions exercised and observed outcomes: the focused header/grid tests clicked
+each layout control through WindowFrameControls and verified pane transitions,
+resize ownership, and drag cancellation. A real native app interaction was
+not completed because the available computer-use surface exposed no app
+windows in this session.
+Real boundaries exercised; any mocked/stubbed boundaries: component tests use
+the store and mocked native API; no live provider or server request was needed
+for this title-bar-only change.
+Focused regression / typecheck / production build: ChatHeader and
+ChatWorkspaceGrid 51 tests passed; TypeScript typecheck passed; electron-vite
+production build and compile-output verification passed.
+Remaining limitations or blocked acceptance: the actual installed Electron
+window still needs a manual/offscreen click-through when a computer-use app
+surface is available.
+Availability: source only; not published or deployed.
+```
+
 ## 2026-11-20 — Keep @Chat selection separate from message submission
 
 - Selecting a local `@Chat` target now remains an editing step. The composer

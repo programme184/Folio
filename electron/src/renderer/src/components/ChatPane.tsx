@@ -37,7 +37,6 @@ export const ChatPane = memo(function ChatPane({
   onTerminalToggle,
   onBrowsePane,
   papersOpen = false,
-  onPapersToggle,
   onAskPaper
 }: {
   pane: ChatPaneId
@@ -206,8 +205,6 @@ export const ChatPane = memo(function ChatPane({
       onBrowsePane={onBrowsePane}
       onOpenSplit={candidateId => void useAppStore.getState().openSessionInSplit(candidateId)}
       onClosePane={split ? () => useAppStore.getState().closeChatPane(pane) : undefined}
-      papersOpen={papersOpen}
-      onPapersToggle={focused ? onPapersToggle : undefined}
     />
   const conversation = <div className="pane-conversation">
     <div

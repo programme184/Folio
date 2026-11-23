@@ -5,6 +5,7 @@ import type { PublicServerProfile, Session } from '@shared/types'
 import type { ChatWorkspace } from '../lib/chat-panes'
 import { useAppStore } from '../store/app-store'
 import { ChatWorkspaceGrid, type CrossServerWorkspaceState } from './ChatWorkspaceGrid'
+import { WindowFrameControls } from './ChatHeader'
 
 vi.mock('./ChatPane', () => ({ ChatPane: ({ pane, focused, onBrowsePane }: { pane: string; focused: boolean; onBrowsePane?: () => void }) =>
   <div data-testid={`chat-pane-${pane}`} data-focused={String(focused)}>
@@ -59,8 +60,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
   })
 
   const startDrag = () => {
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     const grid = view.container.querySelector('.workspace-chat-grid')!
     vi.spyOn(grid, 'getBoundingClientRect').mockReturnValue({
       left: 0, top: 0, width: 1000, height: 800, right: 1000, bottom: 800, x: 0, y: 0, toJSON: () => ({})
@@ -77,8 +78,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
   it('creates in the initiating empty pane even when its search has no matches', () => {
     const requestNewChat = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({ requestNewChat })
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     const pane = within(view.container.querySelector('[data-chat-pane="secondary"]') as HTMLElement)
     fireEvent.change(pane.getByRole('searchbox'), { target: { value: 'no matching chat' } })
     fireEvent.click(pane.getByRole('button', { name: 'New chat' }))
@@ -89,8 +90,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     const requestNewChat = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState({ requestNewChat, chatWorkspaces: [], chatWorkspaceBarVisible: false,
       activeChatWorkspaceId: '', chatPaneCount: 1 })
-    render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }))
     expect(requestNewChat).toHaveBeenCalledExactlyOnceWith(undefined)
     expect(useAppStore.getState().chatWorkspaces).toEqual([])
@@ -108,8 +109,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
   })
 
   it('offers both three-pane arrangements and keeps independent widths', () => {
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     fireEvent.click(screen.getByRole('button', { name: 'Three columns' }))
     const grid = view.container.querySelector('.workspace-chat-grid')!
     expect(grid).toHaveAttribute('data-three-pane-layout', 'columns')
@@ -207,8 +208,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
         { ...workspace('workspace-other'), panes: { primary: left.id, secondary: null } }
       ]
     })
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
 
     const right = view.container.querySelector('[data-pane="secondary"]') as HTMLElement
     fireEvent.pointerDown(within(right).getByRole('button', { name: /a, Online.*Choose AgentsServer/ }), { button: 0, ctrlKey: false })
@@ -295,8 +296,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     useAppStore.setState({ sessions: [current], folderOrder: ['Folio'], requestNewChat,
       selectedSessionId: current.id, chatPanes: { primary: current.id, secondary: null }, chatPaneCount: 1,
       chatWorkspaces: [{ ...workspace('workspace-main'), paneCount: 1, panes: { primary: current.id, secondary: null } }] })
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
 
     fireEvent.click(screen.getByRole('button', { name: 'Browse primary' }))
     fireEvent.click(screen.getByRole('button', { name: 'Create chat in Folio' }))
@@ -330,22 +331,22 @@ describe('ChatWorkspaceGrid resize ownership', () => {
     expect(screen.getByTestId('chat-pane-secondary')).toHaveAttribute('data-focused', 'true')
   })
 
-  it('does not show workspace tabs or layout controls before opting in', () => {
+  it('keeps title-bar layout controls visible before opting into workspaces', () => {
     useAppStore.setState({ chatWorkspaces: [], chatWorkspaceBarVisible: false, activeChatWorkspaceId: '', chatPaneCount: 1 })
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     expect(view.container.querySelector('.workspace-tabs-bar')).not.toBeInTheDocument()
-    expect(view.container.querySelector('.workspace-layout-picker')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.workspace-layout-picker')).toBeInTheDocument()
     expect(view.container.querySelector('.chat-grid-workspace')).toHaveClass('plain-chat-mode')
   })
 
   it('reveals an empty bar and creates workspaces only with its plus button', async () => {
     useAppStore.setState({ chatWorkspaces: [], chatWorkspaceBarVisible: false, activeChatWorkspaceId: '', chatPaneCount: 1 })
-    const view = render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    const view = render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     act(() => useAppStore.getState().toggleChatWorkspaceBar())
     expect(view.container.querySelector('.workspace-tabs-bar')).toBeInTheDocument()
-    expect(view.container.querySelector('.workspace-layout-picker')).not.toBeInTheDocument()
+    expect(view.container.querySelector('.workspace-layout-picker')).toBeInTheDocument()
     expect(view.container.querySelector('.chat-grid-workspace')).not.toHaveClass('plain-chat-mode')
     expect(screen.queryAllByRole('tab')).toHaveLength(0)
     act(() => useAppStore.getState().toggleChatWorkspaceBar())
@@ -384,8 +385,8 @@ describe('ChatWorkspaceGrid resize ownership', () => {
   })
 
   it('does not let either column divider collapse a neighboring pane', () => {
-    render(<ChatWorkspaceGrid sidebarVisible terminalOpen={false}
-      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} />)
+    render(<><WindowFrameControls /><ChatWorkspaceGrid sidebarVisible terminalOpen={false}
+      onSidebarToggle={() => undefined} onTerminalToggle={() => undefined} sideChat={() => null} /></>)
     fireEvent.click(screen.getByRole('button', { name: 'Three columns' }))
     fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize first column' }), { key: 'End' })
     fireEvent.keyDown(screen.getByRole('separator', { name: 'Resize last column' }), { key: 'Home' })

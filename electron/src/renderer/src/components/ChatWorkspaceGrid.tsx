@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type PointerEvent, type ReactNode, type SetStateAction } from 'react'
-import { ChevronDown, ChevronRight, Columns2, Columns3, Folder, FolderPlus, Grid2X2, PanelLeft, Plus, Square, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, FolderPlus, PanelLeft, Plus, X } from 'lucide-react'
 import type { Session, SessionSnapshot } from '@shared/types'
 import { t, useLocale } from '../lib/i18n'
 import { CHAT_PANE_IDS, type ChatPane as ChatPaneId, type ChatPaneCount, type ChatPaneServerAssignment } from '../lib/chat-panes'
@@ -361,17 +361,6 @@ export function ChatWorkspaceGrid({ crossServerWorkspace: controlledCrossServerW
     {barVisible && <header className="workspace-tabs-bar">
       {!sidebarVisible && <button type="button" className="icon-button" onClick={onSidebarToggle} aria-label={t('chatWorkspace.showSidebar')}><PanelLeft size={16} /></button>}
       <ChatWorkspaceTabs key={JSON.stringify([profileId, profileGeneration, serverIdentity])} />
-      {workspaces.length > 0 && <div className="workspace-layout-picker" role="group" aria-label={t('chatWorkspace.layout')}>
-        {([1, 2, 3, 'columns', 4] as const).map(value => <button key={value} type="button" className="icon-button"
-          aria-label={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })} title={value === 'columns' ? t('chatWorkspace.threeColumns') : t('chatWorkspace.paneCount', { count: value })}
-          aria-pressed={value === 'columns' ? threeColumns : effectiveCount === value && !threeColumns}
-          onClick={() => {
-            if (value === 'columns' || value === 3) useAppStore.getState().setChatThreePaneLayout(value === 'columns' ? 'columns' : 'split')
-            else useAppStore.getState().setChatPaneCount(value)
-          }}>
-          {value === 1 ? <Square size={15} /> : value === 2 ? <Columns2 size={15} /> : value === 'columns' ? <Columns3 size={15} /> : value === 4 ? <Grid2X2 size={15} /> : <span className="three-pane-icon" aria-hidden="true"><span /><span /><span /></span>}
-        </button>)}
-      </div>}
     </header>}
     <div ref={gridRef} className={`workspace-chat-grid chat-split-view${effectiveCount >= 3 && !threeColumns ? ' short' : ''}`} data-pane-count={effectiveCount} data-three-pane-layout={threeColumns ? 'columns' : 'split'}
       style={{ '--workspace-column': `${ratios.column}%`, '--workspace-row': `${ratios.row}%`,

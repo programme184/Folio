@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AgentsDockAPI } from '@shared/ipc'
 import { RUNNING_FORK_DESCRIPTION, RUNNING_FORK_UNAVAILABLE } from '@shared/session-fork'
 import { useAppStore } from '../store/app-store'
-import { ChatHeader } from './ChatHeader'
+import { ChatHeader, WindowFrameControls } from './ChatHeader'
 import { CodexRuntimeProvider } from './CodexRuntimeContext'
 import { RenameChatDialog } from './Dialogs'
 
@@ -75,6 +75,19 @@ describe('ChatHeader', () => {
     await userEvent.setup().click(button)
     expect(toggle).toHaveBeenCalledOnce()
     expect(screen.queryByRole('navigation', { name: 'Chat workspace' })).not.toBeInTheDocument()
+  })
+
+  it('places the multi-server layout controls to the left of the window size controls', () => {
+    document.documentElement.dataset.platform = 'linux'
+    useAppStore.setState({ chatPaneCount: 1, chatWorkspaces: [], activeChatWorkspaceId: '' })
+    render(<WindowFrameControls />)
+    const buttons = screen.getAllByRole('button')
+    const labels = buttons.map(button => button.getAttribute('aria-label'))
+    expect(labels).toEqual(['1 panes', '2 panes', '3 panes', 'Three columns', '4 panes', 'Minimize', 'Maximize', 'Close'])
+    expect(screen.queryByRole('button', { name: 'Open papers' })).not.toBeInTheDocument()
+    const layout = buttons[0].parentElement
+    const minimize = screen.getByRole('button', { name: 'Minimize' })
+    expect(layout?.compareDocumentPosition(minimize) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('keeps the right-panel button visible in an unfocused pane', async () => {
