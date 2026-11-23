@@ -1,5 +1,6 @@
 import type { Backend, CodexProvider, Health, RuntimeBackendCatalog, RuntimeCatalog, RuntimeDiagnostic, RuntimeOption, Session } from './types'
 import { t } from './i18n'
+import { doubaoModelOptions } from './doubao'
 
 /** UI identity only: the native runtime remains Codex for both choices. */
 export type ChatBackendChoice = Backend | 'codex-custom' | 'claude-custom' | 'opencode-custom' | 'cursor-custom' | 'gemini-custom'
@@ -221,7 +222,10 @@ export function runtimeCatalogOptions(
 ): RuntimeOption[] {
   const backendCatalog = runtimeBackendCatalogFor(catalog, backend, codexProvider, customCatalog)
   const replacements = type === 'models' ? backendCatalog?.model_replacements : undefined
-  const available = (backendCatalog?.[type] ?? []).filter(option => !replacements?.[option.value])
+  const source = type === 'models'
+    ? doubaoModelOptions(codexProvider === 'custom' ? customCatalog?.base_url : undefined, backendCatalog?.models ?? [])
+    : (backendCatalog?.[type] ?? [])
+  const available = source.filter(option => !replacements?.[option.value])
   const configuredDefault = type === 'models' ? backendCatalog?.default_model : backendCatalog?.default_effort
   const advertisedDefault = available.find(option => option.value === '')
   const defaultModel = type === 'models' && configuredDefault

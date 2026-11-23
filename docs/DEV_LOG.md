@@ -1,5 +1,30 @@
 # Public development log
 
+## 2026-11-23 — Offer multiple Doubao model IDs in chat
+
+- Doubao/Volcengine Ark custom endpoints now expose the known Seed and GLM
+  model IDs in the existing per-chat model picker when the endpoint does not
+  return a complete model catalog. Live endpoint rows keep precedence, and
+  manual model IDs remain available for newer deployments.
+
+```text
+Change and expected user behavior: choose among multiple Doubao model IDs in
+the conversation runtime menu, with the selected ID applied to the next turn.
+Source commit / app build / server version: uncommitted desktop source; server
+contract unchanged.
+Test surface: shared/runtime catalog and provider-settings fixtures.
+Actions exercised and observed outcomes: catalog merge preserves live metadata
+and adds the known Ark IDs; 78 focused tests passed. The actual connected
+Doubao request and native Electron click-through were not exercised here.
+Real boundaries exercised; any mocked/stubbed boundaries: provider catalog and
+renderer tests use fixtures; no live API key or provider request was used.
+Focused regression / typecheck / production build: focused tests and TypeScript
+typecheck passed; production build pending final verification.
+Remaining limitations or blocked acceptance: live Doubao model availability can
+vary by account/region and must be verified from the connected app.
+Availability: source only; not published or deployed.
+```
+
 ## 2026-11-23 — Move workspace layout controls into the title bar
 
 - The multi-server pane layout picker now stays in the window-controls row,

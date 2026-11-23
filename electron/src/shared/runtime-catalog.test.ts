@@ -159,6 +159,14 @@ describe('per-chat Codex provider selection', () => {
     expect(runtimeEffortAfterModelChange(discovered, 'codex', 'unlisted-model', 'high', 'custom')).toBeNull()
     expect(runtimeSelectionError(health, discovered, 'codex', 'unlisted-model', 'custom')).toBeNull()
   })
+
+  it('adds the Ark model choices to a Doubao custom chat catalog', () => {
+    const custom = { configured: true, available: true, model: null, base_url: 'https://ark.cn-beijing.volces.com/api/plan/v3', models: [] }
+    const options = runtimeCatalogOptions(catalog, 'codex', 'models', null, 'custom', custom)
+    expect(options.map(option => option.value)).toEqual(expect.arrayContaining([
+      'doubao-seed-2-1-pro-260628', 'doubao-seed-2-1-turbo-260628', 'glm-5-2-260617'
+    ]))
+  })
   it('blocks a retained chat after endpoint removal without borrowing native models', () => {
     const retained = { configured: true, available: true, model: null, base_url: 'https://first.example/v1',
       models: [{ value: 'first/model', label: 'First' }], efforts: [{ value: 'high', label: 'High' }] }

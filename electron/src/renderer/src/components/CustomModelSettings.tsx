@@ -5,6 +5,7 @@ import type { CustomModelBackend, CustomModels } from '@shared/custom-models'
 import { useAppStore } from '../store/app-store'
 import { trackOperation } from '../lib/analytics'
 import { endpointModelReference } from '../lib/endpoint-model-reference'
+import { doubaoModelOptions } from '@shared/doubao'
 
 /** Discovery/default changes do not run inference; pending setup adds an explicit check. */
 export function CustomModelSettings({ backend, active, onSaved, verifyOnSelect = false, baseURL }: {
@@ -72,7 +73,7 @@ export function CustomModelSettings({ backend, active, onSaved, verifyOnSelect =
     finally { if (serial.current === request) setSaving(false) }
   }
   if (!active) return null
-  const options = catalog?.models ?? []
+  const options = doubaoModelOptions(baseURL, catalog?.models ?? [])
   const missing = selected && !options.some(option => option.value === selected)
   const reference = endpointModelReference(baseURL ?? '')
   const manualValid = /^[\x21-\x7e]{1,256}$/.test(manualModel.trim())
