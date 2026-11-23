@@ -1,5 +1,28 @@
 # Public development log
 
+## 2026-11-23 — Rebuild Synria with the compatible OpenCode runtime
+
+- Synria's source runtime was refreshed from the current server tree, its
+  existing split services were restarted, and OpenCode CLI 1.18.29 was
+  installed in the server user's private PATH. The authenticated runtime
+  catalog now reports the Doubao custom provider as configured and available.
+
+```text
+Change and expected user behavior: the Synria server exposes the connected
+Doubao agent to the desktop picker after a service restart.
+Source commit / app build / server version: AgentsDock server commit
+12d276bf; server 1.0.12-beta.3; OpenCode CLI 1.18.29.
+Test surface: remote systemd services and authenticated HTTP health/catalog.
+Actions exercised and observed outcomes: both worker and gateway restarted;
+health returned ok=true; runtime diagnostic returned ready/installed/
+authenticated=true; custom provider returned configured=true/available=true.
+Real boundaries exercised; any mocked/stubbed boundaries: remote service and
+HTTP boundaries were real; no live model turn was sent.
+Remaining limitations or blocked acceptance: 100.111.162.22 timed out on SSH
+from this machine and was not modified.
+Availability: Synria deployed and running; second server not deployed.
+```
+
 ## 2026-11-23 — Rebuild compatibility for legacy split-server layouts
 
 - The split-server installer now accepts the redundant nested `worker_version`
