@@ -1,5 +1,27 @@
 # Public development log
 
+## 2026-11-26 — Prepare Folio 1.0.12-beta.8
+
+- Stamp the accepted multi-workspace mutation fix as a paired Folio desktop
+  and AgentsServer manual-install beta. The desktop update source points to the
+  Folio repository's beta channel; canonical AgentsDock feeds are unchanged.
+
+```text
+Change and expected user behavior: the Linux desktop and the three explicitly
+authorized server deployments expose revision-checked Rename and Delete across
+configured project roots.
+Source commit / app build / server version: release commit recorded below;
+Folio and AgentsServer 1.0.12-beta.8; native build 1278.
+Test surface: focused workspace/server/client/IPC suites, TypeScript typecheck,
+production compile, Linux packaging and a real two-root Electron workflow.
+Real boundaries exercised; any mocked/stubbed boundaries: local production
+Electron-to-AgentsServer rename/delete is real; live SSH UI acceptance remains
+outside this release.
+Remaining limitations or blocked acceptance: Linux x64 manual packages only;
+no canonical signed coordinated update, macOS, Windows, arm64 or mobile build.
+Availability: pending deployment and GitHub prerelease publication.
+```
+
 ## 2026-11-26 — Restore multi-workspace file rename and delete
 
 - The Files explorer now keeps Rename and Delete available for configured
