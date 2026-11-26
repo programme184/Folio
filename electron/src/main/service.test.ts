@@ -4420,7 +4420,9 @@ interface FakeClientOptions {
   createWorkspaceEntry?: (sessionId: string, path: string, kind: 'file' | 'directory') => Promise<WorkspaceCreateResult>
   writeWorkspaceFile?: (sessionId: string, path: string, content: string, expectedRevision: string) => Promise<WorkspaceFile>
   renameWorkspaceEntry?: (sessionId: string, path: string, newName: string, expectedRevision: string) => Promise<WorkspaceRenameResult>
+  renameAbsoluteWorkspaceEntry?: AgentServerClient['renameAbsoluteWorkspaceEntry']
   removeWorkspaceEntry?: (sessionId: string, path: string, expectedRevision: string, recursive: boolean) => Promise<WorkspaceRemoveResult>
+  removeAbsoluteWorkspaceEntry?: AgentServerClient['removeAbsoluteWorkspaceEntry']
   runtimeCatalog?: (refresh?: boolean) => Promise<RuntimeCatalog>
   fileRequest?: AgentServerClient['fileRequest']
   workspacePreviewRequest?: (
@@ -4612,8 +4614,24 @@ function fakeClient(options: FakeClientOptions = {}) {
         revision: 'b'.repeat(64)
       }
     }))),
+    renameAbsoluteWorkspaceEntry: vi.fn(options.renameAbsoluteWorkspaceEntry ?? (async (_sessionId, path, newName) => ({
+      root: path.slice(0, path.lastIndexOf('/')),
+      previous_path: path,
+      entry: {
+        name: newName,
+        path: `${path.slice(0, path.lastIndexOf('/'))}/${newName}`,
+        kind: 'file',
+        revision: 'b'.repeat(64)
+      }
+    }))),
     removeWorkspaceEntry: vi.fn(options.removeWorkspaceEntry ?? (async (_sessionId, path, _expectedRevision, recursive) => ({
       root: '/work',
+      path,
+      kind: recursive ? 'directory' : 'file',
+      removed: true
+    }))),
+    removeAbsoluteWorkspaceEntry: vi.fn(options.removeAbsoluteWorkspaceEntry ?? (async (_sessionId, path, _expectedRevision, recursive) => ({
+      root: path.slice(0, path.lastIndexOf('/')),
       path,
       kind: recursive ? 'directory' : 'file',
       removed: true
@@ -8862,6 +8880,25 @@ describe('workspace file scope safety', () => {
     await expect(service.removeWorkspaceEntry('chat', 'src', 'b'.repeat(64), true))
       .resolves.toEqual({ root: '/work', path: 'src', kind: 'directory', removed: true })
     expect(a.removeWorkspaceEntry).toHaveBeenCalledWith('chat', 'src', 'b'.repeat(64), true)
+
+    await expect(service.renameAbsoluteWorkspaceEntry(
+      'chat', '/work/notes/draft.md', 'final.md', 'a'.repeat(64), true
+    )).resolves.toMatchObject({
+      previous_path: '/work/notes/draft.md',
+      entry: { path: '/work/notes/final.md' }
+    })
+    expect(a.renameAbsoluteWorkspaceEntry).toHaveBeenCalledWith(
+      'chat', '/work/notes/draft.md', 'final.md', 'a'.repeat(64), null
+    )
+
+    await expect(service.removeAbsoluteWorkspaceEntry(
+      'chat', '/work/notes/final.md', 'b'.repeat(64), false, true
+    )).resolves.toEqual({
+      root: '/work/notes', path: '/work/notes/final.md', kind: 'file', removed: true
+    })
+    expect(a.removeAbsoluteWorkspaceEntry).toHaveBeenCalledWith(
+      'chat', '/work/notes/final.md', 'b'.repeat(64), false, null
+    )
   })
 
   it('delegates workspace file and folder creation through the captured profile client', async () => {

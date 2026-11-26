@@ -1,5 +1,37 @@
 # Public development log
 
+## 2026-11-26 — Restore multi-workspace file rename and delete
+
+- The Files explorer now keeps Rename and Delete available for configured
+  project roots and routes those operations through revision-checked absolute
+  workspace endpoints. Local and SSH-backed project roots use the same guarded
+  capability contract.
+
+```text
+Change and expected user behavior: files and folders in any configured project
+root can be renamed or deleted from Files; stale revisions and existing rename
+destinations remain protected.
+Source commit / app build / server version: this source commit; desktop 0.2.0;
+AgentsServer 1.0.12-beta.3 with workspace-files capability version 11.
+Test surface: server workspace suite, Electron renderer/client/service/IPC
+fixtures, TypeScript typecheck, production compile, and the real Electron-to-
+AgentsServer boundary.
+Actions exercised and observed outcomes: an isolated production Electron app
+opened a two-root project, renamed a file in the second root, then deleted it;
+both UI state and the actual filesystem result were verified.
+Real boundaries exercised; any mocked/stubbed boundaries: the acceptance used
+the production preload/IPC/native HTTP path and a real isolated AgentsServer;
+SSH transport behavior remains covered by focused fixtures rather than a live
+remote host.
+Focused regression / typecheck / production build: 75 server tests and 993
+focused Electron tests passed; two unrelated pre-existing runtime-catalog
+expectations in the broad service file; the mutation-specific service test,
+typecheck, and production compile pass.
+Remaining limitations or blocked acceptance: live SSH rename/delete was not
+exercised in this run.
+Availability: local source and build artifacts only; not published or deployed.
+```
+
 ## 2026-11-23 — Rebuild Synria with the compatible OpenCode runtime
 
 - Synria's source runtime was refreshed from the current server tree, its

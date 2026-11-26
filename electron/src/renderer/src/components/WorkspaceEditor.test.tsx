@@ -238,10 +238,25 @@ describe('WorkspaceEditor', () => {
               entry: { ...entries.find(entry => entry.path === path), name, path: nextPath, revision: 'entry-renamed' }
             })
           }),
+          renameAbsolute: vi.fn().mockImplementation((_sessionId: string, path: string, name: string) => {
+            const parent = path.slice(0, path.lastIndexOf('/'))
+            const nextPath = `${parent}/${name}`
+            return Promise.resolve({
+              root: parent,
+              previous_path: path,
+              entry: { name, path: nextPath, kind: 'file', writable: true, revision: 'entry-renamed' }
+            })
+          }),
           remove: vi.fn().mockImplementation((_sessionId: string, path: string) => Promise.resolve({
             root: '/work/project',
             path,
             kind: entries.find(entry => entry.path === path)?.kind ?? 'file',
+            removed: true
+          })),
+          removeAbsolute: vi.fn().mockImplementation((_sessionId: string, path: string) => Promise.resolve({
+            root: path.slice(0, path.lastIndexOf('/')),
+            path,
+            kind: 'file',
             removed: true
           }))
         },
@@ -616,7 +631,7 @@ describe('WorkspaceEditor', () => {
     }))
     const panel = render(<WorkspaceFilesProvider>
       <RealWorkspaceEditor workspaceKey="multi-root" session={projectSession} profileScope={scope}
-        available capabilityVersion={8} chatContent={<p>Chat</p>} />
+        available capabilityVersion={11} chatContent={<p>Chat</p>} />
       <WorkspaceFilesHost owner={workspaceFilesKey(scope, projectSession.id, projectSession.cwd!)} />
     </WorkspaceFilesProvider>)
     try {
@@ -625,6 +640,32 @@ describe('WorkspaceEditor', () => {
       expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/project', 0, 500)
       expect(window.agentsDock.workspace.absoluteEntries).toHaveBeenCalledWith(projectSession.id, '/work/notes', 0, 500)
       expect(window.agentsDock.workspace.entries).not.toHaveBeenCalled()
+
+      fireEvent.contextMenu(within(panel.container).getByRole('button', { name: 'Open /work/notes/notes.md' }))
+      await user.click(await screen.findByRole('menuitem', { name: 'Rename…' }))
+      await user.clear(screen.getByLabelText('New name'))
+      await user.type(screen.getByLabelText('New name'), 'research.md')
+      await user.click(screen.getByRole('button', { name: 'Rename' }))
+      await waitFor(() => expect(window.agentsDock.workspace.renameAbsolute).toHaveBeenCalledWith(
+        projectSession.id,
+        '/work/notes/notes.md',
+        'research.md',
+        'entry-/work/notes',
+        true
+      ))
+
+      fireEvent.contextMenu(await within(panel.container).findByRole('button', { name: 'Open /work/project/README.md' }))
+      await user.click(await screen.findByRole('menuitem', { name: 'Delete Permanently…' }))
+      await user.click(screen.getByRole('button', { name: 'Delete permanently' }))
+      await waitFor(() => expect(window.agentsDock.workspace.removeAbsolute).toHaveBeenCalledWith(
+        projectSession.id,
+        '/work/project/README.md',
+        'entry-/work/project',
+        false,
+        true
+      ))
+      expect(window.agentsDock.workspace.rename).not.toHaveBeenCalled()
+      expect(window.agentsDock.workspace.remove).not.toHaveBeenCalled()
 
       const newFolder = within(panel.container).getByRole('button', { name: 'New folder' })
       const newFile = within(panel.container).getByRole('button', { name: 'New file' })

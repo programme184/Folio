@@ -2154,6 +2154,25 @@ export class AgentServerClient {
     })
   }
 
+  renameAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    newName: string,
+    expectedRevision: string,
+    remoteHost?: string | null
+  ): Promise<WorkspaceRenameResult> {
+    const query = new URLSearchParams()
+    if (remoteHost) query.set('remote_host', remoteHost)
+    const suffix = query.size ? `?${query}` : ''
+    return this.privilegedNativeRequest(
+      `/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entry${suffix}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ path, new_name: newName, expected_revision: expectedRevision })
+      }
+    )
+  }
+
   removeWorkspaceEntry(
     sessionId: string,
     path: string,
@@ -2172,13 +2191,15 @@ export class AgentServerClient {
     sessionId: string,
     path: string,
     expectedRevision: string,
-    recursive: boolean
+    recursive: boolean,
+    remoteHost?: string | null
   ): Promise<WorkspaceRemoveResult> {
     const query = new URLSearchParams({
       path,
       expected_revision: expectedRevision,
       recursive: String(recursive)
     })
+    if (remoteHost) query.set('remote_host', remoteHost)
     return this.privilegedNativeRequest(
       `/api/sessions/${workspaceGitSessionId(sessionId)}/workspace/absolute-entry?${query}`,
       { method: 'DELETE' }
@@ -3047,7 +3068,7 @@ export class AgentServerClient {
     const target = new URL(configurationURL(configuration, path))
     const server = new URL(configuration.baseURL)
     const serverPrefix = server.pathname === '/' ? '' : server.pathname
-    const method = securePeerMethod(init.method ?? 'GET', ['GET', 'POST', 'PUT', 'DELETE'])
+    const method = securePeerMethod(init.method ?? 'GET', ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
     if (!isPrivilegedNativeControlTarget(target, server, serverPrefix, method)) {
       throw new Error('Privileged native control route is invalid.')
     }
@@ -3600,7 +3621,7 @@ function multipartFileBody(
   })())
 }
 
-type SecurePeerMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'HEAD'
+type SecurePeerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD'
 
 interface SecurePeerNodeRequest {
   method: SecurePeerMethod
@@ -3719,8 +3740,18 @@ function isPrivilegedNativeControlTarget(
   if (/^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/workspace\/absolute-entry$/.test(path)) {
     const keys = [...target.searchParams.keys()]
     const remoteHost = target.searchParams.get('remote_host')
-    return method === 'POST' && keys.length <= 1 && keys.every(key => key === 'remote_host')
-      && (!keys.length || /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? ''))
+    const validRemoteHost = !keys.includes('remote_host')
+      || /^(?:[A-Za-z0-9._-]{1,64}@)?[A-Za-z0-9][A-Za-z0-9._-]{0,253}$/.test(remoteHost ?? '')
+    if (method === 'POST' || method === 'PATCH') {
+      return keys.length <= 1 && keys.every(key => key === 'remote_host') && validRemoteHost
+    }
+    return method === 'DELETE'
+      && keys.length >= 3
+      && keys.length <= 4
+      && new Set(keys).size === keys.length
+      && ['path', 'expected_revision', 'recursive'].every(key => keys.includes(key))
+      && keys.every(key => ['path', 'expected_revision', 'recursive', 'remote_host'].includes(key))
+      && validRemoteHost
   }
   const syncedSideChat = /^\/api\/sessions\/[A-Za-z0-9_-]{1,128}\/side-chat(?:\/(?:requests\/)?[A-Za-z0-9_-]{1,128})?$/.exec(path)
   if (syncedSideChat) return !target.search && (path.endsWith('/side-chat') ? method === 'GET' || method === 'POST' : method === 'DELETE')

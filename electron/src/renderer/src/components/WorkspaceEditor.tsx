@@ -571,6 +571,7 @@ export function WorkspaceEditor({
     ? directoryAt(directories, pendingUntitledSave.directory)
     : null
   const mutationsAvailable = available === true && capabilityVersion >= 2 && !session.archived
+  const absoluteMutationsAvailable = available === true && capabilityVersion >= 11 && !session.archived
   const creationAvailable = available === true && capabilityVersion >= 4 && !session.archived
   const absoluteReadsAvailable = available === true && capabilityVersion >= 5
   const absoluteWritesAvailable = available === true && capabilityVersion >= 6 && !session.archived
@@ -2179,7 +2180,7 @@ export function WorkspaceEditor({
       setWorkspaceError(validationError)
       return
     }
-    if (!mutationsAvailable || !entry.revision) {
+    if (!(multiRootExplorer ? absoluteMutationsAvailable : mutationsAvailable) || !entry.revision) {
       setWorkspaceError(t('editor.updateAgentsserverToRenameWorkspaceFilesAndFolders'))
       return
     }
@@ -2218,12 +2219,20 @@ export function WorkspaceEditor({
     setRenamingEntry(true)
     setWorkspaceError(null)
     try {
-      const result = await window.agentsDock.workspace.rename(
-        session.id,
-        entry.path,
-        renameValue,
-        entry.revision
-      )
+      const result = multiRootExplorer
+        ? await window.agentsDock.workspace.renameAbsolute(
+            session.id,
+            entry.path,
+            renameValue,
+            entry.revision,
+            true
+          )
+        : await window.agentsDock.workspace.rename(
+            session.id,
+            entry.path,
+            renameValue,
+            entry.revision
+          )
       const previousPath = result.previous_path
       const nextPath = result.entry.path
       setWorkspaceRoot(result.root)
@@ -2311,7 +2320,7 @@ export function WorkspaceEditor({
   const deleteWorkspaceEntry = async () => {
     const entry = pendingDeleteEntry
     if (!entry || deletingEntry) return
-    if (!mutationsAvailable || !entry.revision) {
+    if (!(multiRootExplorer ? absoluteMutationsAvailable : mutationsAvailable) || !entry.revision) {
       setWorkspaceError(t('editor.updateAgentsserverToDeleteWorkspaceFilesAndFolders'))
       return
     }
@@ -2336,12 +2345,20 @@ export function WorkspaceEditor({
     setDeletingEntry(true)
     setWorkspaceError(null)
     try {
-      const result = await window.agentsDock.workspace.remove(
-        session.id,
-        entry.path,
-        entry.revision,
-        entry.kind === 'directory'
-      )
+      const result = multiRootExplorer
+        ? await window.agentsDock.workspace.removeAbsolute(
+            session.id,
+            entry.path,
+            entry.revision,
+            entry.kind === 'directory',
+            true
+          )
+        : await window.agentsDock.workspace.remove(
+            session.id,
+            entry.path,
+            entry.revision,
+            entry.kind === 'directory'
+          )
       setWorkspaceRoot(result.root)
       const nextFiles = openFilesRef.current.filter(file => (
         file.origin !== 'workspace' || !workspacePathIsWithin(file.path, entry.path)
@@ -4225,7 +4242,7 @@ export function WorkspaceEditor({
           openPaths={openPaths}
           directories={directories}
           expanded={expandedDirectories}
-          mutationsAvailable={!multiRootExplorer && mutationsAvailable && !workspaceMutationPath}
+          mutationsAvailable={(multiRootExplorer ? absoluteMutationsAvailable : mutationsAvailable) && !workspaceMutationPath}
           creationAvailable={creationAvailable && multiRootCreationAvailable && !workspaceMutationPath}
           absoluteCreationAvailable={capabilityVersion >= 8}
           pendingCreate={pendingUntitledSave?.inline ? {

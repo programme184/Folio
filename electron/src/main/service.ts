@@ -5369,15 +5369,38 @@ export class AppService {
     return result
   }
 
+  async renameAbsoluteWorkspaceEntry(
+    sessionId: string,
+    path: string,
+    newName: string,
+    expectedRevision: string,
+    remoteWorkspace = false
+  ): Promise<WorkspaceRenameResult> {
+    const scope = this.captureScope()
+    await this.ensureValidatedScope(scope)
+    const remoteHost = remoteWorkspace ? this.remoteSSHHost(scope.profileId) : null
+    const result = await scope.client.renameAbsoluteWorkspaceEntry(
+      sessionId,
+      path,
+      newName,
+      expectedRevision,
+      remoteHost
+    )
+    this.assertCurrentScope(scope)
+    return result
+  }
+
   async removeAbsoluteWorkspaceEntry(
     sessionId: string,
     path: string,
     expectedRevision: string,
-    recursive: boolean
+    recursive: boolean,
+    remoteWorkspace = false
   ): Promise<WorkspaceRemoveResult> {
     const scope = this.captureScope()
     await this.ensureValidatedScope(scope)
-    const result = await scope.client.removeAbsoluteWorkspaceEntry(sessionId, path, expectedRevision, recursive)
+    const remoteHost = remoteWorkspace ? this.remoteSSHHost(scope.profileId) : null
+    const result = await scope.client.removeAbsoluteWorkspaceEntry(sessionId, path, expectedRevision, recursive, remoteHost)
     this.assertCurrentScope(scope)
     return result
   }

@@ -195,6 +195,38 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(captured["command"][-1], "python3 - create /remote/project/drafts directory")
         self.assertIn('elif operation == "create"', captured["options"]["input"])
 
+    def test_remote_absolute_rename_and_delete_use_validated_ssh(self) -> None:
+        calls: list[list[str]] = []
+        payloads = [
+            {"result": {
+                "root": "/remote/project", "previous_path": "/remote/project/draft.md",
+                "entry": {"name": "final.md", "path": "/remote/project/final.md", "kind": "file"},
+            }},
+            {"result": {
+                "root": "/remote/project", "path": "/remote/project/final.md",
+                "kind": "file", "removed": True,
+            }},
+        ]
+
+        def run(command, **_options):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payloads[len(calls) - 1]), stderr="")
+
+        with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(Path("/unused"))}), \
+             patch.object(agent_server.shutil, "which", return_value="/usr/bin/ssh"), \
+             patch.object(agent_server.subprocess, "run", side_effect=run):
+            renamed = agent_server.remote_workspace_request(
+                "session-1", "Synria", "rename", "/remote/project/draft.md", "final.md", "a" * 64
+            )
+            removed = agent_server.remote_workspace_request(
+                "session-1", "Synria", "remove", "/remote/project/final.md", "b" * 64, False
+            )
+
+        self.assertEqual(renamed["entry"]["path"], "/remote/project/final.md")
+        self.assertTrue(removed["removed"])
+        self.assertEqual(calls[0][-1], f"python3 - rename /remote/project/draft.md final.md {'a' * 64}")
+        self.assertEqual(calls[1][-1], f"python3 - remove /remote/project/final.md {'b' * 64} False")
+
     def test_remote_working_directory_completion_uses_validated_ssh_without_a_chat(self) -> None:
         payload = {"result": {
             "input": "/home/ubuntu/Synria", "resolved_path": "/home/ubuntu/Synria",
@@ -237,7 +269,7 @@ class WorkspaceFilesTests(unittest.TestCase):
         self.assertEqual(remote.exception.status_code, 503)
         self.assertEqual(browser.exception.status_code, 403)
 
-    def test_workspace_capability_v10_entries_have_opaque_revisions_and_preview_limits(self) -> None:
+    def test_workspace_capability_v11_entries_have_opaque_revisions_and_preview_limits(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "app.py"
@@ -249,7 +281,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 path.write_text("second, longer\n")
                 changed = agent_server.list_workspace_entries_sync("session-1", "", 0, 20)["entries"][0]
 
-        self.assertEqual(info["capability_version"], 10)
+        self.assertEqual(info["capability_version"], 11)
         self.assertEqual(info["max_preview_file_bytes"], agent_server.MAX_WORKSPACE_PREVIEW_BYTES)
         self.assertIn("application/pdf", info["preview_media_types"])
         self.assertIn("image/png", info["preview_media_types"])
@@ -268,6 +300,7 @@ class WorkspaceFilesTests(unittest.TestCase):
                 health = asyncio.run(agent_server.health())
 
         self.assertEqual(info["max_text_file_bytes"], 32 * 1024 * 1024)
+        self.assertEqual(health["capabilities"]["workspace_files"]["version"], 11)
         self.assertEqual(health["capabilities"]["workspace_files"]["max_text_file_bytes"], 32 * 1024 * 1024)
         self.assertEqual(health["capabilities"]["working_directory_completion"]["version"], 2)
 
@@ -1601,6 +1634,42 @@ class WorkspaceFilesTests(unittest.TestCase):
             "kind": "file",
             "removed": True,
         })
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" or sys.platform.startswith("linux"),
+        "atomic no-replace rename is supported on macOS and Linux",
+    )
+    def test_absolute_rename_and_delete_keep_absolute_paths_across_workspace_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            chat_root = base / "chat"
+            second_root = base / "notes"
+            chat_root.mkdir()
+            second_root.mkdir()
+            source = second_root / "draft.md"
+            source.write_text("draft\n")
+            with patch.object(agent_server.STORE, "sessions", {"session-1": self.session(chat_root)}):
+                revision = agent_server.list_absolute_workspace_entries_sync(
+                    "session-1", str(second_root), 0, 20
+                )["entries"][0]["revision"]
+                renamed = agent_server.rename_absolute_workspace_entry_sync(
+                    "session-1", str(source), "final.md", revision
+                )
+                removed = agent_server.remove_absolute_workspace_entry_sync(
+                    "session-1",
+                    renamed["entry"]["path"],
+                    renamed["entry"]["revision"],
+                    False,
+                )
+
+            remaining = list(second_root.iterdir())
+
+        self.assertEqual(renamed["previous_path"], str(source))
+        self.assertEqual(renamed["entry"]["path"], str(second_root / "final.md"))
+        self.assertEqual(renamed["scope"], "absolute")
+        self.assertEqual(removed["path"], str(second_root / "final.md"))
+        self.assertEqual(removed["scope"], "absolute")
+        self.assertEqual(remaining, [])
 
     def test_recursive_delete_requires_recursive_confirmation_and_does_not_follow_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

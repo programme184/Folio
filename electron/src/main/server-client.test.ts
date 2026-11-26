@@ -2601,6 +2601,50 @@ describe('AgentServerClient live stream', () => {
     expect(requests[0]?.headers['sec-fetch-mode']).toBeUndefined()
   })
 
+  it('renames and deletes absolute workspace entries through the native transport', async () => {
+    const requests: IncomingMessage[] = []
+    const bodies: string[] = []
+    await withLocalHTTPServer((incoming, response) => {
+      requests.push(incoming)
+      let body = ''
+      incoming.on('data', chunk => { body += chunk })
+      incoming.on('end', () => {
+        bodies.push(body)
+        response.setHeader('Content-Type', 'application/json')
+        response.end(JSON.stringify(incoming.method === 'PATCH'
+          ? {
+              root: '/work/notes', previous_path: '/work/notes/draft.md',
+              entry: { name: 'final.md', path: '/work/notes/final.md', kind: 'file' }
+            }
+          : { root: '/work/notes', path: '/work/notes/final.md', kind: 'file', removed: true }))
+      })
+    }, async baseURL => {
+      const client = new AgentServerClient(baseURL, 'secret')
+      await client.renameAbsoluteWorkspaceEntry(
+        'chat-one', '/work/notes/draft.md', 'final.md', 'a'.repeat(64), 'Synria'
+      )
+      await client.removeAbsoluteWorkspaceEntry(
+        'chat-one', '/work/notes/final.md', 'b'.repeat(64), false, 'Synria'
+      )
+    })
+
+    expect(requests[0]?.method).toBe('PATCH')
+    expect(requests[0]?.url).toBe('/api/sessions/chat-one/workspace/absolute-entry?remote_host=Synria')
+    expect(JSON.parse(bodies[0] ?? '{}')).toEqual({
+      path: '/work/notes/draft.md',
+      new_name: 'final.md',
+      expected_revision: 'a'.repeat(64)
+    })
+    expect(requests[1]?.method).toBe('DELETE')
+    expect(requests[1]?.url).toContain('/api/sessions/chat-one/workspace/absolute-entry?')
+    expect(requests[1]?.url).toContain('path=%2Fwork%2Fnotes%2Ffinal.md')
+    expect(requests[1]?.url).toContain(`expected_revision=${'b'.repeat(64)}`)
+    expect(requests[1]?.url).toContain('recursive=false')
+    expect(requests[1]?.url).toContain('remote_host=Synria')
+    expect(requests.every(request => request.headers['x-agentsdock-token'] === 'secret')).toBe(true)
+    expect(requests.every(request => request.headers['sec-fetch-mode'] === undefined)).toBe(true)
+  })
+
   it('rejects an unsafe remote workspace host before the native request', async () => {
     const requests: IncomingMessage[] = []
     await withLocalHTTPServer((incoming, response) => {

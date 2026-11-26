@@ -612,8 +612,9 @@ export interface AgentsDockAPI {
     write(sessionId: string, path: string, content: string, expectedRevision: string): Promise<WorkspaceFile>
     overwrite(sessionId: string, path: string, content: string): Promise<WorkspaceFile>
     rename(sessionId: string, path: string, newName: string, expectedRevision: string): Promise<WorkspaceRenameResult>
+    renameAbsolute(sessionId: string, path: string, newName: string, expectedRevision: string, remoteWorkspace?: boolean): Promise<WorkspaceRenameResult>
     remove(sessionId: string, path: string, expectedRevision: string, recursive: boolean): Promise<WorkspaceRemoveResult>
-    removeAbsolute(sessionId: string, path: string, expectedRevision: string, recursive: boolean): Promise<WorkspaceRemoveResult>
+    removeAbsolute(sessionId: string, path: string, expectedRevision: string, recursive: boolean, remoteWorkspace?: boolean): Promise<WorkspaceRemoveResult>
   }
   workingDirectories: {
     complete(path: string, limit?: number): Promise<WorkingDirectoryCompletion>

@@ -2915,7 +2915,7 @@ def workspace_info_sync(session_id: str) -> dict[str, Any]:
         "root": str(root),
         "name": root.name or str(root),
         "read_only": bool(sess.get("archived")),
-        "capability_version": 10 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+        "capability_version": 11 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
         "max_text_file_bytes": workspace_text_bytes_capability(),
         "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
         "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -3017,11 +3017,20 @@ def list_absolute_workspace_entries_sync(
     }
 
 
-REMOTE_WORKSPACE_SCRIPT = r'''import hashlib, json, os, stat, sys
+REMOTE_WORKSPACE_SCRIPT = r'''import hashlib, json, os, shutil, stat, sys
 
 def fail(code, message):
     print(json.dumps({"error": {"code": code, "message": message}}))
     raise SystemExit(0)
+
+def revision(item):
+    return hashlib.sha256(f"{item.st_dev}:{item.st_ino}:{item.st_size}:{item.st_mtime_ns}".encode()).hexdigest()
+
+def checked_item(path, expected_revision):
+    item = os.lstat(path)
+    if revision(item) != expected_revision:
+        fail("workspace_entry_conflict", "Remote workspace entry changed on disk. Refresh and try again.")
+    return item
 
 operation = sys.argv[1]
 path = sys.argv[2]
@@ -3087,12 +3096,12 @@ try:
                 if kind is None:
                     continue
                 child = path.rstrip("/") + "/" + entry.name
-                revision = hashlib.sha256(f"{item.st_dev}:{item.st_ino}:{item.st_size}:{item.st_mtime_ns}".encode()).hexdigest()
+                item_revision = revision(item)
                 records.append({
                     "name": entry.name, "path": child, "kind": kind,
                     "size": item.st_size if kind == "file" else None,
                     "mtime_ns": item.st_mtime_ns, "hidden": entry.name.startswith("."),
-                    "writable": False, "revision": revision,
+                    "writable": False, "revision": item_revision,
                 })
         records.sort(key=lambda item: (item["kind"] != "directory", item["name"].casefold(), item["name"]))
         page = records[offset:offset + limit]
@@ -3140,11 +3149,48 @@ try:
             if created_fd >= 0:
                 os.close(created_fd)
             os.close(directory_fd)
-        revision = hashlib.sha256(f"{item.st_dev}:{item.st_ino}:{item.st_size}:{item.st_mtime_ns}".encode()).hexdigest()
-        entry = {"name": name, "path": path, "kind": kind, "size": item.st_size if kind == "file" else None, "mtime_ns": item.st_mtime_ns, "hidden": name.startswith("."), "writable": bool(item.st_mode & 0o222), "revision": revision}
+        item_revision = revision(item)
+        entry = {"name": name, "path": path, "kind": kind, "size": item.st_size if kind == "file" else None, "mtime_ns": item.st_mtime_ns, "hidden": name.startswith("."), "writable": bool(item.st_mode & 0o222), "revision": item_revision}
         result = {"root": parent, "entry": entry}
         if kind == "file":
             result["file"] = {"root": parent, "path": path, "name": name, "content": "", "revision": hashlib.sha256(b"").hexdigest(), "size": 0, "mtime_ns": item.st_mtime_ns, "writable": bool(item.st_mode & 0o222), "scope": "absolute"}
+    elif operation == "rename":
+        new_name, expected_revision = sys.argv[3], sys.argv[4]
+        if not new_name or new_name in {".", ".."} or "/" in new_name or "\x00" in new_name:
+            fail("invalid_workspace_name", "A single valid workspace entry name is required.")
+        item = checked_item(path, expected_revision)
+        parent = os.path.dirname(path)
+        destination = os.path.join(parent, new_name)
+        try:
+            os.lstat(destination)
+        except FileNotFoundError:
+            pass
+        else:
+            fail("workspace_entry_exists", "Remote workspace entry already exists.")
+        os.rename(path, destination)
+        updated = os.lstat(destination)
+        mode = updated.st_mode
+        kind = "symlink" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else None
+        if kind is None:
+            fail("workspace_entry_type_unsupported", "Remote workspace entry type is unsupported.")
+        entry = {"name": new_name, "path": destination, "kind": kind, "size": updated.st_size if kind == "file" else None, "mtime_ns": updated.st_mtime_ns, "hidden": new_name.startswith("."), "writable": bool(updated.st_mode & 0o222), "revision": revision(updated)}
+        result = {"root": parent, "previous_path": path, "entry": entry, "scope": "absolute"}
+    elif operation == "remove":
+        expected_revision = sys.argv[3]
+        recursive = sys.argv[4].lower() == "true"
+        item = checked_item(path, expected_revision)
+        mode = item.st_mode
+        kind = "symlink" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else None
+        if kind is None:
+            fail("workspace_entry_type_unsupported", "Remote workspace entry type is unsupported.")
+        if kind == "directory":
+            if recursive:
+                shutil.rmtree(path)
+            else:
+                os.rmdir(path)
+        else:
+            os.unlink(path)
+        result = {"root": os.path.dirname(path), "path": path, "kind": kind, "removed": True, "scope": "absolute"}
     else:
         fail("remote_workspace_operation_invalid", "Invalid remote workspace operation.")
 except FileExistsError:
@@ -4316,6 +4362,45 @@ def rename_workspace_entry_sync(
 ) -> dict[str, Any]:
     _, root = session_workspace_root(session_id, for_write=True)
     normalized = normalize_workspace_path(relative_path)
+    return rename_workspace_entry_at_root(root, normalized, new_name, expected_revision)
+
+
+def rename_absolute_workspace_entry_sync(
+    session_id: str,
+    absolute_path: str,
+    new_name: str,
+    expected_revision: str,
+) -> dict[str, Any]:
+    if not WORKSPACE_MUTATIONS_AVAILABLE:
+        raise workspace_http_error(
+            501,
+            "workspace_mutations_unavailable",
+            "Secure absolute file rename is unavailable on this host.",
+        )
+    sess = STORE.sessions.get(session_id)
+    if not sess:
+        raise workspace_http_error(404, "session_not_found", "Chat not found.")
+    if bool(sess.get("archived")):
+        raise workspace_http_error(409, "workspace_read_only", "Archived chats cannot edit files.")
+    root, relative, normalized = normalize_absolute_file_path(absolute_path)
+    result = rename_workspace_entry_at_root(root, relative, new_name, expected_revision)
+    separator = "\\" if os.name == "nt" else "/"
+    parent = normalized.rsplit(separator, 1)[0]
+    destination = f"{parent}{separator}{result['entry']['name']}"
+    return {
+        **result,
+        "previous_path": normalized,
+        "entry": {**result["entry"], "path": destination},
+        "scope": "absolute",
+    }
+
+
+def rename_workspace_entry_at_root(
+    root: Path,
+    normalized: str,
+    new_name: str,
+    expected_revision: str,
+) -> dict[str, Any]:
     old_name = normalized.rsplit("/", 1)[-1]
     clean_name = normalize_workspace_entry_name(new_name, normalized)
     if clean_name == old_name:
@@ -85549,7 +85634,7 @@ async def health() -> dict[str, Any]:
                     else "Secure workspace file access is unavailable on this host."
                 ),
                 "action": None if WORKSPACE_SECURE_OPEN_AVAILABLE else "Use a supported macOS or Linux host.",
-                "version": 10 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
+                "version": 11 if WORKSPACE_MUTATIONS_AVAILABLE else 1,
                 "max_text_file_bytes": workspace_text_bytes_capability(),
                 "max_preview_file_bytes": MAX_WORKSPACE_PREVIEW_BYTES,
                 "preview_media_types": sorted(set(WORKSPACE_PREVIEW_MEDIA_TYPES.values())),
@@ -101649,6 +101734,33 @@ async def patch_session_workspace_entry(session_id: str, req: WorkspaceRenameReq
     )
 
 
+@app.patch("/api/sessions/{session_id}/workspace/absolute-entry")
+async def patch_session_absolute_workspace_entry(
+    request: Request,
+    session_id: str,
+    req: WorkspaceRenameRequest,
+    remote_host: str | None = Query(default=None, max_length=255),
+) -> dict[str, Any]:
+    require_native_workspace_directory_control(request)
+    if remote_host:
+        return await asyncio.to_thread(
+            remote_workspace_request,
+            session_id,
+            remote_host,
+            "rename",
+            req.path,
+            req.new_name,
+            req.expected_revision,
+        )
+    return await asyncio.to_thread(
+        rename_absolute_workspace_entry_sync,
+        session_id,
+        req.path,
+        req.new_name,
+        req.expected_revision,
+    )
+
+
 @app.delete("/api/sessions/{session_id}/workspace/entry")
 async def delete_session_workspace_entry(
     session_id: str,
@@ -101672,8 +101784,19 @@ async def delete_session_absolute_workspace_entry(
     path: str = Query(min_length=1, max_length=MAX_WORKSPACE_PATH_CHARS),
     expected_revision: str = Query(min_length=64, max_length=64),
     recursive: bool = Query(default=False),
+    remote_host: str | None = Query(default=None, max_length=255),
 ) -> dict[str, Any]:
     require_native_workspace_directory_control(request)
+    if remote_host:
+        return await asyncio.to_thread(
+            remote_workspace_request,
+            session_id,
+            remote_host,
+            "remove",
+            path,
+            expected_revision,
+            recursive,
+        )
     return await asyncio.to_thread(
         remove_absolute_workspace_entry_sync,
         session_id,
